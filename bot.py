@@ -890,6 +890,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         user_message = update.effective_message.text[:1000]
 
+        # ---------- КОМАНДА /web (ВКЛ/ВЫКЛ ИНТЕРНЕТ) ----------
         if user_message.lower().startswith("/web"):
             current = web_search_state.get(uid, False)
             new_state = not current
@@ -898,6 +899,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_reply(update, f"Поиск в интернете: {status}")
             return
 
+        # ---------- КОМАНДА "запомни" ----------
         if user_message.lower().startswith("запомни "):
             text = user_message[8:].strip()
             async with get_user_lock(uid):
@@ -918,6 +920,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await safe_reply(update, "❌ Не удалось сохранить факт.")
             return
 
+        # ---------- ОСНОВНАЯ ЛОГИКА ----------
         history = load_memory(uid)
         profile = load_profile(uid)
         user_msg_obj = {"role": "user", "content": user_message, "timestamp": now().strftime("%Y-%m-%d %H:%M:%S")}
