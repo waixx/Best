@@ -1,10 +1,8 @@
 # ================================================================
-#  BroWaix Bot — ЭКОНОМНАЯ ВЕРСИЯ (ровно на 3 месяца)
-#  - SEARCH_RESULTS_NUM = 30
-#  - TOP_RESULTS_SHOW = 5
-#  - MAX_HTML_LEN = 8000
-#  - MAX_TOKENS_ANSWER = 3000
-#  - Все функции сохранены: кнопки, память, бэкапы, Browserless
+#  BroWaix Bot — ИСПРАВЛЕННАЯ ВЕРСИЯ (сборка из всех источников)
+#  - Теперь DeepSeek получает ВСЕ загруженные страницы
+#  - Сортировка по информативности
+#  - Нумерация источников
 # ================================================================
 
 import logging
@@ -59,17 +57,16 @@ def get_current_date():
     return now().strftime("%d.%m.%Y")
 
 
-# ==================== ОПТИМАЛЬНЫЕ НАСТРОЙКИ ДЛЯ 3 МЕСЯЦЕВ ====================
+# ==================== ОПТИМАЛЬНЫЕ НАСТРОЙКИ ====================
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-# ⭐ ЭТИ ЦИФРЫ ДАЮТ РАСХОД ~$0.13/ДЕНЬ
-SEARCH_RESULTS_NUM = 30        # ищем 30 ссылок (было 50)
-TOP_RESULTS_SHOW = 5           # парсим только 5 лучших (было 15)
-MAX_HTML_LEN = 8000            # берем 8000 символов (было 20000)
-MAX_TOKENS_ANSWER = 3000       # ответ до 3000 токенов (было 4000)
-CACHE_TTL = 86400              # кэш на 24 часа
+SEARCH_RESULTS_NUM = 30
+TOP_RESULTS_SHOW = 5
+MAX_HTML_LEN = 8000
+MAX_TOKENS_ANSWER = 3000
+CACHE_TTL = 86400
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -670,6 +667,7 @@ async def generate_model_only(uid, user_message, history, profile):
     return mark_source("model_only", answer, is_cached=False, is_speculation=is_speculation)
 
 
+# ==================== ИСПРАВЛЕННАЯ ФУНКЦИЯ — сборка из ВСЕХ источников ====================
 async def generate_hybrid(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -685,12 +683,15 @@ async def generate_hybrid(uid, user_message, history, profile):
     links = [r['link'] for r in (scored or results)[:SEARCH_RESULTS_NUM]]
     pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
 
+    # ⭐ СОБИРАЕМ ВСЕ СТРАНИЦЫ С НУМЕРАЦИЕЙ
     if pages:
-        stext = "\n\n".join([f"--- {p['url']} ---\n{p['text']}" for p in pages])
+        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
+        stext = "\n\n".join([f"--- ИСТОЧНИК {i+1}: {p['url']} ---\n{p['text']}" for i, p in enumerate(pages_sorted[:TOP_RESULTS_SHOW])])
+        logger.info(f"📊 Гибрид: использовано {len(pages_sorted[:TOP_RESULTS_SHOW])} источников")
     else:
         stext = "\n\n".join([
-            f"--- {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
-            for r in (scored or results)[:TOP_RESULTS_SHOW]
+            f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
+            for i, r in enumerate((scored or results)[:TOP_RESULTS_SHOW])
         ])
 
     system_prompt = f"""Ты — честный ассистент. Приоритет — данные из интернета.
@@ -702,7 +703,7 @@ async def generate_hybrid(uid, user_message, history, profile):
 Сегодня: {get_current_date()}
 Контекст: {build_profile_context(profile)}
 
-ДАННЫЕ ИЗ ИНТЕРНЕТА:
+ДАННЫЕ ИЗ ИНТЕРНЕТА (ВСЕ ИСТОЧНИКИ):
 {stext}"""
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
@@ -724,6 +725,7 @@ async def generate_hybrid(uid, user_message, history, profile):
     return result
 
 
+# ==================== ИСПРАВЛЕННАЯ ФУНКЦИЯ — сборка из ВСЕХ источников ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -739,12 +741,15 @@ async def generate_internet_only(uid, user_message, history, profile):
     links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
     pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
 
+    # ⭐ СОБИРАЕМ ВСЕ СТРАНИЦЫ С НУМЕРАЦИЕЙ
     if pages:
-        stext = "\n\n".join([f"--- {p['url']} ---\n{p['text']}" for p in pages])
+        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
+        stext = "\n\n".join([f"--- ИСТОЧНИК {i+1}: {p['url']} ---\n{p['text']}" for i, p in enumerate(pages_sorted[:TOP_RESULTS_SHOW])])
+        logger.info(f"📊 Интернет: использовано {len(pages_sorted[:TOP_RESULTS_SHOW])} источников")
     else:
         stext = "\n\n".join([
-            f"--- {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
-            for r in (scored or all_results)[:TOP_RESULTS_SHOW]
+            f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
+            for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW])
         ])
 
     system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
@@ -752,12 +757,13 @@ async def generate_internet_only(uid, user_message, history, profile):
 НЕ додумывай.
 Если в данных нет ответа — напиши "В данных нет ответа".
 Каждый факт сопровождай ссылкой.
+СОБИРАЙ ИНФОРМАЦИЮ ИЗ ВСЕХ ИСТОЧНИКОВ, А НЕ ТОЛЬКО ИЗ ПЕРВОГО.
 
 Запрос: {user_message}
 Сегодня: {get_current_date()}
 Контекст: {build_profile_context(profile)}
 
-ДАННЫЕ (ЕДИНСТВЕННЫЙ ИСТОЧНИК):
+ДАННЫЕ ИЗ ИНТЕРНЕТА (ВСЕ ИСТОЧНИКИ):
 {stext}"""
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
@@ -1059,7 +1065,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (экономичная версия, ровно на 3 месяца)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (исправлена сборка из всех источников)")
     app.run_polling()
 
 
