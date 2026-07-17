@@ -1,14 +1,14 @@
 # ================================================================
-#  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ
-#  - Браузер сохраняется в /app/ms-playwright (Volume)
-#  - Память сохраняется в /app/data (Volume)
-#  - Автоустановка через postInstall
+#  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ (С STEEL BROWSER)
+#  - Steel Browser — отдельный сервис с браузером
+#  - Подключение через WebSocket
+#  - Резерв: прямой HTTP (если Steel недоступен)
 # ================================================================
 
 import logging
 import os
-import json
 import sys
+import json
 import re
 import asyncio
 import aiohttp
@@ -26,9 +26,6 @@ from telegram.ext import (
 )
 from logging.handlers import RotatingFileHandler
 
-# ---------- ПЕРЕНАПРАВЛЕНИЕ БРАУЗЕРА В VOLUME ----------
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/ms-playwright"
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=3)
@@ -41,10 +38,12 @@ logger.addHandler(console)
 
 load_dotenv()
 
+# ---------- ПЕРЕМЕННЫЕ ----------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+STEEL_BROWSER_URL = os.getenv("STEEL_BROWSER_URL")  # <-- НОВАЯ ПЕРЕМЕННАЯ
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
 ALLOWED_USERS_LIST = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS_LIST:
@@ -71,6 +70,8 @@ CACHE_CLEANUP_INTERVAL = 3600
 LEVEL_1 = {'max_history': 20, 'keep_recent': 5}
 LEVEL_2 = {'compress_interval': 20, 'compress_to': 30}
 
+web_search_state = {}
+
 if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
@@ -83,6 +84,7 @@ def memory_path(uid): return os.path.join(DATA_DIR, f"memory_{uid}.json")
 def profile_path(uid): return os.path.join(DATA_DIR, f"profile_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
 
+# ---------- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ----------
 _http_session = None
 _session_lock = asyncio.Lock()
 user_locks = weakref.WeakValueDictionary()
@@ -90,6 +92,7 @@ rate_lock = asyncio.Lock()
 request_count = {}
 search_cache = {}
 html_cache = {}
+answer_cache = {}
 
 def get_user_lock(uid): return user_locks.setdefault(uid, asyncio.Lock())
 
@@ -108,6 +111,7 @@ async def cleanup_http_session():
     if _http_session and not _http_session.closed:
         await _http_session.close()
 
+# ---------- ФАЙЛЫ ----------
 def atomic_write(filename, data, as_json=True):
     tmp = filename + ".tmp"
     try:
@@ -185,6 +189,7 @@ async def restore_backup(uid, data_type):
         except Exception:
             return False
 
+# ---------- СЖАТИЕ ----------
 STOP_WORDS = {'это','так','вот','ну','просто','очень','что','как','где','когда','для','без','по'}
 def extract_key_points(text, max_len=40):
     if not text or len(text) <= max_len:
@@ -260,6 +265,7 @@ async def save_memory(uid, history, backup=True, lock_held=False):
     async with get_user_lock(uid):
         return await _save_memory_impl(uid, history, backup)
 
+# ---------- ФИЛЬТРАЦИЯ ----------
 def extract_year_from_text(text):
     if not isinstance(text, str):
         return None
@@ -339,44 +345,52 @@ def set_cache(query, data):
         oldest = min(search_cache.keys(), key=lambda k: search_cache[k]['time'])
         del search_cache[oldest]
 
-# ---------- PLAYWRIGHT ----------
+# ---------- STEEL BROWSER (основной) + ПРЯМОЙ HTTP (резерв) ----------
 async def fetch_content(url: str) -> str:
+    """Загружает страницу через Steel Browser, при ошибке — прямой HTTP"""
     now_time = datetime.now()
     if url in html_cache and html_cache[url]["expires"] > now_time:
         logger.info(f"✅ Cache HIT для {url[:50]}...")
         return html_cache[url]["text"]
 
     result = ""
+    session = await get_http_session()
 
-    try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=['--disable-blink-features=AutomationControlled']
-            )
-            page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-            try:
-                await page.wait_for_selector("body", timeout=5000)
-            except:
-                pass
-            html = await page.content()
-            await browser.close()
+    # --- 1. Steel Browser ---
+    if STEEL_BROWSER_URL:
+        try:
+            # Создаём сессию в Steel
+            async with session.post(
+                f"{STEEL_BROWSER_URL}/v1/sessions",
+                json={"blockAds": True, "timeout": 30000},
+                timeout=15
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    ws_url = data.get("websocketUrl")
+                    if ws_url:
+                        # Подключаем Playwright к Steel через WebSocket
+                        from playwright.async_api import async_playwright
+                        async with async_playwright() as p:
+                            browser = await p.chromium.connect_over_cdp(ws_url)
+                            page = await browser.new_page()
+                            await page.goto(url, wait_until="networkidle", timeout=30000)
+                            html = await page.content()
+                            await browser.close()
 
-            text = re.sub(r'<[^>]+>', ' ', html)
-            text = re.sub(r'\s+', ' ', text).strip()
-            if len(text) > 500:
-                result = text[:MAX_HTML_LEN]
-                logger.info(f"✅ Playwright спарсил {url[:50]}, {len(result)} символов")
-            else:
-                logger.warning(f"⚠️ Playwright не дал контента для {url[:50]}")
-    except Exception as e:
-        logger.warning(f"Playwright ошибка для {url}: {e}")
+                            text = re.sub(r'<[^>]+>', ' ', html)
+                            text = re.sub(r'\s+', ' ', text).strip()
+                            if len(text) > 500:
+                                result = text[:MAX_HTML_LEN]
+                                logger.info(f"✅ Steel спарсил {url[:50]}, {len(result)} символов")
+                else:
+                    logger.warning(f"Steel ошибка: {resp.status}")
+        except Exception as e:
+            logger.warning(f"Steel ошибка для {url}: {e}")
 
+    # --- 2. Резерв: прямой HTTP ---
     if not result:
         logger.info(f"🔄 Пробуем прямой HTTP для {url[:50]}")
-        session = await get_http_session()
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/html,application/xhtml+xml",
@@ -536,84 +550,69 @@ async def _generate_response_internal(uid, user_message, history, profile, statu
     if len(user_message.split()) < 3:
         return "👋 Привет! Напишите конкретный вопрос, я поищу информацию в интернете.", False
 
-    status_msg = await send_status(update, "🔍 Ищу в интернете", start_time, status_msg)
+    internet_enabled = web_search_state.get(uid, False)
 
-    cached = get_cached(user_message)
-    if cached:
-        all_results = cached
-    else:
-        variants = await generate_search_query(user_message)
-        logger.info(f"🔍 Поисковый запрос: {variants[0]}")
-        all_results = await search_primary(variants[0])
-        logger.info(f"📊 Найдено результатов: {len(all_results)}")
-        if all_results:
-            set_cache(user_message, all_results)
+    if internet_enabled:
+        status_msg = await send_status(update, "🌐 Ищу в интернете", start_time, status_msg)
 
-    if not all_results:
-        return ("🔍 По вашему запросу в интернете ничего не найдено.\n"
-                "Попробуйте перефразировать запрос.", False)
+        cached = get_cached(user_message)
+        if cached:
+            all_results = cached
+        else:
+            variants = await generate_search_query(user_message)
+            logger.info(f"🔍 Поисковый запрос: {variants[0]}")
+            all_results = await search_primary(variants[0])
+            logger.info(f"📊 Найдено результатов: {len(all_results)}")
+            if all_results:
+                set_cache(user_message, all_results)
 
-    scored = assess_relevance(all_results, user_message)
-    if not scored:
-        all_links = [r['link'] for r in all_results[:40]]
-    else:
+        if not all_results:
+            return await generate_local_answer(uid, user_message, history, profile,
+                reason="Интернет не дал результатов")
+
+        scored = assess_relevance(all_results, user_message)
+        if not scored:
+            return await generate_local_answer(uid, user_message, history, profile,
+                reason="Интернет не дал релевантных результатов")
+
         all_links = [r['link'] for r in scored[:40]]
 
-    status_msg = await send_status(update, f"📥 Загружаю {len(all_links)} страниц", start_time, status_msg)
+        status_msg = await send_status(update, f"📥 Загружаю {len(all_links)} страниц", start_time, status_msg)
 
-    top_pages = await fetch_multiple_pages(all_links, max_pages=40, top_k=7)
+        top_pages = await fetch_multiple_pages(all_links, max_pages=40, top_k=7)
 
-    if top_pages:
-        full_texts = [f"--- ИСТОЧНИК: {p['url']} ---\n{p['text']}" for p in top_pages]
-        status_msg = await send_status(update, f"🧠 Анализирую {len(top_pages)} страниц через DeepSeek", start_time, status_msg)
-    else:
-        logger.info("⚠️ Не найдено страниц с контентом, используем сниппеты")
-        if scored:
+        if top_pages:
+            full_texts = [f"--- ИСТОЧНИК: {p['url']} ---\n{p['text']}" for p in top_pages]
+            status_msg = await send_status(update, f"🧠 Анализирую {len(top_pages)} страниц через DeepSeek", start_time, status_msg)
+        else:
+            logger.info("⚠️ Не найдено страниц с контентом, используем сниппеты")
             full_texts = [
                 f"--- ИСТОЧНИК (сниппет): {r['link']} ---\n"
                 f"Заголовок: {r.get('title','')}\n"
                 f"Описание: {r.get('snippet','')}"
                 for r in scored[:TOP_RESULTS_SHOW]
             ]
-        else:
-            full_texts = [
-                f"--- ИСТОЧНИК (сниппет): {r['link']} ---\n"
-                f"Заголовок: {r.get('title','')}\n"
-                f"Описание: {r.get('snippet','')}"
-                for r in all_results[:TOP_RESULTS_SHOW]
-            ]
-        status_msg = await send_status(update, "🧠 Анализирую сниппеты", start_time, status_msg)
+            status_msg = await send_status(update, "🧠 Анализирую сниппеты", start_time, status_msg)
+
+    else:
+        return await generate_local_answer(uid, user_message, history, profile,
+            reason="Поиск в интернете отключён пользователем")
 
     stext = "\n\n".join(full_texts) if full_texts else "Нет данных"
 
     sp = {
         "role": "system",
         "content": (
-            "Ты — честный ассистент. Дай структурированный, удобный для чтения ответ.\n"
-            "ПРАВИЛА ОФОРМЛЕНИЯ (строго соблюдай):\n"
-            "1. **НЕ ИСПОЛЬЗУЙ** длинные линии: ---, ***, ___ \n"
-            "2. **НЕ ИСПОЛЬЗУЙ** Markdown-таблицы с |---| — они съезжают в Telegram.\n"
-            "3. Для данных используй **списки с эмодзи** или **ASCII-таблицы**.\n"
-            "4. **Заголовки** выделяй жирным через **текст**\n"
-            "5. **Ссылки** оформляй как [текст](url)\n"
-            "6. **Эмодзи** используй для наглядности: 🌡, 💨, ☁️, 📊, 📅, 🌤, ⏰\n"
-            "7. **Числа** выделяй жирным: **+23°C**\n"
-            "8. **Краткий вывод** — 1–2 предложения в начале\n"
-            "9. Пример ровной таблицы:\n"
-            "```\n"
-            "+----------+-------------+\n"
-            "| Время    | Температура |\n"
-            "+----------+-------------+\n"
-            "| 17:00    | +23°C       |\n"
-            "| 20:00    | +20°C       |\n"
-            "+----------+-------------+\n"
-            "```\n"
-            "Или используй списки: ▸ 17:00 — +23°C\n"
+            "Ты — честный ассистент. Ты получил данные из интернета.\n"
+            "Используй ТОЛЬКО эти данные для ответа. Не придумывай факты.\n"
+            "Каждый факт должен сопровождаться ссылкой на источник.\n"
+            "Структурируй ответ: заголовки, списки, таблицы, эмодзи.\n"
+            "В конце укажи: 📅 Дата, Уверенность: XX%.\n\n"
             f"Запрос пользователя: {user_message}\n"
             f"Сегодня: {get_current_date()}\n"
             f"Контекст: {ctx}\n\n"
             f"ДАННЫЕ:\n{stext}\n\n"
-            "В конце укажи: 📅 Дата, Уверенность: XX%."
+            "В конце ответа укажи: 📅 Дата, Уверенность: XX%."
         )
     }
 
@@ -632,6 +631,34 @@ async def _generate_response_internal(uid, user_message, history, profile, statu
             final_ans += "\nУверенность: 90%"
 
     return f"🌐 из интернета\n\n{final_ans}", True
+
+async def generate_local_answer(uid, user_message, history, profile, reason):
+    ctx = build_profile_context(profile)
+
+    sp = {
+        "role": "system",
+        "content": (
+            "Ты — честный ассистент. Интернет-поиск отключён.\n"
+            f"Сегодня: {get_current_date()}\n"
+            f"Контекст: {ctx}\n\n"
+            f"⚠️ {reason}\n"
+            "Ты МОЖЕШЬ использовать свои внутренние знания, НО:\n"
+            "1. Начинай ответ с '🧠 На основе моих знаний'\n"
+            "2. Если не уверен — скажи 'Я не знаю'\n"
+            "3. Уверенность не выше 40%\n"
+            "4. НЕ придумывай факты"
+        )
+    }
+
+    messages = [sp] + history
+    ans, err = await ask_deepseek(messages, max_tokens=MAX_TOKENS_ANSWER)
+    if err or ans is None:
+        return f"⚠️ Ошибка генерации локального ответа. {reason}", False
+
+    if 'Уверенность:' not in ans:
+        ans += f"\n\n📅 Дата: {get_current_date()}\nУверенность: 30%"
+
+    return f"🧠 без интернета\n\n{ans}", False
 
 def generate_answer_from_snippets(results, user_message):
     if not results:
@@ -710,6 +737,7 @@ async def ask_deepseek(messages, retries=2, max_tokens=None, model=MODEL_DEFAULT
             await asyncio.sleep(1)
     return None, "max_retries"
 
+# ---------- БЕЗОПАСНАЯ ОТПРАВКА ----------
 async def safe_reply(update: Update, text: str, reply_markup=None):
     if not text or not isinstance(text, str):
         text = "⚠️ Пустой ответ."
@@ -747,6 +775,7 @@ async def safe_reply(update: Update, text: str, reply_markup=None):
 def is_allowed(uid):
     return not ALLOWED_USERS_LIST or uid in ALLOWED_USERS_LIST
 
+# ---------- КОМАНДЫ ----------
 async def start(update, context):
     uid = update.effective_user.id
     if not is_allowed(uid): return
@@ -838,6 +867,7 @@ async def restore_command(update, context):
     else:
         await safe_reply(update, "❌ Нет бэкапов.")
 
+# ---------- RATE LIMIT ----------
 RATE_LIMIT, RATE_WINDOW = 5, 10
 async def check_rate_limit(uid):
     async with rate_lock:
@@ -848,6 +878,7 @@ async def check_rate_limit(uid):
         request_count[uid].append(now_ts)
         return True
 
+# ---------- ОБРАБОТЧИК ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.effective_user or not update.effective_message or not update.effective_message.text:
@@ -859,6 +890,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_reply(update, "⏳ Не пишите так часто.")
             return
         user_message = update.effective_message.text[:1000]
+
+        if user_message.lower().startswith("/web"):
+            current = web_search_state.get(uid, False)
+            new_state = not current
+            web_search_state[uid] = new_state
+            status = "🌐 ВКЛЮЧЕН" if new_state else "🔒 ВЫКЛЮЧЕН"
+            await safe_reply(update, f"Поиск в интернете: {status}")
+            return
 
         if user_message.lower().startswith("запомни "):
             text = user_message[8:].strip()
@@ -925,6 +964,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"КРИТИЧЕСКАЯ ОШИБКА в handle_message: {type(e).__name__}: {e}", exc_info=True)
         await safe_reply(update, "⚠️ Произошла внутренняя ошибка. Пожалуйста, попробуйте позже.")
 
+# ---------- ФОНОВЫЕ ЗАДАЧИ ----------
 async def cleanup_caches():
     while True:
         try:
@@ -954,6 +994,7 @@ async def cleanup_caches():
 async def error_handler(update, context):
     logger.error(f"Ошибка: {context.error}")
 
+# ---------- ВОССТАНОВЛЕНИЕ ----------
 async def auto_restore_all_users():
     logger.info("🔄 Проверка данных при старте...")
     try:
@@ -1001,7 +1042,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (финальная версия)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (Steel Browser)")
     try:
         app.run_polling()
     finally:
