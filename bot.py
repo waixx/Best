@@ -1,10 +1,8 @@
 # ================================================================
 #  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ
-#  - Браузер сохраняется в /app/data/ms-playwright (Volume)
-#  - Память сохраняется в /app/data/
-#  - Playwright рендерит SPA-сайты
-#  - Живой таймер (обновление раз в 5 секунд)
-#  - Красивое оформление без HTML-тегов и линий
+#  - Браузер сохраняется в /app/ms-playwright (Volume)
+#  - Память сохраняется в /app/data (Volume)
+#  - Автоустановка через postInstall
 # ================================================================
 
 import logging
@@ -29,7 +27,7 @@ from telegram.ext import (
 from logging.handlers import RotatingFileHandler
 
 # ---------- ПЕРЕНАПРАВЛЕНИЕ БРАУЗЕРА В VOLUME ----------
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/data/ms-playwright"
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/ms-playwright"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -43,7 +41,6 @@ logger.addHandler(console)
 
 load_dotenv()
 
-# ---------- ПЕРЕМЕННЫЕ ----------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
@@ -57,7 +54,6 @@ TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 def now(): return datetime.now(TZ)
 def get_current_date(): return now().strftime("%d.%m.%Y")
 
-# ---------- ПАРАМЕТРЫ ----------
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
@@ -87,7 +83,6 @@ def memory_path(uid): return os.path.join(DATA_DIR, f"memory_{uid}.json")
 def profile_path(uid): return os.path.join(DATA_DIR, f"profile_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
 
-# ---------- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ----------
 _http_session = None
 _session_lock = asyncio.Lock()
 user_locks = weakref.WeakValueDictionary()
@@ -113,7 +108,6 @@ async def cleanup_http_session():
     if _http_session and not _http_session.closed:
         await _http_session.close()
 
-# ---------- ФАЙЛЫ ----------
 def atomic_write(filename, data, as_json=True):
     tmp = filename + ".tmp"
     try:
@@ -191,7 +185,6 @@ async def restore_backup(uid, data_type):
         except Exception:
             return False
 
-# ---------- СЖАТИЕ ----------
 STOP_WORDS = {'это','так','вот','ну','просто','очень','что','как','где','когда','для','без','по'}
 def extract_key_points(text, max_len=40):
     if not text or len(text) <= max_len:
@@ -267,7 +260,6 @@ async def save_memory(uid, history, backup=True, lock_held=False):
     async with get_user_lock(uid):
         return await _save_memory_impl(uid, history, backup)
 
-# ---------- ФИЛЬТРАЦИЯ ----------
 def extract_year_from_text(text):
     if not isinstance(text, str):
         return None
@@ -667,7 +659,6 @@ def generate_answer_from_snippets(results, user_message):
     answer += f"📅 Дата: {get_current_date()}\nУверенность: 85%"
     return answer
 
-# ---------- ВСПОМОГАТЕЛЬНЫЕ ----------
 async def generate_search_query(query):
     stop = {'найди','пожалуйста','помоги','мне','лучшие','скажи','расскажи','покажи','найти','бро','что','как','без','для','по','про'}
     words = [w for w in re.sub(r'[^\w\s]', '', query).split()
@@ -719,7 +710,6 @@ async def ask_deepseek(messages, retries=2, max_tokens=None, model=MODEL_DEFAULT
             await asyncio.sleep(1)
     return None, "max_retries"
 
-# ---------- БЕЗОПАСНАЯ ОТПРАВКА ----------
 async def safe_reply(update: Update, text: str, reply_markup=None):
     if not text or not isinstance(text, str):
         text = "⚠️ Пустой ответ."
@@ -757,7 +747,6 @@ async def safe_reply(update: Update, text: str, reply_markup=None):
 def is_allowed(uid):
     return not ALLOWED_USERS_LIST or uid in ALLOWED_USERS_LIST
 
-# ---------- КОМАНДЫ ----------
 async def start(update, context):
     uid = update.effective_user.id
     if not is_allowed(uid): return
@@ -849,7 +838,6 @@ async def restore_command(update, context):
     else:
         await safe_reply(update, "❌ Нет бэкапов.")
 
-# ---------- RATE LIMIT ----------
 RATE_LIMIT, RATE_WINDOW = 5, 10
 async def check_rate_limit(uid):
     async with rate_lock:
@@ -860,7 +848,6 @@ async def check_rate_limit(uid):
         request_count[uid].append(now_ts)
         return True
 
-# ---------- ОБРАБОТЧИК ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.effective_user or not update.effective_message or not update.effective_message.text:
@@ -938,7 +925,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"КРИТИЧЕСКАЯ ОШИБКА в handle_message: {type(e).__name__}: {e}", exc_info=True)
         await safe_reply(update, "⚠️ Произошла внутренняя ошибка. Пожалуйста, попробуйте позже.")
 
-# ---------- ФОНОВЫЕ ЗАДАЧИ ----------
 async def cleanup_caches():
     while True:
         try:
@@ -968,7 +954,6 @@ async def cleanup_caches():
 async def error_handler(update, context):
     logger.error(f"Ошибка: {context.error}")
 
-# ---------- ВОССТАНОВЛЕНИЕ ----------
 async def auto_restore_all_users():
     logger.info("🔄 Проверка данных при старте...")
     try:
