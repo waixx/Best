@@ -1,9 +1,10 @@
 # ================================================================
 #  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ
-#  - Живой таймер (обновление раз в 5 секунд)
+#  - Браузер сохраняется в /app/data/ms-playwright (Volume)
+#  - Память сохраняется в /app/data/
 #  - Playwright рендерит SPA-сайты
+#  - Живой таймер (обновление раз в 5 секунд)
 #  - Красивое оформление без HTML-тегов и линий
-#  - Вечная память, бэкапы, честность
 # ================================================================
 
 import logging
@@ -26,6 +27,9 @@ from telegram.ext import (
     ContextTypes, filters
 )
 from logging.handlers import RotatingFileHandler
+
+# ---------- ПЕРЕНАПРАВЛЕНИЕ БРАУЗЕРА В VOLUME ----------
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/data/ms-playwright"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -482,17 +486,14 @@ async def search_primary(query):
     logger.info("🔄 APISerpent пуст, пробуем Serper")
     return await search_serper_async(query)
 
-# ---------- СТАТУС С ПУЛЬСАЦИЕЙ ----------
+# ---------- СТАТУС ----------
 async def send_status(update: Update, text: str, start_time: float, status_msg=None):
-    """Отправляет или обновляет статус с пульсирующей иконкой"""
     elapsed = int(time.time() - start_time)
     dots = "." * ((elapsed // 3) % 4)
     full_text = f"{text}{dots} ⏱ {elapsed} сек"
-    
     if status_msg is None:
         return await update.effective_message.reply_text(full_text)
     else:
-        # Обновляем только если прошло больше 5 секунд
         if elapsed % 5 == 0 or elapsed < 5:
             try:
                 await status_msg.edit_text(full_text)
@@ -726,10 +727,9 @@ async def safe_reply(update: Update, text: str, reply_markup=None):
     if msg is None:
         return
 
-    # Убираем все технические штуки
-    text = re.sub(r'[\-\*\_\~]{3,}', '', text)        # длинные линии
-    text = re.sub(r'\n{3,}', '\n\n', text)            # более 2 пустых строк
-    text = re.sub(r'<\/?[a-zA-Z]+[^>]*>', '', text)   # HTML-теги
+    text = re.sub(r'[\-\*\_\~]{3,}', '', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'<\/?[a-zA-Z]+[^>]*>', '', text)
     text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
 
     def markdown_to_html(t):
@@ -901,7 +901,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_time = time.time()
         status_msg = await send_status(update, "⚡ Запускаю поиск", start_time, None)
 
-        # Запускаем фоновую задачу для пульсирующего статуса
         async def pulse_status():
             while True:
                 await asyncio.sleep(3)
