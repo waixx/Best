@@ -1,0 +1,15 @@
+{
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "restartPolicyType": "ALWAYS",
+    "startCommand": "python bot.py"
+  },
+  "postInstall": {
+    "cmds": [
+      "pip install playwright",
+      "PLAYWRIGHT_BROWSERS_PATH=/app/ms-playwright playwright install chromium"
+    ]
+  }
+}
