@@ -8,7 +8,8 @@
   },
   "postInstall": {
     "cmds": [
-      "pip install playwright"
+      "pip install playwright",
+      "PLAYWRIGHT_BROWSERS_PATH=/app/data/ms-playwright playwright install chromium"
     ]
   }
 }
