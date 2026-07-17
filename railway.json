@@ -8,8 +8,7 @@
   },
   "postInstall": {
     "cmds": [
-      "nix-env -iA nixpkgs.python311Packages.playwright",
-      "playwright install chromium"
+      "pip install playwright"
     ]
   }
 }
