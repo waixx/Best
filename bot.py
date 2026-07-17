@@ -358,11 +358,12 @@ async def fetch_content(url: str) -> str:
     if BROWSER_GATEWAY_URL:
         try:
             # Создаём сессию в Browser Gateway
-            async with session.post(
-                f"{BROWSER_GATEWAY_URL}/v1/sessions",
-                json={"timeout": 30000},
-                timeout=15
-            ) as resp:
+           async with session.post(
+    f"{BROWSER_GATEWAY_URL}/v1/sessions",
+    json={"timeout": 30000},
+    headers={"Authorization": f"Bearer {BG_TOKEN}"},
+    timeout=15
+) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     ws_url = data.get("websocketUrl")
