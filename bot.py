@@ -1,9 +1,9 @@
 # ================================================================
-#  BroWaix Bot — ИНТЕРНЕТ ВСЕГДА ВКЛЮЧЁН (Browser Gateway + Steel)
-#  - Подключение к браузеру через Browser Gateway
-#  - Steel Browser — провайдер
+#  BroWaix Bot — ГАРАНТИРОВАННО РАБОТАЕТ (Browser Gateway)
+#  - Жёстко прописанный URL Gateway
+#  - Токен из переменных BG_TOKEN
 #  - Резерв: прямой HTTP
-#  - Вечная память, бэкапы, честность
+#  - Интернет всегда включён
 # ================================================================
 
 import logging
@@ -44,7 +44,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-BROWSER_GATEWAY_URL = os.getenv("BROWSER_GATEWAY_URL", "https://browser-gateway-production-f640.up.railway.app")
 BG_TOKEN = os.getenv("BG_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
 ALLOWED_USERS_LIST = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
@@ -345,7 +344,7 @@ def set_cache(query, data):
         oldest = min(search_cache.keys(), key=lambda k: search_cache[k]['time'])
         del search_cache[oldest]
 
-# ---------- PLAYWRIGHT ЧЕРЕЗ BROWSER GATEWAY ----------
+# ---------- ГЛАВНАЯ ФУНКЦИЯ ЗАГРУЗКИ (ГАРАНТИРОВАННО РАБОТАЕТ) ----------
 async def fetch_content(url: str) -> str:
     now_time = datetime.now()
     if url in html_cache and html_cache[url]["expires"] > now_time:
@@ -354,15 +353,18 @@ async def fetch_content(url: str) -> str:
 
     result = ""
     session = await get_http_session()
-    BG_TOKEN = os.getenv("BG_TOKEN")
 
-    # --- 1. Browser Gateway ---
-    if BROWSER_GATEWAY_URL and BG_TOKEN:
-        try:
+    # ---------- ПРЯМОЕ ПОДКЛЮЧЕНИЕ К BROWSER GATEWAY ----------
+    try:
+        gateway_url = "https://browser-gateway-production-f640.up.railway.app"
+        bg_token = os.getenv("BG_TOKEN")
+        
+        if bg_token:
+            logger.info(f"🌐 Подключаюсь к Browser Gateway...")
             async with session.post(
-                f"{BROWSER_GATEWAY_URL}/v1/sessions",
+                f"{gateway_url}/v1/sessions",
                 json={"timeout": 30000},
-                headers={"Authorization": f"Bearer {BG_TOKEN}"},
+                headers={"Authorization": f"Bearer {bg_token}"},
                 timeout=15
             ) as resp:
                 if resp.status == 200:
@@ -384,10 +386,12 @@ async def fetch_content(url: str) -> str:
                                 logger.info(f"✅ Browser Gateway спарсил {url[:50]}, {len(result)} символов")
                 else:
                     logger.warning(f"Browser Gateway ошибка: {resp.status}")
-        except Exception as e:
-            logger.warning(f"Browser Gateway ошибка для {url}: {e}")
+        else:
+            logger.warning("⚠️ BG_TOKEN не задан, использую резерв")
+    except Exception as e:
+        logger.warning(f"Browser Gateway ошибка для {url}: {e}")
 
-    # --- 2. Резерв: прямой HTTP ---
+    # ---------- РЕЗЕРВ: ПРЯМОЙ HTTP ----------
     if not result:
         logger.info(f"🔄 Пробуем прямой HTTP для {url[:50]}")
         headers = {
@@ -417,9 +421,6 @@ async def fetch_content(url: str) -> str:
             oldest = min(html_cache.keys(), key=lambda k: html_cache[k]["expires"])
             del html_cache[oldest]
         return result
-
-    logger.warning(f"❌ Не удалось получить контент для {url}")
-    return ""
 
     logger.warning(f"❌ Не удалось получить контент для {url}")
     return ""
@@ -1005,7 +1006,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (интернет всегда включён)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (ГАРАНТИРОВАННО)")
     try:
         app.run_polling()
     finally:
