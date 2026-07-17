@@ -806,12 +806,21 @@ async def safe_reply(update: Update, text: str, reply_markup=None):
     msg = update.effective_message
     if msg is None:
         return
+
+    # Очистка от лишних символов
+    text = re.sub(r'[\-\*\_\~]{3,}', '', text)  # убираем длинные линии из ---, ***, ___
+    text = re.sub(r'\n{3,}', '\n\n', text)      # убираем более 2 пустых строк
+
     def markdown_to_html(t):
         t = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', t)
         t = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', t)
+        # Экранируем спецсимволы
+        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         return t.strip()
+
     if len(text) > 20 and not text.startswith(('/', '❌', '✅')):
         text = markdown_to_html(text)
+
     try:
         if len(text) > 4096:
             for i in range(0, len(text), 4096):
