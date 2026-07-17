@@ -1,10 +1,10 @@
 # ================================================================
-#  BroWaix Bot — ПОЛНАЯ ВЕРСИЯ ДЛЯ 2–5 ПОЛЬЗОВАТЕЛЕЙ
-#  - Все функции сохранены (кнопки, 3 режима, память, бэкапы, кэши)
-#  - Автовосстановление при старте
-#  - Парсинг: Playwright → HTTP (если Playwright нет — HTTP)
-#  - Жесткая маркировка источников и предположений
-#  - Для 2–5 пользователей (упрощены блокировки и очереди)
+#  BroWaix Bot — ИТОГОВАЯ ВЕРСИЯ (17.07.2026)
+#  - Актуальные модели DeepSeek V4 (flash/pro) [citation:1][citation:5]
+#  - Browserless через connect_over_cdp (без локальных браузеров) [citation:2][citation:6]
+#  - Единый aiohttp.ClientSession для всего (следуя лучшим практикам) [citation:4][citation:8]
+#  - Все функции сохранены: кнопки, 3 режима, память, бэкапы
+#  - Telegram без HTML-парсинга (только plain text) [citation:7][citation:11]
 # ================================================================
 
 import logging
@@ -14,9 +14,6 @@ import sys
 import re
 import asyncio
 import aiohttp
-import shutil
-import hashlib
-import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -45,6 +42,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS:
@@ -61,16 +59,18 @@ def get_current_date():
     return now().strftime("%d.%m.%Y")
 
 
-MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-chat")
-MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-chat")
+# АКТУАЛЬНЫЕ МОДЕЛИ DeepSeek (по состоянию на 17.07.2026) [citation:1][citation:5]
+# - deepseek-v4-flash: основная, 1M контекст, $0.14/1M input, $0.28/1M output
+# - deepseek-v4-pro: более мощная, $0.435/1M input, $0.87/1M output
+# - legacy aliases deepseek-chat/deepseek-reasoner устаревают 24.07.2026
+MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
+MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 SEARCH_RESULTS_NUM = 30
-TOP_RESULTS_SHOW = 7
 MAX_TOKENS_ANSWER = 1500
 MAX_HTML_LEN = 5000
-CACHE_TTL = 172800  # 48 часов
+CACHE_TTL = 172800
 
-# Режимы
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
 MODE_INTERNET = "internet_only"
@@ -187,14 +187,12 @@ async def restore_backup(uid, data_type):
         return False
 
 
-# ==================== АВТОВОССТАНОВЛЕНИЕ ПРИ СТАРТЕ ====================
+# ==================== АВТОВОССТАНОВЛЕНИЕ ====================
 async def auto_restore_all_users():
-    """Автоматически восстанавливает всех пользователей, у которых есть бэкапы, если данные повреждены"""
     logger.info("🔄 Проверка данных при старте...")
     try:
         if not os.path.exists(BACKUP_DIR):
             return
-
         user_ids = set()
         for fname in os.listdir(BACKUP_DIR):
             parts = fname.split('_')
@@ -203,27 +201,24 @@ async def auto_restore_all_users():
                     user_ids.add(int(parts[1]))
                 except ValueError:
                     continue
-
         for uid in user_ids:
             mem_data = atomic_read(memory_path(uid), default=None)
             prof_data = atomic_read(profile_path(uid), default=None)
-
             need_restore = False
             if mem_data is None or (isinstance(mem_data, list) and len(mem_data) == 0):
                 need_restore = True
             if prof_data is None or (isinstance(prof_data, dict) and len(prof_data) == 0):
                 need_restore = True
-
             if need_restore:
                 pr = await restore_backup(uid, "profile")
                 mr = await restore_backup(uid, "memory")
                 if pr or mr:
-                    logger.info(f"✅ Пользователь {uid} автоматически восстановлен из бэкапа")
+                    logger.info(f"✅ Пользователь {uid} автоматически восстановлен")
     except Exception as ex:
         logger.error(f"Ошибка auto_restore: {ex}")
 
 
-# ==================== ПАМЯТЬ (СЖАТИЕ) ====================
+# ==================== ПАМЯТЬ ====================
 STOP_WORDS = {'это', 'так', 'вот', 'ну', 'просто', 'очень', 'что', 'как', 'где', 'когда', 'для', 'без', 'по'}
 
 
@@ -295,18 +290,32 @@ async def save_memory(uid, history, backup=True):
     return True
 
 
-# ==================== HTTP СЕССИЯ ====================
+# ==================== ЕДИНЫЙ HTTP СЕССИЯ (адаптация из актуальных практик) [citation:4][citation:8] ====================
 _http_session = None
+_session_lock = asyncio.Lock()
 
 
 async def get_http_session():
+    """Единая сессия aiohttp для всего: REST, WebSocket, стриминг [citation:4]"""
     global _http_session
-    if _http_session is None:
-        _http_session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=10, limit_per_host=5),
-            timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30)
-        )
-    return _http_session
+    async with _session_lock:
+        if _http_session is None:
+            connector = aiohttp.TCPConnector(
+                limit=10,
+                limit_per_host=5,
+                ttl_dns_cache=300
+            )
+            timeout = aiohttp.ClientTimeout(
+                total=60,
+                connect=15,
+                sock_read=30
+            )
+            _http_session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout
+            )
+            logger.info("✅ Единый aiohttp.ClientSession создан")
+        return _http_session
 
 
 async def cleanup_http_session():
@@ -316,14 +325,15 @@ async def cleanup_http_session():
         _http_session = None
 
 
-# ==================== ПАРСИНГ ====================
+# ==================== BROWSERLESS (connect_over_cdp) [citation:2][citation:6] ====================
 PLAYWRIGHT_AVAILABLE = False
-try:
-    from playwright.async_api import async_playwright
-    PLAYWRIGHT_AVAILABLE = True
-    logger.info("✅ Playwright доступен")
-except ImportError:
-    logger.warning("⚠️ Playwright не установлен, только HTTP")
+if BROWSERLESS_WS_ENDPOINT:
+    try:
+        from playwright.async_api import async_playwright
+        PLAYWRIGHT_AVAILABLE = True
+        logger.info(f"✅ Playwright подключен к Browserless: {BROWSERLESS_WS_ENDPOINT}")
+    except ImportError:
+        logger.warning("⚠️ Playwright не установлен, только HTTP")
 
 html_cache = {}
 search_cache = {}
@@ -371,27 +381,35 @@ def set_cached_answer(query, data):
 
 
 async def fetch_content(url: str) -> str:
+    """Загрузка через Browserless (Playwright connect_over_cdp) или HTTP [citation:2][citation:6]"""
     if url in html_cache:
         return html_cache[url]
 
     result = ""
 
-    if PLAYWRIGHT_AVAILABLE:
+    # Пытаемся через Browserless
+    if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
+                # connect_over_cdp вместо launch [citation:2][citation:6]
+                browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
+                # Используем существующий контекст или создаём новый [citation:2]
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = await context.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=20000)
                 html = await page.content()
+                await page.close()
                 await browser.close()
+
                 text = re.sub(r'<[^>]+>', ' ', html)
                 text = re.sub(r'\s+', ' ', text).strip()
                 if len(text) > 500:
                     result = text[:MAX_HTML_LEN]
-                    logger.info(f"✅ Playwright: {url[:50]}")
+                    logger.info(f"✅ Browserless: {url[:50]}")
         except Exception as e:
-            logger.warning(f"Playwright ошибка: {e}")
+            logger.warning(f"Browserless ошибка: {e}")
 
+    # HTTP-резерв через единую сессию
     if not result:
         session = await get_http_session()
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -422,14 +440,21 @@ async def fetch_multiple_pages(links, max_pages=30, top_k=7):
     if not links:
         return []
     results = []
-    for url in links[:max_pages]:
-        content = await fetch_content(url)
-        if content and len(content) > 100:
-            results.append({"url": url, "text": content})
-            if len(results) >= top_k:
-                break
-        await asyncio.sleep(0.2)
-    return results
+    # Ограничиваем параллелизм [citation:8][citation:12]
+    semaphore = asyncio.Semaphore(5)
+
+    async def fetch_one(url):
+        async with semaphore:
+            content = await fetch_content(url)
+            if content and len(content) > 100:
+                return {"url": url, "text": content}
+            return None
+
+    tasks = [fetch_one(url) for url in links[:max_pages]]
+    fetched = await asyncio.gather(*tasks)
+    valid = [r for r in fetched if r is not None]
+    valid.sort(key=lambda x: len(x["text"]), reverse=True)
+    return valid[:top_k]
 
 
 # ==================== ПОИСК ====================
@@ -564,7 +589,7 @@ def assess_relevance(results, query):
     return relevant
 
 
-# ==================== МАРКИРОВКА ИСТОЧНИКА ====================
+# ==================== МАРКИРОВКА ====================
 def mark_source(mode: str, text: str, is_cached: bool = False, is_speculation: bool = False) -> str:
     markers = {
         "model_only": "🧠 [ЗНАНИЯ МОДЕЛИ]",
@@ -584,18 +609,22 @@ def mark_source(mode: str, text: str, is_cached: bool = False, is_speculation: b
     return f"{marker}\n\n{text}"
 
 
-# ==================== DEEPSEEK API ====================
-async def ask_deepseek(messages, temperature=0.0):
+# ==================== DEEPSEEK API (актуальные параметры) [citation:1][citation:5] ====================
+async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER):
+    """
+    DeepSeek API — актуальные параметры на 17.07.2026:
+    - temperature: 0-2, по умолчанию 1 [citation:5]
+    - frequency_penalty и presence_penalty больше не поддерживаются [citation:5]
+    - Модели: deepseek-v4-flash (дефолт), deepseek-v4-pro [citation:1][citation:5]
+    """
     session = await get_http_session()
     try:
         payload = {
             "model": MODEL_DEFAULT,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": MAX_TOKENS_ANSWER,
-            "top_p": 0.95,
-            "frequency_penalty": 0.3,
-            "presence_penalty": 0.1
+            "max_tokens": max_tokens,
+            "top_p": 0.95
         }
         async with session.post(
             f"{DEEPSEEK_API_BASE}/chat/completions",
@@ -607,12 +636,15 @@ async def ask_deepseek(messages, temperature=0.0):
                 data = await resp.json()
                 if data.get("choices"):
                     return data["choices"][0]["message"]["content"], None
+            if resp.status == 429:
+                await asyncio.sleep(2)
+                return await ask_deepseek(messages, temperature, max_tokens)
             return None, f"HTTP {resp.status}"
     except Exception as e:
         return None, str(e)
 
 
-# ==================== ПОИСКОВЫЙ ЗАПРОС ====================
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 async def generate_search_query(query):
     stop = {'найди', 'пожалуйста', 'помоги', 'мне', 'лучшие', 'скажи', 'расскажи', 'покажи', 'найти'}
     words = [w for w in re.sub(r'[^\w\s]', '', query).split()
@@ -648,6 +680,7 @@ async def generate_model_only(uid, user_message, history, profile):
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}]
+    # Для детерминированности используем temperature=0.0 [citation:1][citation:5]
     answer, err = await ask_deepseek(messages, temperature=0.0)
 
     if err or not answer:
@@ -759,7 +792,7 @@ async def generate_internet_only(uid, user_message, history, profile):
             ans += f"{i}. {r.get('title', 'Без названия')}\n"
             ans += f"   {r.get('snippet', 'Нет описания')[:150]}\n"
             if r.get('link') and r['link'] != '#':
-                ans += f"   🔗 {r['link']}\n"
+                ans += f"   Ссылка: {r['link']}\n"
             ans += "\n"
         ans += f"📅 {get_current_date()}"
         return mark_source("internet_only", ans, is_cached=False, is_speculation=False)
@@ -815,8 +848,8 @@ async def profile_command(update, context):
     if not p:
         await safe_reply(update, "📭 Я пока ничего не знаю о тебе.")
         return
-    lines = ["🧠 **Память:**", f"• 📝 сообщений: {len(load_memory_raw(uid))}"]
-    lines.append("\n👤 **Личное:**")
+    lines = ["🧠 Память:", f"• сообщений: {len(load_memory_raw(uid))}"]
+    lines.append("\n👤 Личное:")
     exclude = {'updated', 'level_2'}
     personal = {k: v for k, v in p.items() if k not in exclude}
     if personal:
@@ -833,7 +866,7 @@ async def memory_command(update, context):
     if ALLOWED_USERS and uid not in ALLOWED_USERS:
         return
     if not context.args:
-        await safe_reply(update, "🔍 Поиск: `/memory что искать`")
+        await safe_reply(update, "🔍 Поиск: /memory что искать")
         return
     query = ' '.join(context.args)
     q = query.lower()
@@ -858,7 +891,7 @@ async def stats_command(update, context):
         return
     p = load_profile(uid)
     raw = load_memory_raw(uid)
-    lines = ["📊 **Статистика:**"]
+    lines = ["📊 Статистика:"]
     lines.append(f"• Обработано сообщений: {load_counter(uid)}")
     lines.append(f"• В истории: {len(raw)}")
     lines.append(f"• Сжатых пунктов: {len(p.get('level_2', []))}")
@@ -909,7 +942,7 @@ async def handle_remember(update, context):
             await safe_reply(update, "❌ Не удалось сохранить факт.")
 
 
-# ==================== БЕЗОПАСНАЯ ОТПРАВКА ====================
+# ==================== БЕЗОПАСНАЯ ОТПРАВКА (БЕЗ HTML) [citation:7][citation:11] ====================
 async def safe_reply(update: Update, text: str, reply_markup=None):
     if not text or not isinstance(text, str):
         text = "⚠️ Пустой ответ."
@@ -917,33 +950,21 @@ async def safe_reply(update: Update, text: str, reply_markup=None):
     if msg is None:
         return
 
-
-    def markdown_to_html(t):
-        t = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', t)
-        t = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', t)
-        return t.strip()
-
-
-    if len(text) > 20 and not text.startswith(('/', '❌', '✅')):
-        text = markdown_to_html(text)
-
     try:
         if len(text) > 4096:
             for i in range(0, len(text), 4096):
-                await msg.reply_text(text[i:i + 4096], parse_mode='HTML', disable_web_page_preview=True,
-                                     reply_markup=reply_markup)
+                await msg.reply_text(text[i:i + 4096], disable_web_page_preview=True, reply_markup=reply_markup)
         else:
-            await msg.reply_text(text, parse_mode='HTML', disable_web_page_preview=True, reply_markup=reply_markup)
+            await msg.reply_text(text, disable_web_page_preview=True, reply_markup=reply_markup)
     except Exception as ex:
         logger.error(f"Ошибка safe_reply: {ex}")
-        clean = re.sub(r'<[^>]+>', '', text)
         try:
-            await msg.reply_text(clean[:4096], reply_markup=reply_markup)
+            await msg.reply_text(text[:4096], reply_markup=reply_markup)
         except Exception:
             pass
 
 
-# ==================== ОБРАБОТЧИКИ ====================
+# ==================== ОБРАБОТЧИКИ [citation:3][citation:7][citation:11] ====================
 async def handle_message(update, context):
     try:
         uid = update.effective_user.id
@@ -976,7 +997,7 @@ async def handle_message(update, context):
 
 async def handle_mode_selection(update, context):
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # Обязательно [citation:7][citation:11]
 
     try:
         uid = context.user_data.get('uid')
@@ -1011,16 +1032,16 @@ async def handle_mode_selection(update, context):
 
         if len(answer) > 4096:
             for i in range(0, len(answer), 4096):
-                await query.message.reply_text(answer[i:i + 4096], parse_mode='HTML', disable_web_page_preview=True)
+                await query.message.reply_text(answer[i:i + 4096], disable_web_page_preview=True)
         else:
-            await query.message.reply_text(answer, parse_mode='HTML', disable_web_page_preview=True)
+            await query.message.reply_text(answer, disable_web_page_preview=True)
 
     except Exception as e:
         logger.error(f"Ошибка handle_mode_selection: {e}")
         await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
 
 
-# ==================== ФОНОВАЯ ОЧИСТКА КЭШЕЙ ====================
+# ==================== ФОНОВАЯ ОЧИСТКА ====================
 async def cleanup_caches_periodic():
     while True:
         await asyncio.sleep(3600)
@@ -1037,7 +1058,6 @@ async def cleanup_caches_periodic():
                 keys = list(answer_cache.keys())[:20]
                 for k in keys:
                     del answer_cache[k]
-            logger.debug("🧹 Кэши очищены")
         except Exception as e:
             logger.error(f"Ошибка очистки кэша: {e}")
 
@@ -1067,7 +1087,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (все функции сохранены, авто-восстановление активно)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (актуальная версия 17.07.2026, Browserless + HTTP-резерв)")
     app.run_polling()
 
 
