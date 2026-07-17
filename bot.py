@@ -44,7 +44,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-BROWSER_GATEWAY_URL = os.getenv("BROWSER_GATEWAY_URL")
+BROWSER_GATEWAY_URL = os.getenv("BROWSER_GATEWAY_URL", "https://browser-gateway-production-f640.up.railway.app")
+BG_TOKEN = os.getenv("BG_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
 ALLOWED_USERS_LIST = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS_LIST:
