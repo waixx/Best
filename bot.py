@@ -1,8 +1,11 @@
 # ================================================================
-#  BroWaix Bot — ЧИСТАЯ ВЕРСИЯ ДЛЯ НОВОГО ПРОЕКТА
-#  - Без Dockerfile, только Nixpacks
-#  - Playwright устанавливается через nixpacks.toml
+#  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ
+#  - Живой таймер (обновление раз в 5 секунд)
+#  - Playwright рендерит SPA-сайты
+#  - Красивое оформление без HTML-тегов и линий
+#  - Вечная память, бэкапы, честность
 # ================================================================
+
 import logging
 import os
 import json
@@ -24,17 +27,6 @@ from telegram.ext import (
 )
 from logging.handlers import RotatingFileHandler
 
-load_dotenv()
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
-ALLOWED_USERS_LIST = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
-if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS_LIST:
-    ALLOWED_USERS_LIST.append(ADMIN_USER_ID)
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=3)
@@ -45,10 +37,23 @@ console = logging.StreamHandler()
 console.setFormatter(formatter)
 logger.addHandler(console)
 
+load_dotenv()
+
+# ---------- ПЕРЕМЕННЫЕ ----------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
+ALLOWED_USERS_LIST = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
+if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS_LIST:
+    ALLOWED_USERS_LIST.append(ADMIN_USER_ID)
+
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 def now(): return datetime.now(TZ)
 def get_current_date(): return now().strftime("%d.%m.%Y")
 
+# ---------- ПАРАМЕТРЫ ----------
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
@@ -477,6 +482,24 @@ async def search_primary(query):
     logger.info("🔄 APISerpent пуст, пробуем Serper")
     return await search_serper_async(query)
 
+# ---------- СТАТУС С ПУЛЬСАЦИЕЙ ----------
+async def send_status(update: Update, text: str, start_time: float, status_msg=None):
+    """Отправляет или обновляет статус с пульсирующей иконкой"""
+    elapsed = int(time.time() - start_time)
+    dots = "." * ((elapsed // 3) % 4)
+    full_text = f"{text}{dots} ⏱ {elapsed} сек"
+    
+    if status_msg is None:
+        return await update.effective_message.reply_text(full_text)
+    else:
+        # Обновляем только если прошло больше 5 секунд
+        if elapsed % 5 == 0 or elapsed < 5:
+            try:
+                await status_msg.edit_text(full_text)
+            except Exception:
+                pass
+        return status_msg
+
 # ---------- ГЕНЕРАЦИЯ ОТВЕТА ----------
 async def fetch_multiple_pages(links, max_pages=40, top_k=7) -> list:
     if not links:
@@ -505,18 +528,6 @@ async def fetch_multiple_pages(links, max_pages=40, top_k=7) -> list:
     logger.info(f"📊 Загружено {len(links)} ссылок, отобрано {len(top)} с контентом")
     return top
 
-async def send_status(update: Update, text: str, start_time: float, status_msg=None):
-    elapsed = int(time.time() - start_time)
-    full_text = f"{text} ⏱ {elapsed} сек"
-    if status_msg is None:
-        return await update.effective_message.reply_text(full_text)
-    else:
-        try:
-            await status_msg.edit_text(full_text)
-        except Exception:
-            pass
-        return status_msg
-
 async def generate_response(uid, user_message, history, profile, status_msg, update, start_time):
     try:
         return await asyncio.wait_for(
@@ -532,7 +543,7 @@ async def _generate_response_internal(uid, user_message, history, profile, statu
     if len(user_message.split()) < 3:
         return "👋 Привет! Напишите конкретный вопрос, я поищу информацию в интернете.", False
 
-    status_msg = await send_status(update, "🔍 Ищу в интернете...", start_time, status_msg)
+    status_msg = await send_status(update, "🔍 Ищу в интернете", start_time, status_msg)
 
     cached = get_cached(user_message)
     if cached:
@@ -555,13 +566,13 @@ async def _generate_response_internal(uid, user_message, history, profile, statu
     else:
         all_links = [r['link'] for r in scored[:40]]
 
-    status_msg = await send_status(update, f"📥 Загружаю {len(all_links)} страниц...", start_time, status_msg)
+    status_msg = await send_status(update, f"📥 Загружаю {len(all_links)} страниц", start_time, status_msg)
 
     top_pages = await fetch_multiple_pages(all_links, max_pages=40, top_k=7)
 
     if top_pages:
         full_texts = [f"--- ИСТОЧНИК: {p['url']} ---\n{p['text']}" for p in top_pages]
-        status_msg = await send_status(update, f"🧠 Анализирую {len(top_pages)} страниц через DeepSeek...", start_time, status_msg)
+        status_msg = await send_status(update, f"🧠 Анализирую {len(top_pages)} страниц через DeepSeek", start_time, status_msg)
     else:
         logger.info("⚠️ Не найдено страниц с контентом, используем сниппеты")
         if scored:
@@ -578,23 +589,33 @@ async def _generate_response_internal(uid, user_message, history, profile, statu
                 f"Описание: {r.get('snippet','')}"
                 for r in all_results[:TOP_RESULTS_SHOW]
             ]
-        status_msg = await send_status(update, "🧠 Анализирую сниппеты...", start_time, status_msg)
+        status_msg = await send_status(update, "🧠 Анализирую сниппеты", start_time, status_msg)
 
     stext = "\n\n".join(full_texts) if full_texts else "Нет данных"
 
     sp = {
         "role": "system",
         "content": (
-            "Ты — честный ассистент. Ты получил содержимое веб-страниц (HTML или сниппеты).\n"
-            "Твоя задача — извлечь из этих данных ТОЛЬКО фактологическую информацию.\n"
-            "Правила:\n"
-            "1. Если HTML — игнорируй теги, скрипты, стили, рекламу.\n"
-            "2. Если сниппет — используй как есть.\n"
-            "3. Сосредоточься на фактах, цифрах, моделях, ценах, характеристиках.\n"
-            "4. Если нет прямого ответа — напиши: 'В предоставленных данных не обнаружено прямого ответа. Вот что удалось найти:'\n"
-            "5. Структурируй ответ: краткий вывод, затем блоки с заголовками, списки, таблицы, эмодзи.\n"
-            "6. Каждый факт сопровождай ссылкой на источник.\n"
-            "7. НЕ придумывай, НЕ додумывай — только то, что есть в данных.\n"
+            "Ты — честный ассистент. Дай структурированный, удобный для чтения ответ.\n"
+            "ПРАВИЛА ОФОРМЛЕНИЯ (строго соблюдай):\n"
+            "1. **НЕ ИСПОЛЬЗУЙ** длинные линии: ---, ***, ___ \n"
+            "2. **НЕ ИСПОЛЬЗУЙ** Markdown-таблицы с |---| — они съезжают в Telegram.\n"
+            "3. Для данных используй **списки с эмодзи** или **ASCII-таблицы**.\n"
+            "4. **Заголовки** выделяй жирным через **текст**\n"
+            "5. **Ссылки** оформляй как [текст](url)\n"
+            "6. **Эмодзи** используй для наглядности: 🌡, 💨, ☁️, 📊, 📅, 🌤, ⏰\n"
+            "7. **Числа** выделяй жирным: **+23°C**\n"
+            "8. **Краткий вывод** — 1–2 предложения в начале\n"
+            "9. Пример ровной таблицы:\n"
+            "```\n"
+            "+----------+-------------+\n"
+            "| Время    | Температура |\n"
+            "+----------+-------------+\n"
+            "| 17:00    | +23°C       |\n"
+            "| 20:00    | +20°C       |\n"
+            "+----------+-------------+\n"
+            "```\n"
+            "Или используй списки: ▸ 17:00 — +23°C\n"
             f"Запрос пользователя: {user_message}\n"
             f"Сегодня: {get_current_date()}\n"
             f"Контекст: {ctx}\n\n"
@@ -697,6 +718,45 @@ async def ask_deepseek(messages, retries=2, max_tokens=None, model=MODEL_DEFAULT
             await asyncio.sleep(1)
     return None, "max_retries"
 
+# ---------- БЕЗОПАСНАЯ ОТПРАВКА ----------
+async def safe_reply(update: Update, text: str, reply_markup=None):
+    if not text or not isinstance(text, str):
+        text = "⚠️ Пустой ответ."
+    msg = update.effective_message
+    if msg is None:
+        return
+
+    # Убираем все технические штуки
+    text = re.sub(r'[\-\*\_\~]{3,}', '', text)        # длинные линии
+    text = re.sub(r'\n{3,}', '\n\n', text)            # более 2 пустых строк
+    text = re.sub(r'<\/?[a-zA-Z]+[^>]*>', '', text)   # HTML-теги
+    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+
+    def markdown_to_html(t):
+        t = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', t)
+        t = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', t)
+        return t.strip()
+
+    if len(text) > 20 and not text.startswith(('/', '❌', '✅')):
+        text = markdown_to_html(text)
+
+    try:
+        if len(text) > 4096:
+            for i in range(0, len(text), 4096):
+                await msg.reply_text(text[i:i+4096], parse_mode='HTML', disable_web_page_preview=True, reply_markup=reply_markup)
+        else:
+            await msg.reply_text(text, parse_mode='HTML', disable_web_page_preview=True, reply_markup=reply_markup)
+    except Exception as ex:
+        logger.error(f"Ошибка safe_reply: {ex}")
+        clean = re.sub(r'<[^>]+>', '', text)
+        try:
+            await msg.reply_text(clean[:4096], reply_markup=reply_markup)
+        except:
+            pass
+
+def is_allowed(uid):
+    return not ALLOWED_USERS_LIST or uid in ALLOWED_USERS_LIST
+
 # ---------- КОМАНДЫ ----------
 async def start(update, context):
     uid = update.effective_user.id
@@ -789,6 +849,7 @@ async def restore_command(update, context):
     else:
         await safe_reply(update, "❌ Нет бэкапов.")
 
+# ---------- RATE LIMIT ----------
 RATE_LIMIT, RATE_WINDOW = 5, 10
 async def check_rate_limit(uid):
     async with rate_lock:
@@ -798,45 +859,6 @@ async def check_rate_limit(uid):
             return False
         request_count[uid].append(now_ts)
         return True
-
-# ---------- БЕЗОПАСНАЯ ОТПРАВКА ----------
-async def safe_reply(update: Update, text: str, reply_markup=None):
-    if not text or not isinstance(text, str):
-        text = "⚠️ Пустой ответ."
-    msg = update.effective_message
-    if msg is None:
-        return
-
-    # Очистка от лишних символов
-    text = re.sub(r'[\-\*\_\~]{3,}', '', text)  # убираем длинные линии из ---, ***, ___
-    text = re.sub(r'\n{3,}', '\n\n', text)      # убираем более 2 пустых строк
-
-    def markdown_to_html(t):
-        t = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', t)
-        t = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', t)
-        # Экранируем спецсимволы
-        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        return t.strip()
-
-    if len(text) > 20 and not text.startswith(('/', '❌', '✅')):
-        text = markdown_to_html(text)
-
-    try:
-        if len(text) > 4096:
-            for i in range(0, len(text), 4096):
-                await msg.reply_text(text[i:i+4096], parse_mode='HTML', disable_web_page_preview=True, reply_markup=reply_markup)
-        else:
-            await msg.reply_text(text, parse_mode='HTML', disable_web_page_preview=True, reply_markup=reply_markup)
-    except Exception as ex:
-        logger.error(f"Ошибка safe_reply: {ex}")
-        clean = re.sub(r'<[^>]+>', '', text)
-        try:
-            await msg.reply_text(clean[:4096], reply_markup=reply_markup)
-        except:
-            pass
-
-def is_allowed(uid):
-    return not ALLOWED_USERS_LIST or uid in ALLOWED_USERS_LIST
 
 # ---------- ОБРАБОТЧИК ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -877,9 +899,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history.append(user_msg_obj)
 
         start_time = time.time()
-        status_msg = await send_status(update, "🔍 Запускаю поиск...", start_time, None)
+        status_msg = await send_status(update, "⚡ Запускаю поиск", start_time, None)
+
+        # Запускаем фоновую задачу для пульсирующего статуса
+        async def pulse_status():
+            while True:
+                await asyncio.sleep(3)
+                if status_msg is not None:
+                    elapsed = int(time.time() - start_time)
+                    dots = "." * ((elapsed // 3) % 4)
+                    try:
+                        await status_msg.edit_text(f"⚡ Работаю{dots} ⏱ {elapsed} сек")
+                    except Exception:
+                        break
+
+        pulse_task = asyncio.create_task(pulse_status())
 
         answer, should_save = await generate_response(uid, user_message, history, profile, status_msg, update, start_time)
+
+        pulse_task.cancel()
+        try:
+            await pulse_task
+        except asyncio.CancelledError:
+            pass
 
         try:
             await status_msg.delete()
@@ -897,6 +939,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"КРИТИЧЕСКАЯ ОШИБКА в handle_message: {type(e).__name__}: {e}", exc_info=True)
         await safe_reply(update, "⚠️ Произошла внутренняя ошибка. Пожалуйста, попробуйте позже.")
 
+# ---------- ФОНОВЫЕ ЗАДАЧИ ----------
 async def cleanup_caches():
     while True:
         try:
@@ -926,6 +969,7 @@ async def cleanup_caches():
 async def error_handler(update, context):
     logger.error(f"Ошибка: {context.error}")
 
+# ---------- ВОССТАНОВЛЕНИЕ ----------
 async def auto_restore_all_users():
     logger.info("🔄 Проверка данных при старте...")
     try:
@@ -973,7 +1017,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    logger.info("🚀 БОТ ЗАПУЩЕН")
+    logger.info("🚀 БОТ ЗАПУЩЕН (финальная версия)")
     try:
         app.run_polling()
     finally:
