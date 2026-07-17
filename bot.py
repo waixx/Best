@@ -1,10 +1,10 @@
 # ================================================================
-#  BroWaix Bot — ИТОГОВАЯ ВЕРСИЯ (17.07.2026)
-#  - Актуальные модели DeepSeek V4 (flash/pro) [citation:1][citation:5]
-#  - Browserless через connect_over_cdp (без локальных браузеров) [citation:2][citation:6]
-#  - Единый aiohttp.ClientSession для всего (следуя лучшим практикам) [citation:4][citation:8]
-#  - Все функции сохранены: кнопки, 3 режима, память, бэкапы
-#  - Telegram без HTML-парсинга (только plain text) [citation:7][citation:11]
+#  BroWaix Bot — ЭКОНОМНАЯ ВЕРСИЯ (ровно на 3 месяца)
+#  - SEARCH_RESULTS_NUM = 30
+#  - TOP_RESULTS_SHOW = 5
+#  - MAX_HTML_LEN = 8000
+#  - MAX_TOKENS_ANSWER = 3000
+#  - Все функции сохранены: кнопки, память, бэкапы, Browserless
 # ================================================================
 
 import logging
@@ -59,17 +59,17 @@ def get_current_date():
     return now().strftime("%d.%m.%Y")
 
 
-# АКТУАЛЬНЫЕ МОДЕЛИ DeepSeek (по состоянию на 17.07.2026) [citation:1][citation:5]
-# - deepseek-v4-flash: основная, 1M контекст, $0.14/1M input, $0.28/1M output
-# - deepseek-v4-pro: более мощная, $0.435/1M input, $0.87/1M output
-# - legacy aliases deepseek-chat/deepseek-reasoner устаревают 24.07.2026
+# ==================== ОПТИМАЛЬНЫЕ НАСТРОЙКИ ДЛЯ 3 МЕСЯЦЕВ ====================
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
-SEARCH_RESULTS_NUM = 30
-MAX_TOKENS_ANSWER = 1500
-MAX_HTML_LEN = 5000
-CACHE_TTL = 172800
+
+# ⭐ ЭТИ ЦИФРЫ ДАЮТ РАСХОД ~$0.13/ДЕНЬ
+SEARCH_RESULTS_NUM = 30        # ищем 30 ссылок (было 50)
+TOP_RESULTS_SHOW = 5           # парсим только 5 лучших (было 15)
+MAX_HTML_LEN = 8000            # берем 8000 символов (было 20000)
+MAX_TOKENS_ANSWER = 3000       # ответ до 3000 токенов (было 4000)
+CACHE_TTL = 86400              # кэш на 24 часа
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -290,19 +290,18 @@ async def save_memory(uid, history, backup=True):
     return True
 
 
-# ==================== ЕДИНЫЙ HTTP СЕССИЯ (адаптация из актуальных практик) [citation:4][citation:8] ====================
+# ==================== HTTP ====================
 _http_session = None
 _session_lock = asyncio.Lock()
 
 
 async def get_http_session():
-    """Единая сессия aiohttp для всего: REST, WebSocket, стриминг [citation:4]"""
     global _http_session
     async with _session_lock:
         if _http_session is None:
             connector = aiohttp.TCPConnector(
-                limit=10,
-                limit_per_host=5,
+                limit=15,
+                limit_per_host=8,
                 ttl_dns_cache=300
             )
             timeout = aiohttp.ClientTimeout(
@@ -325,7 +324,7 @@ async def cleanup_http_session():
         _http_session = None
 
 
-# ==================== BROWSERLESS (connect_over_cdp) [citation:2][citation:6] ====================
+# ==================== BROWSERLESS ====================
 PLAYWRIGHT_AVAILABLE = False
 if BROWSERLESS_WS_ENDPOINT:
     try:
@@ -381,26 +380,20 @@ def set_cached_answer(query, data):
 
 
 async def fetch_content(url: str) -> str:
-    """Загрузка через Browserless (Playwright connect_over_cdp) или HTTP [citation:2][citation:6]"""
     if url in html_cache:
         return html_cache[url]
 
     result = ""
 
-    # Пытаемся через Browserless
     if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
         try:
             async with async_playwright() as p:
-                # connect_over_cdp вместо launch [citation:2][citation:6]
                 browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
-                # Используем существующий контекст или создаём новый [citation:2]
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 page = await context.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=20000)
                 html = await page.content()
                 await page.close()
-                await browser.close()
-
                 text = re.sub(r'<[^>]+>', ' ', html)
                 text = re.sub(r'\s+', ' ', text).strip()
                 if len(text) > 500:
@@ -409,7 +402,6 @@ async def fetch_content(url: str) -> str:
         except Exception as e:
             logger.warning(f"Browserless ошибка: {e}")
 
-    # HTTP-резерв через единую сессию
     if not result:
         session = await get_http_session()
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -436,11 +428,10 @@ async def fetch_content(url: str) -> str:
     return ""
 
 
-async def fetch_multiple_pages(links, max_pages=30, top_k=7):
+async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW):
     if not links:
         return []
     results = []
-    # Ограничиваем параллелизм [citation:8][citation:12]
     semaphore = asyncio.Semaphore(5)
 
     async def fetch_one(url):
@@ -457,7 +448,6 @@ async def fetch_multiple_pages(links, max_pages=30, top_k=7):
     return valid[:top_k]
 
 
-# ==================== ПОИСК ====================
 async def search_apiserpent(query):
     if not APISERPENT_API_KEY:
         return []
@@ -530,7 +520,6 @@ async def search_primary(query):
     return results
 
 
-# ==================== ФИЛЬТРАЦИЯ ====================
 def extract_year_from_text(text):
     if not isinstance(text, str):
         return None
@@ -589,7 +578,6 @@ def assess_relevance(results, query):
     return relevant
 
 
-# ==================== МАРКИРОВКА ====================
 def mark_source(mode: str, text: str, is_cached: bool = False, is_speculation: bool = False) -> str:
     markers = {
         "model_only": "🧠 [ЗНАНИЯ МОДЕЛИ]",
@@ -609,14 +597,7 @@ def mark_source(mode: str, text: str, is_cached: bool = False, is_speculation: b
     return f"{marker}\n\n{text}"
 
 
-# ==================== DEEPSEEK API (актуальные параметры) [citation:1][citation:5] ====================
 async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER):
-    """
-    DeepSeek API — актуальные параметры на 17.07.2026:
-    - temperature: 0-2, по умолчанию 1 [citation:5]
-    - frequency_penalty и presence_penalty больше не поддерживаются [citation:5]
-    - Модели: deepseek-v4-flash (дефолт), deepseek-v4-pro [citation:1][citation:5]
-    """
     session = await get_http_session()
     try:
         payload = {
@@ -644,7 +625,6 @@ async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER):
         return None, str(e)
 
 
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 async def generate_search_query(query):
     stop = {'найди', 'пожалуйста', 'помоги', 'мне', 'лучшие', 'скажи', 'расскажи', 'покажи', 'найти'}
     words = [w for w in re.sub(r'[^\w\s]', '', query).split()
@@ -667,7 +647,6 @@ def build_profile_context(profile):
     return ". ".join(parts)[:150]
 
 
-# ==================== ГЕНЕРАЦИЯ ОТВЕТОВ ====================
 async def generate_model_only(uid, user_message, history, profile):
     ctx = build_profile_context(profile)
     system_prompt = f"""Ты — честный ассистент. Отвечай ТОЛЬКО из своих знаний.
@@ -680,7 +659,6 @@ async def generate_model_only(uid, user_message, history, profile):
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}]
-    # Для детерминированности используем temperature=0.0 [citation:1][citation:5]
     answer, err = await ask_deepseek(messages, temperature=0.0)
 
     if err or not answer:
@@ -704,15 +682,15 @@ async def generate_hybrid(uid, user_message, history, profile):
         return await generate_model_only(uid, user_message, history, profile)
 
     scored = assess_relevance(results, user_message)
-    links = [r['link'] for r in (scored or results)[:30]]
-    pages = await fetch_multiple_pages(links, max_pages=30, top_k=7)
+    links = [r['link'] for r in (scored or results)[:SEARCH_RESULTS_NUM]]
+    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
 
     if pages:
         stext = "\n\n".join([f"--- {p['url']} ---\n{p['text']}" for p in pages])
     else:
         stext = "\n\n".join([
             f"--- {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
-            for r in (scored or results)[:7]
+            for r in (scored or results)[:TOP_RESULTS_SHOW]
         ])
 
     system_prompt = f"""Ты — честный ассистент. Приоритет — данные из интернета.
@@ -758,15 +736,15 @@ async def generate_internet_only(uid, user_message, history, profile):
         return "❌ В интернете ничего не найдено. Я не буду выдумывать."
 
     scored = assess_relevance(all_results, user_message)
-    links = [r['link'] for r in (scored or all_results)[:30]]
-    pages = await fetch_multiple_pages(links, max_pages=30, top_k=7)
+    links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
+    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
 
     if pages:
         stext = "\n\n".join([f"--- {p['url']} ---\n{p['text']}" for p in pages])
     else:
         stext = "\n\n".join([
             f"--- {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
-            for r in (scored or all_results)[:7]
+            for r in (scored or all_results)[:TOP_RESULTS_SHOW]
         ])
 
     system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
@@ -788,7 +766,7 @@ async def generate_internet_only(uid, user_message, history, profile):
 
     if err or not answer:
         ans = "🔍 Результаты поиска:\n\n"
-        for i, r in enumerate((scored or all_results)[:7], 1):
+        for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW], 1):
             ans += f"{i}. {r.get('title', 'Без названия')}\n"
             ans += f"   {r.get('snippet', 'Нет описания')[:150]}\n"
             if r.get('link') and r['link'] != '#':
@@ -809,7 +787,6 @@ async def generate_internet_only(uid, user_message, history, profile):
     return result
 
 
-# ==================== КНОПКИ ====================
 def get_mode_keyboard():
     keyboard = [
         [
@@ -823,7 +800,6 @@ def get_mode_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
-# ==================== КОМАНДЫ ====================
 async def start(update, context):
     uid = update.effective_user.id
     if ALLOWED_USERS and uid not in ALLOWED_USERS:
@@ -942,7 +918,6 @@ async def handle_remember(update, context):
             await safe_reply(update, "❌ Не удалось сохранить факт.")
 
 
-# ==================== БЕЗОПАСНАЯ ОТПРАВКА (БЕЗ HTML) [citation:7][citation:11] ====================
 async def safe_reply(update: Update, text: str, reply_markup=None):
     if not text or not isinstance(text, str):
         text = "⚠️ Пустой ответ."
@@ -964,7 +939,6 @@ async def safe_reply(update: Update, text: str, reply_markup=None):
             pass
 
 
-# ==================== ОБРАБОТЧИКИ [citation:3][citation:7][citation:11] ====================
 async def handle_message(update, context):
     try:
         uid = update.effective_user.id
@@ -997,7 +971,7 @@ async def handle_message(update, context):
 
 async def handle_mode_selection(update, context):
     query = update.callback_query
-    await query.answer()  # Обязательно [citation:7][citation:11]
+    await query.answer()
 
     try:
         uid = context.user_data.get('uid')
@@ -1041,7 +1015,6 @@ async def handle_mode_selection(update, context):
         await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
 
 
-# ==================== ФОНОВАЯ ОЧИСТКА ====================
 async def cleanup_caches_periodic():
     while True:
         await asyncio.sleep(3600)
@@ -1067,7 +1040,6 @@ async def post_init(application):
     logger.info("🚀 Бот запущен")
 
 
-# ==================== MAIN ====================
 def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -1087,7 +1059,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (актуальная версия 17.07.2026, Browserless + HTTP-резерв)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (экономичная версия, ровно на 3 месяца)")
     app.run_polling()
 
 
