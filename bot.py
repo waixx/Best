@@ -1,8 +1,9 @@
 # ================================================================
-#  BroWaix Bot — ИСПРАВЛЕННАЯ ВЕРСИЯ (сборка из всех источников)
+#  BroWaix Bot — ИСПРАВЛЕННАЯ ВЕРСИЯ (сборка из ВСЕХ источников)
 #  - Теперь DeepSeek получает ВСЕ загруженные страницы
 #  - Сортировка по информативности
 #  - Нумерация источников
+#  - Логирование количества использованных источников
 # ================================================================
 
 import logging
@@ -684,15 +685,19 @@ async def generate_hybrid(uid, user_message, history, profile):
     pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
 
     # ⭐ СОБИРАЕМ ВСЕ СТРАНИЦЫ С НУМЕРАЦИЕЙ
-    if pages:
+    if pages and len(pages) > 0:
         pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
-        stext = "\n\n".join([f"--- ИСТОЧНИК {i+1}: {p['url']} ---\n{p['text']}" for i, p in enumerate(pages_sorted[:TOP_RESULTS_SHOW])])
-        logger.info(f"📊 Гибрид: использовано {len(pages_sorted[:TOP_RESULTS_SHOW])} источников")
+        source_blocks = []
+        for i, p in enumerate(pages_sorted, 1):
+            source_blocks.append(f"--- ИСТОЧНИК {i}: {p['url']} ---\n{p['text']}")
+        stext = "\n\n".join(source_blocks)
+        logger.info(f"📊 Гибрид: использовано {len(source_blocks)} источников")
     else:
         stext = "\n\n".join([
             f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
             for i, r in enumerate((scored or results)[:TOP_RESULTS_SHOW])
         ])
+        logger.warning("⚠️ Гибрид: страницы не загружены, использованы сниппеты")
 
     system_prompt = f"""Ты — честный ассистент. Приоритет — данные из интернета.
 Если данных нет — используй свои знания, но отметь это.
@@ -742,15 +747,19 @@ async def generate_internet_only(uid, user_message, history, profile):
     pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
 
     # ⭐ СОБИРАЕМ ВСЕ СТРАНИЦЫ С НУМЕРАЦИЕЙ
-    if pages:
+    if pages and len(pages) > 0:
         pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
-        stext = "\n\n".join([f"--- ИСТОЧНИК {i+1}: {p['url']} ---\n{p['text']}" for i, p in enumerate(pages_sorted[:TOP_RESULTS_SHOW])])
-        logger.info(f"📊 Интернет: использовано {len(pages_sorted[:TOP_RESULTS_SHOW])} источников")
+        source_blocks = []
+        for i, p in enumerate(pages_sorted, 1):
+            source_blocks.append(f"--- ИСТОЧНИК {i}: {p['url']} ---\n{p['text']}")
+        stext = "\n\n".join(source_blocks)
+        logger.info(f"📊 Интернет: использовано {len(source_blocks)} источников")
     else:
         stext = "\n\n".join([
             f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
             for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW])
         ])
+        logger.warning("⚠️ Интернет: страницы не загружены, использованы сниппеты")
 
     system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
 НЕ используй свои знания.
