@@ -3,11 +3,6 @@
 #  - Без Dockerfile, только Nixpacks
 #  - Playwright устанавливается через nixpacks.toml
 # ================================================================
-# ================================================================
-#  BroWaix Bot — ЧИСТАЯ ВЕРСИЯ ДЛЯ НОВОГО ПРОЕКТА
-#  - Без Dockerfile, только Nixpacks
-#  - Playwright устанавливается через nixpacks.toml
-# ================================================================
 import logging
 import os
 import json
@@ -29,7 +24,7 @@ from telegram.ext import (
 )
 from logging.handlers import RotatingFileHandler
 
-load_dotenv()   # <--- ПЕРЕМЕСТИТЕ ЭТУ СТРОКУ СЮДА (ДО ОБЪЯВЛЕНИЯ ПЕРЕМЕННЫХ)
+load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -41,16 +36,14 @@ if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS_LIST:
     ALLOWED_USERS_LIST.append(ADMIN_USER_ID)
 
 logger = logging.getLogger(__name__)
-load_dotenv()
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
-ALLOWED_USERS_LIST = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
-if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS_LIST:
-    ALLOWED_USERS_LIST.append(ADMIN_USER_ID)
+logger.setLevel(logging.INFO)
+handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=3)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+console = logging.StreamHandler()
+console.setFormatter(formatter)
+logger.addHandler(console)
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 def now(): return datetime.now(TZ)
@@ -85,6 +78,7 @@ def memory_path(uid): return os.path.join(DATA_DIR, f"memory_{uid}.json")
 def profile_path(uid): return os.path.join(DATA_DIR, f"profile_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
 
+# ---------- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ----------
 _http_session = None
 _session_lock = asyncio.Lock()
 user_locks = weakref.WeakValueDictionary()
