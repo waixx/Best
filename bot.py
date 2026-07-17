@@ -1,8 +1,9 @@
 # ================================================================
-#  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ (С STEEL BROWSER)
-#  - Steel Browser — отдельный сервис с браузером
-#  - Подключение через WebSocket
-#  - Резерв: прямой HTTP (если Steel недоступен)
+#  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ (Browser Gateway + Steel)
+#  - Подключение к браузеру через Browser Gateway
+#  - Steel Browser — провайдер
+#  - Резерв: прямой HTTP
+#  - Вечная память, бэкапы, честность
 # ================================================================
 
 import logging
@@ -43,7 +44,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-STEEL_BROWSER_URL = os.getenv("STEEL_BROWSER_URL")  # <-- НОВАЯ ПЕРЕМЕННАЯ
+BROWSER_GATEWAY_URL = os.getenv("BROWSER_GATEWAY_URL")  # <-- НОВАЯ ПЕРЕМЕННАЯ
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
 ALLOWED_USERS_LIST = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS_LIST:
@@ -345,9 +346,8 @@ def set_cache(query, data):
         oldest = min(search_cache.keys(), key=lambda k: search_cache[k]['time'])
         del search_cache[oldest]
 
-# ---------- STEEL BROWSER (основной) + ПРЯМОЙ HTTP (резерв) ----------
+# ---------- PLAYWRIGHT ЧЕРЕЗ BROWSER GATEWAY ----------
 async def fetch_content(url: str) -> str:
-    """Загружает страницу через Steel Browser, при ошибке — прямой HTTP"""
     now_time = datetime.now()
     if url in html_cache and html_cache[url]["expires"] > now_time:
         logger.info(f"✅ Cache HIT для {url[:50]}...")
@@ -356,20 +356,19 @@ async def fetch_content(url: str) -> str:
     result = ""
     session = await get_http_session()
 
-    # --- 1. Steel Browser ---
-    if STEEL_BROWSER_URL:
+    # --- 1. Browser Gateway ---
+    if BROWSER_GATEWAY_URL:
         try:
-            # Создаём сессию в Steel
+            # Создаём сессию в Browser Gateway
             async with session.post(
-                f"{STEEL_BROWSER_URL}/v1/sessions",
-                json={"blockAds": True, "timeout": 30000},
+                f"{BROWSER_GATEWAY_URL}/v1/sessions",
+                json={"timeout": 30000},
                 timeout=15
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     ws_url = data.get("websocketUrl")
                     if ws_url:
-                        # Подключаем Playwright к Steel через WebSocket
                         from playwright.async_api import async_playwright
                         async with async_playwright() as p:
                             browser = await p.chromium.connect_over_cdp(ws_url)
@@ -382,11 +381,11 @@ async def fetch_content(url: str) -> str:
                             text = re.sub(r'\s+', ' ', text).strip()
                             if len(text) > 500:
                                 result = text[:MAX_HTML_LEN]
-                                logger.info(f"✅ Steel спарсил {url[:50]}, {len(result)} символов")
+                                logger.info(f"✅ Browser Gateway спарсил {url[:50]}, {len(result)} символов")
                 else:
-                    logger.warning(f"Steel ошибка: {resp.status}")
+                    logger.warning(f"Browser Gateway ошибка: {resp.status}")
         except Exception as e:
-            logger.warning(f"Steel ошибка для {url}: {e}")
+            logger.warning(f"Browser Gateway ошибка для {url}: {e}")
 
     # --- 2. Резерв: прямой HTTP ---
     if not result:
@@ -1042,7 +1041,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (Steel Browser)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (Browser Gateway)")
     try:
         app.run_polling()
     finally:
