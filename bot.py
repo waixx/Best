@@ -353,17 +353,17 @@ async def fetch_content(url: str) -> str:
 
     result = ""
     session = await get_http_session()
+    BG_TOKEN = os.getenv("BG_TOKEN")
 
     # --- 1. Browser Gateway ---
-    if BROWSER_GATEWAY_URL:
+    if BROWSER_GATEWAY_URL and BG_TOKEN:
         try:
-            # Создаём сессию в Browser Gateway
-           async with session.post(
-    f"{BROWSER_GATEWAY_URL}/v1/sessions",
-    json={"timeout": 30000},
-    headers={"Authorization": f"Bearer {BG_TOKEN}"},
-    timeout=15
-) as resp:
+            async with session.post(
+                f"{BROWSER_GATEWAY_URL}/v1/sessions",
+                json={"timeout": 30000},
+                headers={"Authorization": f"Bearer {BG_TOKEN}"},
+                timeout=15
+            ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     ws_url = data.get("websocketUrl")
@@ -416,6 +416,9 @@ async def fetch_content(url: str) -> str:
             oldest = min(html_cache.keys(), key=lambda k: html_cache[k]["expires"])
             del html_cache[oldest]
         return result
+
+    logger.warning(f"❌ Не удалось получить контент для {url}")
+    return ""
 
     logger.warning(f"❌ Не удалось получить контент для {url}")
     return ""
