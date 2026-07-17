@@ -1,8 +1,7 @@
 # ================================================================
-#  BroWaix Bot — ГАРАНТИРОВАННО РАБОТАЕТ (Browser Gateway)
-#  - Жёстко прописанный URL Gateway
-#  - Токен из переменных BG_TOKEN
-#  - Резерв: прямой HTTP
+#  BroWaix Bot — BROWSERLESS ВЕРСИЯ (SPA-сайты парсятся)
+#  - Подключение к Browserless через WebSocket
+#  - Резерв: прямой HTTP (если Browserless недоступен)
 #  - Интернет всегда включён
 # ================================================================
 
@@ -44,7 +43,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-BG_TOKEN = os.getenv("BG_TOKEN")
+BROWSERLESS_URL = os.getenv("BROWSERLESS_URL")  # URL Browserless сервиса
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or 0)
 ALLOWED_USERS_LIST = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS_LIST:
@@ -344,7 +343,7 @@ def set_cache(query, data):
         oldest = min(search_cache.keys(), key=lambda k: search_cache[k]['time'])
         del search_cache[oldest]
 
-# ---------- ГЛАВНАЯ ФУНКЦИЯ ЗАГРУЗКИ (ГАРАНТИРОВАННО РАБОТАЕТ) ----------
+# ---------- ЗАГРУЗКА ЧЕРЕЗ BROWSERLESS ----------
 async def fetch_content(url: str) -> str:
     now_time = datetime.now()
     if url in html_cache and html_cache[url]["expires"] > now_time:
@@ -354,44 +353,30 @@ async def fetch_content(url: str) -> str:
     result = ""
     session = await get_http_session()
 
-    # ---------- ПРЯМОЕ ПОДКЛЮЧЕНИЕ К BROWSER GATEWAY ----------
-    try:
-        gateway_url = "https://browser-gateway-production-f640.up.railway.app"
-        bg_token = os.getenv("BG_TOKEN")
-        
-        if bg_token:
-            logger.info(f"🌐 Подключаюсь к Browser Gateway...")
-            async with session.post(
-                f"{gateway_url}/v1/sessions",
-                json={"timeout": 30000},
-                headers={"Authorization": f"Bearer {bg_token}"},
-                timeout=15
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    ws_url = data.get("websocketUrl")
-                    if ws_url:
-                        from playwright.async_api import async_playwright
-                        async with async_playwright() as p:
-                            browser = await p.chromium.connect_over_cdp(ws_url)
-                            page = await browser.new_page()
-                            await page.goto(url, wait_until="networkidle", timeout=30000)
-                            html = await page.content()
-                            await browser.close()
+    # --- 1. Browserless (рендерит SPA) ---
+    if BROWSERLESS_URL:
+        try:
+            logger.info(f"🌐 Подключаюсь к Browserless для {url[:50]}...")
+            from playwright.async_api import async_playwright
+            async with async_playwright() as p:
+                # Подключаемся к Browserless через WebSocket [citation:8][citation:13]
+                browser = await p.chromium.connect_over_cdp(
+                    f"{BROWSERLESS_URL}/ws"
+                )
+                page = await browser.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                html = await page.content()
+                await browser.close()
 
-                            text = re.sub(r'<[^>]+>', ' ', html)
-                            text = re.sub(r'\s+', ' ', text).strip()
-                            if len(text) > 500:
-                                result = text[:MAX_HTML_LEN]
-                                logger.info(f"✅ Browser Gateway спарсил {url[:50]}, {len(result)} символов")
-                else:
-                    logger.warning(f"Browser Gateway ошибка: {resp.status}")
-        else:
-            logger.warning("⚠️ BG_TOKEN не задан, использую резерв")
-    except Exception as e:
-        logger.warning(f"Browser Gateway ошибка для {url}: {e}")
+                text = re.sub(r'<[^>]+>', ' ', html)
+                text = re.sub(r'\s+', ' ', text).strip()
+                if len(text) > 500:
+                    result = text[:MAX_HTML_LEN]
+                    logger.info(f"✅ Browserless спарсил {url[:50]}, {len(result)} символов")
+        except Exception as e:
+            logger.warning(f"Browserless ошибка для {url}: {e}")
 
-    # ---------- РЕЗЕРВ: ПРЯМОЙ HTTP ----------
+    # --- 2. Резерв: прямой HTTP ---
     if not result:
         logger.info(f"🔄 Пробуем прямой HTTP для {url[:50]}")
         headers = {
@@ -1006,7 +991,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (ГАРАНТИРОВАННО)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (Browserless)")
     try:
         app.run_polling()
     finally:
