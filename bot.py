@@ -1,7 +1,9 @@
 # ===================================================================
-#  BroWaix Bot — ПОЛНАЯ ВЕРСИЯ (постоянная клавиатура)
-#  - Кнопки: Поиск, Болтовня, Сброс, Помощь (всегда видны)
-#  - Уточнение вопросов, таймер, 10 источников, аналитика
+#  BroWaix Bot — ИСПРАВЛЕННАЯ ВЕРСИЯ (много источников)
+#  - Снижен порог текста до 100 символов
+#  - Очистка от CSS/JSON/скриптов
+#  - TOP_RESULTS_SHOW = 20
+#  - Используются ВСЕ загруженные страницы
 # ===================================================================
 
 import logging
@@ -54,11 +56,11 @@ MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
 SEARCH_RESULTS_NUM = 50
-TOP_RESULTS_SHOW = 10
-MAX_HTML_LEN = 12000
+TOP_RESULTS_SHOW = 20          # Увеличено с 10 до 20
+MAX_HTML_LEN = 8000
 MAX_TOKENS_ANSWER = 6000
 CACHE_TTL = 3600
-TIMER_TIMEOUT = 300  # 5 минут
+TIMER_TIMEOUT = 300
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -323,7 +325,7 @@ async def generate_search_query(query):
     elif year_match: return [f"{base} {year_match.group(1)}"]
     else: return [base, f"{base} {now().year}"]
 
-# ==================== ПАРСИНГ ====================
+# ==================== ПАРСИНГ (исправленный) ====================
 async def fetch_content(url: str) -> tuple:
     if url in html_cache:
         cached = html_cache[url]
@@ -340,10 +342,22 @@ async def fetch_content(url: str) -> tuple:
                 await page.close()
                 text = re.sub(r'<[^>]+>', ' ', html)
                 text = re.sub(r'\s+', ' ', text).strip()
-                if len(text) > 500:
+                # Очистка от мусора
+                lines = text.split('\n')
+                clean_lines = []
+                for line in lines:
+                    stripped = line.strip()
+                    if not stripped: continue
+                    if stripped.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ')):
+                        continue
+                    if len(stripped) < 20:
+                        continue
+                    clean_lines.append(stripped)
+                text = ' '.join(clean_lines)
+                if len(text) > 100:  # снижен порог
                     result = text[:MAX_HTML_LEN]
                     pub_date = extract_date_from_html(html)
-                    logger.info(f"✅ Browserless: {url[:50]} (дата: {pub_date})")
+                    logger.info(f"✅ Browserless: {url[:50]} (дата: {pub_date}, длина: {len(result)})")
         except Exception as e:
             logger.warning(f"Browserless ошибка: {e}")
     if not result:
@@ -355,10 +369,21 @@ async def fetch_content(url: str) -> tuple:
                     html = await resp.text()
                     text = re.sub(r'<[^>]+>', ' ', html)
                     text = re.sub(r'\s+', ' ', text).strip()
-                    if len(text) > 500:
+                    lines = text.split('\n')
+                    clean_lines = []
+                    for line in lines:
+                        stripped = line.strip()
+                        if not stripped: continue
+                        if stripped.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ')):
+                            continue
+                        if len(stripped) < 20:
+                            continue
+                        clean_lines.append(stripped)
+                    text = ' '.join(clean_lines)
+                    if len(text) > 100:
                         result = text[:MAX_HTML_LEN]
                         pub_date = extract_date_from_html(html)
-                        logger.info(f"✅ HTTP: {url[:50]} (дата: {pub_date})")
+                        logger.info(f"✅ HTTP: {url[:50]} (дата: {pub_date}, длина: {len(result)})")
         except Exception as e:
             logger.warning(f"HTTP ошибка: {e}")
     if result:
@@ -620,6 +645,7 @@ async def generate_chat_response(user_message, history, profile):
         return "⚠️ Не удалось получить ответ."
     return answer
 
+# ==================== ИСПРАВЛЕННАЯ generate_internet_only (использует ВСЕ страницы) ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -631,15 +657,16 @@ async def generate_internet_only(uid, user_message, history, profile):
     scored = assess_relevance(all_results, user_message)
     links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
     pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
-    if pages and len(pages)>0:
-        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
+    if pages and len(pages) > 0:
+        # Используем ВСЕ страницы, без сортировки по длине
         source_blocks = []
-        for i, p in enumerate(pages_sorted, 1):
+        for i, p in enumerate(pages, 1):
             source_blocks.append(
                 f"--- ИСТОЧНИК {i} ---\nURL: {p['url']}\nДата: {p.get('date','дата не указана')}\nСодержание:\n{p['text']}"
             )
         stext = "\n\n".join(source_blocks)
         source_count = len(source_blocks)
+        logger.info(f"📊 Интернет: использовано {source_count} источников")
     else:
         stext = "\n\n".join([
             f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title','')}\nОписание: {r.get('snippet','')}"
@@ -680,6 +707,7 @@ async def generate_internet_only(uid, user_message, history, profile):
     set_cached_answer(user_message, result)
     return result
 
+# ==================== ОСТАЛЬНЫЕ ГЕНЕРАЦИИ ====================
 async def generate_hybrid(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -691,15 +719,15 @@ async def generate_hybrid(uid, user_message, history, profile):
     scored = assess_relevance(results, user_message)
     links = [r['link'] for r in (scored or results)[:SEARCH_RESULTS_NUM]]
     pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
-    if pages and len(pages)>0:
-        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
+    if pages and len(pages) > 0:
         source_blocks = []
-        for i, p in enumerate(pages_sorted, 1):
+        for i, p in enumerate(pages, 1):
             source_blocks.append(
                 f"--- ИСТОЧНИК {i} ---\nURL: {p['url']}\nДата: {p.get('date','дата не указана')}\nСодержание:\n{p['text']}"
             )
         stext = "\n\n".join(source_blocks)
         source_count = len(source_blocks)
+        logger.info(f"📊 Гибрид: использовано {source_count} источников")
     else:
         stext = "\n\n".join([
             f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title','')}\nОписание: {r.get('snippet','')}"
@@ -763,7 +791,6 @@ async def handle_message(update, context):
         user_message = update.effective_message.text[:1000]
         if not user_message: return
 
-        # Обработка кнопок постоянной клавиатуры
         if user_message == "🔍 Поиск":
             context.user_data['bot_mode'] = BOT_MODE_SEARCH
             context.user_data.clear()
@@ -789,11 +816,9 @@ async def handle_message(update, context):
             )
             return
 
-        # Команды вида /... обрабатываются хендлерами
         if user_message.startswith('/'):
             return
 
-        # Определяем режим
         bot_mode = context.user_data.get('bot_mode', BOT_MODE_SEARCH)
 
         if bot_mode == BOT_MODE_CHAT:
@@ -811,14 +836,12 @@ async def handle_message(update, context):
             return
 
         # === РЕЖИМ ПОИСКА ===
-        # Тайм-аут
         if context.user_data.get('timer_start'):
             if time.time() - context.user_data['timer_start'] > TIMER_TIMEOUT:
                 context.user_data.clear()
                 await safe_reply(update, "⏰ Время на уточнение истекло. Напиши вопрос заново.")
                 return
 
-        # Новый вопрос
         if not context.user_data.get('awaiting_confirmation') and not context.user_data.get('awaiting_hint'):
             context.user_data.clear()
             context.user_data['uid'] = uid
@@ -844,7 +867,6 @@ async def handle_message(update, context):
             )
             return
 
-        # Ждём подсказку
         if context.user_data.get('awaiting_hint'):
             hint = user_message
             original = context.user_data.get('original_query', '')
@@ -946,7 +968,6 @@ async def handle_mode_selection(update, context):
         logger.error(f"Ошибка handle_mode_selection: {e}")
         await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
 
-# ==================== ТАЙМЕР ====================
 async def timer_updater(update, context):
     chat_id = update.effective_chat.id
     start = context.user_data.get('timer_start', time.time())
@@ -1114,7 +1135,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (полная версия, постоянная клавиатура)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (много источников, исправлен парсинг)")
     app.run_polling()
 
 if __name__ == "__main__":
