@@ -1,9 +1,9 @@
 # ================================================================
-#  BroWaix Bot — МАКСИМАЛЬНАЯ ОБЪЕКТИВНОСТЬ (10 источников)
-#  - 10 источников для баланса скорости и качества
-#  - Дата + ссылка на каждый факт
-#  - 3 режима: интернет, гибрид, локальный
-#  - Логика "за всё время" исправлена
+#  BroWaix Bot — АНАЛИТИЧЕСКАЯ ВЕРСИЯ
+#  - 10 источников, анализ, сравнение, выводы
+#  - Фильтрация мусорных дат
+#  - Дедупликация доменов
+#  - Увеличенный таймаут
 # ================================================================
 
 import logging
@@ -58,16 +58,16 @@ def get_current_date():
     return now().strftime("%d.%m.%Y")
 
 
-# ==================== НАСТРОЙКИ ДЛЯ МАКСИМАЛЬНОЙ ОБЪЕКТИВНОСТИ ====================
+# ==================== НАСТРОЙКИ ====================
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-SEARCH_RESULTS_NUM = 50        # ищем 50 ссылок
-TOP_RESULTS_SHOW = 10          # парсим 10 лучших
-MAX_HTML_LEN = 12000           # больше текста
-MAX_TOKENS_ANSWER = 4000       # больше ответа
-CACHE_TTL = 3600               # 1 час
+SEARCH_RESULTS_NUM = 50
+TOP_RESULTS_SHOW = 10
+MAX_HTML_LEN = 12000
+MAX_TOKENS_ANSWER = 5000       # увеличено для анализа
+CACHE_TTL = 3600
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -377,7 +377,7 @@ def set_cached_answer(query, data):
         del answer_cache[oldest]
 
 
-# ==================== ИЗВЛЕЧЕНИЕ ДАТЫ ИЗ HTML ====================
+# ==================== 🔥 ФИЛЬТРАЦИЯ ДАТ (убираем мусор) ====================
 def extract_date_from_html(html: str) -> str:
     if not html:
         return "дата не указана"
@@ -393,18 +393,21 @@ def extract_date_from_html(html: str) -> str:
     for pattern in patterns:
         match = re.search(pattern, html)
         if match:
-            return match.group(1)
+            date = match.group(1)
+            # Фильтруем мусор: дата должна быть в разумном диапазоне
+            if re.match(r'^\d{4}$', date):
+                year = int(date)
+                if 2000 <= year <= 2030:
+                    return date
+                else:
+                    return "дата не указана"
+            # Если дата в формате дд.мм.гггг или гггг-мм-дд — пропускаем
+            return date
     return "дата не указана"
 
 
-# ==================== 🔥 ИСПРАВЛЕННАЯ ЛОГИКА "ЗА ВСЁ ВРЕМЯ" ====================
+# ==================== ПОИСКОВЫЙ ЗАПРОС ====================
 async def generate_search_query(query):
-    """
-    Генерирует поисковый запрос с учётом:
-    - "за всё время" → ищем без года
-    - указан год → ищем с этим годом
-    - нейтральный запрос → пробуем оба варианта
-    """
     stop = {'найди', 'пожалуйста', 'помоги', 'мне', 'лучшие', 'скажи', 'расскажи', 'покажи', 'найти'}
     words = [w for w in re.sub(r'[^\w\s]', '', query).split()
              if w.lower() not in stop and len(w) > 2]
@@ -414,7 +417,6 @@ async def generate_search_query(query):
     
     base = " ".join(words[:6])
     
-    # Определяем "за всё время"
     evergreen_phrases = ['за всё время', 'за все время', 'всех времен', 'классик', 'best of all time', 'в истории']
     is_evergreen = any(phrase in query.lower() for phrase in evergreen_phrases)
     
@@ -442,7 +444,7 @@ async def fetch_content(url: str) -> tuple:
                 browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)  # ⬅️ 30 сек
                 html = await page.content()
                 await page.close()
                 text = re.sub(r'<[^>]+>', ' ', html)
@@ -458,7 +460,7 @@ async def fetch_content(url: str) -> tuple:
         session = await get_http_session()
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
-            async with session.get(url, headers=headers, timeout=15) as resp:
+            async with session.get(url, headers=headers, timeout=20) as resp:
                 if resp.status == 200:
                     html = await resp.text()
                     text = re.sub(r'<[^>]+>', ' ', html)
@@ -481,6 +483,30 @@ async def fetch_content(url: str) -> tuple:
     return "", "дата не указана"
 
 
+# ==================== 🔥 ДЕДУПЛИКАЦИЯ ДОМЕНОВ ====================
+def deduplicate_domains(pages):
+    """Убирает дублирующиеся домены, оставляя самый информативный"""
+    seen_domains = {}
+    unique_pages = []
+    
+    for page in pages:
+        domain = re.sub(r'^https?://(www\.)?([^/]+).*', r'\2', page['url'])
+        
+        if domain not in seen_domains:
+            seen_domains[domain] = page
+            unique_pages.append(page)
+        else:
+            # Если домен уже есть, сравниваем длину текста
+            existing = seen_domains[domain]
+            if len(page['text']) > len(existing['text']):
+                # Заменяем на более информативный
+                unique_pages.remove(existing)
+                unique_pages.append(page)
+                seen_domains[domain] = page
+    
+    return unique_pages
+
+
 async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW):
     if not links:
         return []
@@ -498,6 +524,10 @@ async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RE
     fetched = await asyncio.gather(*tasks)
     valid = [r for r in fetched if r is not None]
     valid.sort(key=lambda x: len(x["text"]), reverse=True)
+    
+    # 🔥 Дедуплицируем домены
+    valid = deduplicate_domains(valid)
+    
     return valid[:top_k]
 
 
@@ -665,7 +695,7 @@ async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER):
             f"{DEEPSEEK_API_BASE}/chat/completions",
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
             json=payload,
-            timeout=45
+            timeout=60
         ) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -689,7 +719,7 @@ def build_profile_context(profile):
     return ". ".join(parts)[:150]
 
 
-# ==================== РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ ====================
+# ==================== РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ (АНАЛИТИЧЕСКИЙ) ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -734,14 +764,21 @@ async def generate_internet_only(uid, user_message, history, profile):
     else:
         time_context = f"Ищи самую актуальную информацию на сегодня ({get_current_date()})."
 
-    system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
+    # 🔥 НОВЫЙ АНАЛИТИЧЕСКИЙ ПРОМПТ
+    system_prompt = f"""Ты — аналитик, который изучает несколько источников и делает обоснованные выводы.
+
+⚠️ ТВОЯ ЗАДАЧА:
+1. Прочитай ВСЕ источники.
+2. Сравни их: что совпадает, что отличается, какие есть противоречия.
+3. Сделай вывод: какая информация наиболее достоверная и почему.
+4. Дай свой вердикт — на основе анализа, а не просто пересказа.
 
 ⚠️ ПРАВИЛА:
-1. НЕ используй свои знания.
-2. НЕ додумывай.
-3. КАЖДЫЙ ФАКТ сопровождай ссылкой и датой публикации.
-4. В конце укажи период, за который собрана информация.
-5. Обобщи ВСЕ источники, не дублируй одинаковую информацию.
+1. Не просто копируй информацию — анализируй её.
+2. Если источники противоречат друг другу — укажи это и объясни, чему ты доверяешь больше.
+3. Если информация устаревшая — скажи об этом.
+4. В конце дай краткое резюме: "Мой вердикт: ..."
+5. КАЖДЫЙ ФАКТ сопровождай ссылкой и датой.
 6. Если сериал упоминается в нескольких источниках — объедини данные о нём.
 7. Будь максимально объективен.
 
@@ -778,7 +815,7 @@ async def generate_internet_only(uid, user_message, history, profile):
     return result
 
 
-# ==================== РЕЖИМ: ГИБРИД ====================
+# ==================== РЕЖИМ: ГИБРИД (АНАЛИТИЧЕСКИЙ) ====================
 async def generate_hybrid(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -823,14 +860,21 @@ async def generate_hybrid(uid, user_message, history, profile):
     else:
         time_context = f"Ищи самую актуальную информацию на сегодня ({get_current_date()})."
 
-    system_prompt = f"""Ты — честный ассистент. Приоритет — данные из интернета.
+    system_prompt = f"""Ты — аналитик, который изучает несколько источников и делает обоснованные выводы.
+
+⚠️ ТВОЯ ЗАДАЧА:
+1. Прочитай ВСЕ источники.
+2. Сравни их: что совпадает, что отличается.
+3. Сделай вывод: какая информация наиболее достоверная.
+4. Если данных из интернета недостаточно — дополни своими знаниями, но ОТМЕТЬ ЭТО.
+5. Дай свой вердикт.
 
 ⚠️ ПРАВИЛА:
-1. Используй данные из интернета В ПЕРВУЮ ОЧЕРЕДЬ.
-2. Если данных нет — используй свои знания, но ОТМЕТЬ ЭТО.
-3. КАЖДЫЙ ФАКТ из интернета сопровождай ссылкой и датой.
-4. В конце укажи период, за который собрана информация.
-5. Не дублируй одинаковую информацию из разных источников.
+1. Приоритет — данные из интернета.
+2. Если интернет-источники противоречат друг другу — укажи это.
+3. Если используешь свои знания — напиши "[Из знаний модели]".
+4. В конце дай резюме: "Мой вердикт: ..."
+5. КАЖДЫЙ ФАКТ из интернета сопровождай ссылкой и датой.
 
 ⚠️ КОНТЕКСТ ДАТЫ:
 {time_context}
@@ -907,9 +951,9 @@ async def start(update, context):
     if ALLOWED_USERS and uid not in ALLOWED_USERS:
         return
     await safe_reply(update,
-                     "👋 Привет! Я честный ассистент с интернетом.\n\n"
+                     "👋 Привет! Я аналитический ассистент.\n\n"
                      "📋 Режимы:\n"
-                     "🌐 Только интернет — только свежие данные с датами и ссылками\n"
+                     "🌐 Только интернет — анализирую 10+ источников, сравниваю, делаю выводы\n"
                      "🔍 Гибрид — интернет + мои знания\n"
                      "🧠 Только знания — честно, объективно, без выдумок\n\n"
                      "📋 Команды:\n"
@@ -1182,7 +1226,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (10 источников, объективность)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (аналитическая версия, 10 источников, дедупликация)")
     app.run_polling()
 
 
