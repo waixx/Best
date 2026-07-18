@@ -1,9 +1,8 @@
 # ================================================================
-#  BroWaix Bot — ИТОГОВАЯ ВЕРСИЯ 18.07.2026
-#  - Всегда ищет свежие источники
-#  - В ответе: дата публикации + ссылка на каждый источник
+#  BroWaix Bot — ИТОГОВАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ 18.07.2026
+#  - ИСПРАВЛЕНА логика "за всё время"
+#  - Даты публикации + ссылки в ответе
 #  - 3 режима: интернет, гибрид, локальный
-#  - Локальный режим: честно, объективно, без выдумок
 # ================================================================
 
 import logging
@@ -67,7 +66,7 @@ SEARCH_RESULTS_NUM = 30
 TOP_RESULTS_SHOW = 5
 MAX_HTML_LEN = 8000
 MAX_TOKENS_ANSWER = 3000
-CACHE_TTL = 3600  # 1 час
+CACHE_TTL = 3600
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -379,7 +378,6 @@ def set_cached_answer(query, data):
 
 # ==================== ИЗВЛЕЧЕНИЕ ДАТЫ ИЗ HTML ====================
 def extract_date_from_html(html: str) -> str:
-    """Извлекает дату публикации из HTML"""
     if not html:
         return "дата не указана"
     patterns = [
@@ -398,11 +396,13 @@ def extract_date_from_html(html: str) -> str:
     return "дата не указана"
 
 
-# ==================== ПОИСКОВЫЙ ЗАПРОС ====================
+# ==================== 🔥 ИСПРАВЛЕННАЯ ФУНКЦИЯ ПОИСКОВОГО ЗАПРОСА ====================
 async def generate_search_query(query):
     """
-    Всегда ищем актуальные источники на сегодня.
-    Если указан год — ищем статьи, где он упоминается.
+    Генерирует поисковый запрос с учётом:
+    - "за всё время" → ищем без года, добавляем best of all time
+    - указан год → ищем с этим годом
+    - нейтральный запрос → пробуем оба варианта
     """
     stop = {'найди', 'пожалуйста', 'помоги', 'мне', 'лучшие', 'скажи', 'расскажи', 'покажи', 'найти'}
     words = [w for w in re.sub(r'[^\w\s]', '', query).split()
@@ -412,16 +412,26 @@ async def generate_search_query(query):
         return [query]
     
     base = " ".join(words[:6])
+    
+    # ⬅️ ОПРЕДЕЛЯЕМ "ЗА ВСЁ ВРЕМЯ"
+    evergreen_phrases = ['за всё время', 'за все время', 'всех времен', 'классик', 'best of all time', 'в истории']
+    is_evergreen = any(phrase in query.lower() for phrase in evergreen_phrases)
+    
+    # Проверяем, указал ли пользователь конкретный год
     year_match = re.search(r'\b(20[2-9][0-9])\b', query)
     
-    if year_match:
+    if is_evergreen:
+        # Для "за всё время" — ищем без года
+        return [base, f"{base} best of all time"]
+    elif year_match:
+        # Если указан год — ищем с этим годом
         return [f"{base} {year_match.group(1)}"]
     else:
-        return [f"{base} {now().year}"]
+        # Нейтральный запрос — пробуем оба варианта
+        return [base, f"{base} {now().year}"]
 
 
 async def fetch_content(url: str) -> tuple:
-    """Возвращает (текст, дата_публикации)"""
     if url in html_cache:
         cached = html_cache[url]
         return cached.get("text", ""), cached.get("date", "дата не указана")
@@ -734,7 +744,7 @@ async def generate_internet_only(uid, user_message, history, profile):
 2. НЕ додумывай.
 3. Если в данных нет ответа — напиши "В данных нет ответа".
 4. КАЖДЫЙ ФАКТ сопровождай ссылкой на источник и датой публикации.
-5. В конце ответа укажи, ЗА КАКОЙ ПЕРИОД собрана информация (например, "Информация собрана из источников от 15.07.2026 и 10.07.2026").
+5. В конце ответа укажи, ЗА КАКОЙ ПЕРИОД собрана информация.
 6. Если информация устаревшая — честно скажи об этом.
 
 ⚠️ КОНТЕКСТ ДАТЫ:
@@ -858,7 +868,7 @@ async def generate_hybrid(uid, user_message, history, profile):
     return result
 
 
-# ==================== РЕЖИМ: ТОЛЬКО ЗНАНИЯ (ЛОКАЛЬНЫЙ) ====================
+# ==================== РЕЖИМ: ТОЛЬКО ЗНАНИЯ ====================
 async def generate_model_only(uid, user_message, history, profile):
     ctx = build_profile_context(profile)
     system_prompt = f"""Ты — честный ассистент. Отвечай ТОЛЬКО из своих знаний.
@@ -1183,7 +1193,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (итоговая версия: даты+ссылки, 3 режима)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (исправлена логика 'за всё время')")
     app.run_polling()
 
 
