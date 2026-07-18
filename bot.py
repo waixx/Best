@@ -1,9 +1,10 @@
 # ===================================================================
-#  BroWaix Bot — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ
-#  - Все функции: память, бэкапы, поиск, парсинг, анализ
-#  - Извлечение заголовков, таблиц, текста
-#  - Принудительное использование всех источников
-#  - Экономичные настройки: 30 страниц, 4000 символов
+#  BroWaix Bot — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  - Улучшенный поиск: добавляет "рейтинг", "обзор", год
+#  - Штраф за старые источники (старше 2 лет)
+#  - Извлечение списков (<ul>/<ol>) и таблиц
+#  - Универсальный промпт для любых тем
+#  - Экономичные настройки: 25 страниц, 6000 символов
 # ===================================================================
 
 import logging
@@ -55,8 +56,8 @@ MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-SEARCH_RESULTS_NUM = 30
-MAX_HTML_LEN = 4000
+SEARCH_RESULTS_NUM = 25          # оптимум скорости и качества
+MAX_HTML_LEN = 6000              # больше данных с каждой страницы
 MAX_TOKENS_ANSWER = 7000
 CACHE_TTL = 3600
 TIMER_TIMEOUT = 300
@@ -304,6 +305,17 @@ def extract_tables(html: str) -> list:
                 table_data.append(clean_cells)
     return table_data
 
+def extract_lists(html: str) -> list:
+    lists = re.findall(r'<(ul|ol)[^>]*>(.*?)</\1>', html, re.IGNORECASE | re.DOTALL)
+    items = []
+    for _, list_content in lists:
+        li_items = re.findall(r'<li[^>]*>(.*?)</li>', list_content, re.IGNORECASE | re.DOTALL)
+        for li in li_items:
+            clean_li = re.sub(r'<[^>]+>', '', li).strip()
+            if clean_li:
+                items.append(clean_li)
+    return items
+
 def clean_html_text(html: str) -> str:
     text = re.sub(r'<[^>]+>', ' ', html)
     text = re.sub(r'\s+', ' ', text).strip()
@@ -345,19 +357,42 @@ def extract_date_from_html(html: str) -> str:
             return date
     return "дата не указана"
 
-# ==================== ПОИСКОВЫЙ ЗАПРОС ====================
-async def generate_search_query(query):
+# ==================== УЛУЧШЕННЫЙ ПОИСКОВЫЙ ЗАПРОС ====================
+async def generate_search_query(query: str) -> list:
+    """
+    Генерирует поисковые запросы, добавляя контекстные слова:
+    - если нет года и не "за всё время" → добавляем текущий год и слово "рейтинг"
+    - если есть указание на "за всё время" → ищем без года
+    - если есть год → используем его
+    """
     stop = {'найди','пожалуйста','помоги','мне','лучшие','скажи','расскажи','покажи','найти'}
     words = [w for w in re.sub(r'[^\w\s]', '', query).split()
              if w.lower() not in stop and len(w)>2]
-    if not words: return [query]
+    if not words:
+        return [query]
+    
     base = " ".join(words[:6])
+    
+    # Проверяем маркеры "за всё время"
     evergreen_phrases = ['за всё время','за все время','всех времен','классик','best of all time','в истории']
     is_evergreen = any(p in query.lower() for p in evergreen_phrases)
+    
+    # Ищем год в запросе
     year_match = re.search(r'\b(20[2-9][0-9])\b', query)
-    if is_evergreen: return [base, f"{base} best of all time"]
-    elif year_match: return [f"{base} {year_match.group(1)}"]
-    else: return [base, f"{base} {now().year}"]
+    
+    if is_evergreen:
+        return [base, f"{base} best of all time"]
+    elif year_match:
+        return [f"{base} {year_match.group(1)}"]
+    else:
+        # Добавляем контекстные слова для поиска рейтингов и обзоров
+        context_words = ["рейтинг", "обзор", "лучший", "топ"]
+        base_with_year = f"{base} {now().year}"
+        queries = [base, base_with_year]
+        for cw in context_words:
+            queries.append(f"{cw} {base}")
+            queries.append(f"{cw} {base_with_year}")
+        return list(dict.fromkeys(queries))
 
 # ==================== ПАРСИНГ ====================
 async def fetch_content(url: str) -> tuple:
@@ -381,6 +416,9 @@ async def fetch_content(url: str) -> tuple:
                 tables = extract_tables(html)
                 for table in tables:
                     parts.append("Таблица: " + " | ".join([" | ".join(row) for row in table]))
+                list_items = extract_lists(html)
+                if list_items:
+                    parts.append("Список: " + " | ".join(list_items))
                 text_part = clean_html_text(html)
                 if text_part:
                     parts.append(text_part)
@@ -405,6 +443,9 @@ async def fetch_content(url: str) -> tuple:
                     tables2 = extract_tables(html)
                     for table in tables2:
                         parts.append("Таблица: " + " | ".join([" | ".join(row) for row in table]))
+                    list_items2 = extract_lists(html)
+                    if list_items2:
+                        parts.append("Список: " + " | ".join(list_items2))
                     text_part2 = clean_html_text(html)
                     if text_part2:
                         parts.append(text_part2)
@@ -519,36 +560,50 @@ def extract_year_from_text(text):
     match = re.search(r'\b(20[2-9][0-9])\b', text)
     return int(match.group(1)) if match else None
 
+# ==================== ОЦЕНКА РЕЛЕВАНТНОСТИ (со штрафом за старые данные) ====================
 def assess_relevance(results, query):
     if not results or not isinstance(results, list): return []
     query_year = None
     year_match = re.search(r'\b(20[2-9][0-9])\b', query)
-    if year_match: query_year = int(year_match.group(1))
-    requires_year = any(w in query.lower() for w in ['новинк','последн','свеж','актуальн'])
+    if year_match:
+        query_year = int(year_match.group(1))
+    
+    current_year = now().year
     stop_words = {'найди','пожалуйста','помоги','мне','лучшие','скажи','расскажи','покажи','найти'}
     keywords = [w.lower() for w in re.sub(r'[^\w\s]', '', query).split()
                 if w.lower() not in stop_words and len(w)>3]
+    
     scored = []
     for res in results:
         if not isinstance(res, dict): continue
         text = (res.get('title','') or '') + ' ' + (res.get('snippet','') or '')
         text_lower = text.lower()
         link = res.get('link','').lower()
+        
         keyword_score = sum(3 for kw in keywords if kw in text_lower)
         domain_score = 0
         if any(zone in link for zone in ['.gov','.edu','.org','wikipedia.org']):
             domain_score += 5
         spam = ['ozon','wildberries','aliexpress','avito','amazon','ebay','taobao']
         if any(s in link for s in spam): domain_score -= 8
+        
         year = extract_year_from_text(text)
         year_score = 0
         if year:
-            if query_year and year == query_year: year_score = 10
-            elif year >= 2025: year_score = 8
+            if query_year and year == query_year:
+                year_score = 10
+            elif year >= current_year - 1:
+                year_score = 8
+            elif year >= current_year - 2:
+                year_score = 5
+            else:
+                year_score = -5   # штраф за старые источники
         else:
-            if requires_year: year_score = -2
+            year_score = 0
+        
         total = keyword_score + year_score + domain_score
         scored.append({**res, 'score':total, 'year':year})
+    
     relevant = [r for r in scored if r['score'] > 0]
     relevant.sort(key=lambda x: x['score'], reverse=True)
     return relevant
@@ -705,29 +760,32 @@ async def generate_internet_only(uid, user_message, history, profile):
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     time_context = f"Ищи информацию за {year_match.group(1)}." if year_match else f"Ищи самую актуальную информацию на {get_current_date()}."
 
+    # ============ УНИВЕРСАЛЬНЫЙ ПРОМПТ ============
     system_prompt = f"""
-Ты — аналитик. Ты получил {source_count} источников.
+Ты — универсальный аналитик. Ты получил {source_count} источников данных.
 
-⚠️ ТВОЯ ЗАДАЧА — ПРОАНАЛИЗИРОВАТЬ КАЖДЫЙ ИСТОЧНИК.
+⚠️ ТВОЯ ЗАДАЧА:
+1. Проанализируй КАЖДЫЙ источник (от 1 до {source_count}).
+2. Для каждого источника определи:
+   - Есть ли полезная информация по запросу пользователя.
+   - Если есть – выпиши ключевые факты (цифры, модели, названия, даты, цены, характеристики).
+   - Если нет – кратко укажи причину (пустая страница, техническая ошибка, нерелевантный контент).
+3. После анализа всех источников:
+   - Найди общие факты, которые повторяются в нескольких источниках (это наиболее достоверно).
+   - Найди противоречия и аномалии.
+   - Обрати внимание на свежесть данных: отдай приоритет источникам с актуальной датой (2025–2026).
+4. Сделай ЛОГИЧЕСКИЙ ВЫВОД на основе всех источников.
+   - Если информации достаточно – дай чёткий ответ.
+   - Если данных мало или они противоречивы – честно скажи об этом и предложи альтернативы (например, увеличение бюджета, другие категории товаров, использование облачных сервисов и т.п.).
 
-Для КАЖДОГО источника (от 1 до {source_count}) сделай следующее:
-1. Определи, есть ли в нём полезная информация по запросу.
-2. Если есть – выпиши ключевые факты и укажи, что именно взято.
-3. Если нет – напиши: "Источник X: не содержит полезной информации (причина: ...)".
-
-После анализа всех источников:
-- Сравни информацию из разных источников.
-- Найди общее, противоречия и аномалии.
-- Сделай логический вывод.
-
-⚠️ ФОРМАТ ОТВЕТА (строго):
+⚠️ ФОРМАТ ОТВЕТА (ОБЯЗАТЕЛЬНО):
 📊 **Использованные источники:**
-Источник 1 (URL): [кратко что взято]
-Источник 2 (URL): [кратко что взято]
+Источник 1 (URL): [краткое содержание, что взято]
+Источник 2 (URL): [краткое содержание, что взято]
 ...
-(обязательно перечислить ВСЕ источники)
+(перечисли ВСЕ источники)
 
-📊 **Что совпадает во всех источниках:**
+📊 **Общие факты (что совпадает в нескольких источниках):**
 ...
 
 ⚠️ **Противоречия и аномалии:**
@@ -735,10 +793,11 @@ async def generate_internet_only(uid, user_message, history, profile):
 
 ✅ **Мой логический вывод:**
 ...
+(если данных недостаточно – предложи альтернативы)
 
-Запрос: {user_message}
+Запрос пользователя: {user_message}
 Сегодня: {get_current_date()}
-Контекст: {build_profile_context(profile)}
+Контекст о пользователе: {build_profile_context(profile)}
 
 ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
 {stext}
@@ -796,30 +855,25 @@ async def generate_hybrid(uid, user_message, history, profile):
     time_context = f"Ищи информацию за {year_match.group(1)}." if year_match else f"Ищи самую актуальную информацию на {get_current_date()}."
 
     system_prompt = f"""
-Ты — аналитик. Ты получил {source_count} источников.
+Ты — универсальный аналитик. Ты получил {source_count} источников данных.
 
-⚠️ ТВОЯ ЗАДАЧА — ПРОАНАЛИЗИРОВАТЬ КАЖДЫЙ ИСТОЧНИК.
+⚠️ ТВОЯ ЗАДАЧА:
+1. Проанализируй КАЖДЫЙ источник (от 1 до {source_count}).
+2. Для каждого источника определи, есть ли полезная информация по запросу.
+3. После анализа всех источников:
+   - Найди общие факты, противоречия и аномалии.
+   - Отдай приоритет свежим данным.
+4. Сделай ЛОГИЧЕСКИЙ ВЫВОД.
+5. Если данных из интернета недостаточно – дополни своими знаниями, но ОТМЕТЬ ЭТО.
 
-Для КАЖДОГО источника (от 1 до {source_count}) сделай следующее:
-1. Определи, есть ли в нём полезная информация по запросу.
-2. Если есть – выпиши ключевые факты и укажи, что именно взято.
-3. Если нет – напиши: "Источник X: не содержит полезной информации (причина: ...)".
-
-После анализа всех источников:
-- Сравни информацию из разных источников.
-- Найди общее, противоречия и аномалии.
-- Сделай логический вывод.
-
-⚠️ Если данных из интернета недостаточно – дополни своими знаниями, но ОТМЕТЬ ЭТО.
-
-⚠️ ФОРМАТ ОТВЕТА (строго):
+⚠️ ФОРМАТ ОТВЕТА (ОБЯЗАТЕЛЬНО):
 📊 **Использованные источники:**
-Источник 1 (URL): [кратко что взято]
-Источник 2 (URL): [кратко что взято]
+Источник 1 (URL): [краткое содержание]
+Источник 2 (URL): [краткое содержание]
 ...
-(обязательно перечислить ВСЕ источники)
+(перечисли ВСЕ источники)
 
-📊 **Что совпадает во всех источниках:**
+📊 **Общие факты:**
 ...
 
 ⚠️ **Противоречия и аномалии:**
@@ -827,8 +881,9 @@ async def generate_hybrid(uid, user_message, history, profile):
 
 ✅ **Мой логический вывод:**
 ...
+(если данных недостаточно – предложи альтернативы)
 
-Запрос: {user_message}
+Запрос пользователя: {user_message}
 Сегодня: {get_current_date()}
 Контекст: {build_profile_context(profile)}
 
@@ -1217,7 +1272,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (финальная полная версия)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (универсальная версия с улучшенным поиском)")
     app.run_polling()
 
 if __name__ == "__main__":
