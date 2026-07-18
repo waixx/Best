@@ -1,9 +1,9 @@
 # ===================================================================
-#  BroWaix Bot — ИСПРАВЛЕННАЯ ВЕРСИЯ (много источников)
-#  - Снижен порог текста до 100 символов
-#  - Очистка от CSS/JSON/скриптов
-#  - TOP_RESULTS_SHOW = 20
-#  - Используются ВСЕ загруженные страницы
+#  BroWaix Bot — ФИНАЛЬНАЯ ПОЛНАЯ ВЕРСИЯ
+#  - Все источники принудительно
+#  - MAX_HTML_LEN=4000, SEARCH_RESULTS_NUM=30 (экономия)
+#  - Улучшенная очистка текста
+#  - Повторная попытка при неполном ответе
 # ===================================================================
 
 import logging
@@ -50,15 +50,14 @@ TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 def now(): return datetime.now(TZ)
 def get_current_date(): return now().strftime("%d.%m.%Y")
 
-# ==================== НАСТРОЙКИ ====================
+# ==================== НАСТРОЙКИ (экономичные) ====================
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-SEARCH_RESULTS_NUM = 50
-TOP_RESULTS_SHOW = 20          # Увеличено с 10 до 20
-MAX_HTML_LEN = 8000
-MAX_TOKENS_ANSWER = 6000
+SEARCH_RESULTS_NUM = 30          # снижено для экономии
+MAX_HTML_LEN = 4000              # снижено для экономии
+MAX_TOKENS_ANSWER = 7000
 CACHE_TTL = 3600
 TIMER_TIMEOUT = 300
 
@@ -325,7 +324,24 @@ async def generate_search_query(query):
     elif year_match: return [f"{base} {year_match.group(1)}"]
     else: return [base, f"{base} {now().year}"]
 
-# ==================== ПАРСИНГ (исправленный) ====================
+# ==================== УЛУЧШЕННАЯ ОЧИСТКА ТЕКСТА ====================
+def clean_html_text(html: str) -> str:
+    text = re.sub(r'<[^>]+>', ' ', html)
+    text = re.sub(r'\s+', ' ', text).strip()
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ', '//')):
+            continue
+        if re.match(r'^[\d\s\.,;:!?()\-]+$', stripped):
+            continue
+        clean_lines.append(stripped)
+    return ' '.join(clean_lines)
+
+# ==================== ПАРСИНГ ====================
 async def fetch_content(url: str) -> tuple:
     if url in html_cache:
         cached = html_cache[url]
@@ -340,21 +356,8 @@ async def fetch_content(url: str) -> tuple:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 html = await page.content()
                 await page.close()
-                text = re.sub(r'<[^>]+>', ' ', html)
-                text = re.sub(r'\s+', ' ', text).strip()
-                # Очистка от мусора
-                lines = text.split('\n')
-                clean_lines = []
-                for line in lines:
-                    stripped = line.strip()
-                    if not stripped: continue
-                    if stripped.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ')):
-                        continue
-                    if len(stripped) < 20:
-                        continue
-                    clean_lines.append(stripped)
-                text = ' '.join(clean_lines)
-                if len(text) > 100:  # снижен порог
+                text = clean_html_text(html)
+                if len(text) > 50:
                     result = text[:MAX_HTML_LEN]
                     pub_date = extract_date_from_html(html)
                     logger.info(f"✅ Browserless: {url[:50]} (дата: {pub_date}, длина: {len(result)})")
@@ -367,20 +370,8 @@ async def fetch_content(url: str) -> tuple:
             async with session.get(url, headers=headers, timeout=20) as resp:
                 if resp.status == 200:
                     html = await resp.text()
-                    text = re.sub(r'<[^>]+>', ' ', html)
-                    text = re.sub(r'\s+', ' ', text).strip()
-                    lines = text.split('\n')
-                    clean_lines = []
-                    for line in lines:
-                        stripped = line.strip()
-                        if not stripped: continue
-                        if stripped.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ')):
-                            continue
-                        if len(stripped) < 20:
-                            continue
-                        clean_lines.append(stripped)
-                    text = ' '.join(clean_lines)
-                    if len(text) > 100:
+                    text = clean_html_text(html)
+                    if len(text) > 50:
                         result = text[:MAX_HTML_LEN]
                         pub_date = extract_date_from_html(html)
                         logger.info(f"✅ HTTP: {url[:50]} (дата: {pub_date}, длина: {len(result)})")
@@ -411,22 +402,22 @@ def deduplicate_domains(pages):
                 seen[domain] = page
     return unique
 
-async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW):
+async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM):
+    """Загружает все страницы без ограничения top_k"""
     if not links: return []
     results = []
     semaphore = asyncio.Semaphore(5)
     async def fetch_one(url):
         async with semaphore:
             text, date = await fetch_content(url)
-            if text and len(text)>100:
+            if text and len(text)>50:
                 return {"url":url, "text":text, "date":date}
             return None
     tasks = [fetch_one(url) for url in links[:max_pages]]
     fetched = await asyncio.gather(*tasks)
     valid = [r for r in fetched if r is not None]
-    valid.sort(key=lambda x: len(x["text"]), reverse=True)
     valid = deduplicate_domains(valid)
-    return valid[:top_k]
+    return valid
 
 # ==================== ПОИСК ====================
 async def search_apiserpent(query):
@@ -645,7 +636,7 @@ async def generate_chat_response(user_message, history, profile):
         return "⚠️ Не удалось получить ответ."
     return answer
 
-# ==================== ИСПРАВЛЕННАЯ generate_internet_only (использует ВСЕ страницы) ====================
+# ==================== ОСНОВНАЯ ФУНКЦИЯ ИНТЕРНЕТ (с принудительным перечислением) ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -656,46 +647,80 @@ async def generate_internet_only(uid, user_message, history, profile):
         return "❌ В интернете ничего не найдено."
     scored = assess_relevance(all_results, user_message)
     links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
-    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
+    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM)
     if pages and len(pages) > 0:
-        # Используем ВСЕ страницы, без сортировки по длине
+        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
         source_blocks = []
-        for i, p in enumerate(pages, 1):
+        for i, p in enumerate(pages_sorted, 1):
             source_blocks.append(
                 f"--- ИСТОЧНИК {i} ---\nURL: {p['url']}\nДата: {p.get('date','дата не указана')}\nСодержание:\n{p['text']}"
             )
         stext = "\n\n".join(source_blocks)
         source_count = len(source_blocks)
-        logger.info(f"📊 Интернет: использовано {source_count} источников")
+        logger.info(f"📊 Интернет: загружено {source_count} источников")
     else:
         stext = "\n\n".join([
             f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title','')}\nОписание: {r.get('snippet','')}"
-            for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW])
+            for i, r in enumerate((scored or all_results)[:10])
         ])
-        source_count = TOP_RESULTS_SHOW
+        source_count = 10
+        logger.warning("⚠️ Интернет: страницы не загружены, использованы сниппеты")
+
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     time_context = f"Ищи информацию за {year_match.group(1)}." if year_match else f"Ищи самую актуальную информацию на {get_current_date()}."
-    system_prompt = f"""Ты — аналитик. Твоя задача — не пересказывать источники, а найти в них логику.
-⚠️ ЧТО ТЫ ДОЛЖЕН СДЕЛАТЬ:
-1. Прочитай ВСЕ {source_count} источника.
-2. Найди, в чём они СОВПАДАЮТ — это скорее всего достоверная информация.
-3. Найди, в чём они ПРОТИВОРЕЧАТ друг другу — отметь эти противоречия.
-4. Проверь, нет ли АНОМАЛИЙ (слишком идеальные цифры, даты, единственный источник).
-5. Сделай ЛОГИЧЕСКИЙ ВЫВОД.
-⚠️ ФОРМАТ ОТВЕТА:
-📊 Что совпадает во всех источниках: ...
-⚠️ Противоречия и аномалии: ...
-✅ Мой логический вывод: ...
+
+    system_prompt = f"""
+Ты — аналитик. Ты получил {source_count} источников.
+
+⚠️ ТВОЯ ЗАДАЧА — ПРОАНАЛИЗИРОВАТЬ КАЖДЫЙ ИСТОЧНИК.
+
+Для КАЖДОГО источника (от 1 до {source_count}) сделай следующее:
+1. Определи, есть ли в нём полезная информация по запросу.
+2. Если есть – выпиши ключевые факты и укажи, что именно взято.
+3. Если нет – напиши: "Источник X: не содержит полезной информации (причина: ...)".
+
+После анализа всех источников:
+- Сравни информацию из разных источников.
+- Найди общее, противоречия и аномалии.
+- Сделай логический вывод.
+
+⚠️ ФОРМАТ ОТВЕТА (строго):
+📊 **Использованные источники:**
+Источник 1 (URL): [кратко что взято]
+Источник 2 (URL): [кратко что взято]
+...
+(обязательно перечислить ВСЕ источники)
+
+📊 **Что совпадает во всех источниках:**
+...
+
+⚠️ **Противоречия и аномалии:**
+...
+
+✅ **Мой логический вывод:**
+...
+
 Запрос: {user_message}
 Сегодня: {get_current_date()}
 Контекст: {build_profile_context(profile)}
+
 ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
-{stext}"""
+{stext}
+"""
+
     messages = [{"role":"system","content":system_prompt}] + history + [{"role":"user","content":user_message}]
     answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
+    
+    # Повторная попытка, если ответ не содержит упоминания всех источников
+    if err or not answer or not re.search(r'Источник \d+', answer):
+        logger.warning("⚠️ Ответ не содержит перечисления источников, отправляем повторный запрос с напоминанием.")
+        system_prompt += "\n\n⚠️ В предыдущем ответе ты не перечислил все источники. ОБЯЗАТЕЛЬНО перечисли каждый из {source_count} источников в секции 'Использованные источники'."
+        messages = [{"role":"system","content":system_prompt}] + history + [{"role":"user","content":user_message}]
+        answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
+
     if err or not answer:
         ans = "🔍 Результаты поиска:\n\n"
-        for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW], 1):
+        for i, r in enumerate((scored or all_results)[:10], 1):
             ans += f"{i}. {r.get('title','Без названия')}\n   {r.get('snippet','Нет описания')[:150]}\n"
             if r.get('link') and r['link'] != '#': ans += f"   🔗 {r['link']}\n"
             ans += "\n"
@@ -707,7 +732,7 @@ async def generate_internet_only(uid, user_message, history, profile):
     set_cached_answer(user_message, result)
     return result
 
-# ==================== ОСТАЛЬНЫЕ ГЕНЕРАЦИИ ====================
+# ==================== ГИБРИД ====================
 async def generate_hybrid(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -718,41 +743,69 @@ async def generate_hybrid(uid, user_message, history, profile):
         return await generate_model_only(uid, user_message, history, profile)
     scored = assess_relevance(results, user_message)
     links = [r['link'] for r in (scored or results)[:SEARCH_RESULTS_NUM]]
-    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
+    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM)
     if pages and len(pages) > 0:
+        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
         source_blocks = []
-        for i, p in enumerate(pages, 1):
+        for i, p in enumerate(pages_sorted, 1):
             source_blocks.append(
                 f"--- ИСТОЧНИК {i} ---\nURL: {p['url']}\nДата: {p.get('date','дата не указана')}\nСодержание:\n{p['text']}"
             )
         stext = "\n\n".join(source_blocks)
         source_count = len(source_blocks)
-        logger.info(f"📊 Гибрид: использовано {source_count} источников")
+        logger.info(f"📊 Гибрид: загружено {source_count} источников")
     else:
         stext = "\n\n".join([
             f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title','')}\nОписание: {r.get('snippet','')}"
-            for i, r in enumerate((scored or results)[:TOP_RESULTS_SHOW])
+            for i, r in enumerate((scored or results)[:10])
         ])
-        source_count = TOP_RESULTS_SHOW
+        source_count = 10
+        logger.warning("⚠️ Гибрид: страницы не загружены, использованы сниппеты")
+
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     time_context = f"Ищи информацию за {year_match.group(1)}." if year_match else f"Ищи самую актуальную информацию на {get_current_date()}."
-    system_prompt = f"""Ты — аналитик. Твоя задача — не пересказывать источники, а найти в них логику.
-⚠️ ЧТО ТЫ ДОЛЖЕН СДЕЛАТЬ:
-1. Прочитай ВСЕ {source_count} источника.
-2. Найди, в чём они СОВПАДАЮТ.
-3. Найди, в чём они ПРОТИВОРЕЧАТ.
-4. Проверь на АНОМАЛИИ.
-5. Сделай ЛОГИЧЕСКИЙ ВЫВОД.
-6. Если данных из интернета недостаточно — дополни своими знаниями, но ОТМЕТЬ ЭТО.
-⚠️ ФОРМАТ ОТВЕТА:
-📊 Что совпадает во всех источниках: ...
-⚠️ Противоречия и аномалии: ...
-✅ Мой логический вывод: ...
+
+    system_prompt = f"""
+Ты — аналитик. Ты получил {source_count} источников.
+
+⚠️ ТВОЯ ЗАДАЧА — ПРОАНАЛИЗИРОВАТЬ КАЖДЫЙ ИСТОЧНИК.
+
+Для КАЖДОГО источника (от 1 до {source_count}) сделай следующее:
+1. Определи, есть ли в нём полезная информация по запросу.
+2. Если есть – выпиши ключевые факты и укажи, что именно взято.
+3. Если нет – напиши: "Источник X: не содержит полезной информации (причина: ...)".
+
+После анализа всех источников:
+- Сравни информацию из разных источников.
+- Найди общее, противоречия и аномалии.
+- Сделай логический вывод.
+
+⚠️ Если данных из интернета недостаточно – дополни своими знаниями, но ОТМЕТЬ ЭТО.
+
+⚠️ ФОРМАТ ОТВЕТА (строго):
+📊 **Использованные источники:**
+Источник 1 (URL): [кратко что взято]
+Источник 2 (URL): [кратко что взято]
+...
+(обязательно перечислить ВСЕ источники)
+
+📊 **Что совпадает во всех источниках:**
+...
+
+⚠️ **Противоречия и аномалии:**
+...
+
+✅ **Мой логический вывод:**
+...
+
 Запрос: {user_message}
 Сегодня: {get_current_date()}
 Контекст: {build_profile_context(profile)}
+
 ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
-{stext}"""
+{stext}
+"""
+
     messages = [{"role":"system","content":system_prompt}] + history + [{"role":"user","content":user_message}]
     answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
     if err or not answer:
@@ -763,6 +816,7 @@ async def generate_hybrid(uid, user_message, history, profile):
     set_cached_answer(user_message, result)
     return result
 
+# ==================== ТОЛЬКО МОДЕЛЬ ====================
 async def generate_model_only(uid, user_message, history, profile):
     ctx = build_profile_context(profile)
     system_prompt = f"""Ты — честный ассистент. Отвечай ТОЛЬКО из своих знаний.
@@ -1135,7 +1189,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (много источников, исправлен парсинг)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (полная версия, экономия, все источники)")
     app.run_polling()
 
 if __name__ == "__main__":
