@@ -1,9 +1,9 @@
 # ================================================================
-#  BroWaix Bot — ИТОГОВАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ 18.07.2026
-#  - Добавлена команда /clearcache для очистки кэша
-#  - CACHE_TTL уменьшен до 3600 (1 час)
-#  - Автоматический повторный поиск при ответе "нет данных"
-#  - Все функции сохранены
+#  BroWaix Bot — ИТОГОВАЯ ВЕРСИЯ 18.07.2026
+#  - Всегда ищет свежие источники
+#  - В ответе: дата публикации + ссылка на каждый источник
+#  - 3 режима: интернет, гибрид, локальный
+#  - Локальный режим: честно, объективно, без выдумок
 # ================================================================
 
 import logging
@@ -67,7 +67,7 @@ SEARCH_RESULTS_NUM = 30
 TOP_RESULTS_SHOW = 5
 MAX_HTML_LEN = 8000
 MAX_TOKENS_ANSWER = 3000
-CACHE_TTL = 3600  # ⬅️ ИЗМЕНЕНО: 1 час (было 24 часа)
+CACHE_TTL = 3600  # 1 час
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -377,12 +377,58 @@ def set_cached_answer(query, data):
         del answer_cache[oldest]
 
 
-async def fetch_content(url: str) -> str:
+# ==================== ИЗВЛЕЧЕНИЕ ДАТЫ ИЗ HTML ====================
+def extract_date_from_html(html: str) -> str:
+    """Извлекает дату публикации из HTML"""
+    if not html:
+        return "дата не указана"
+    patterns = [
+        r'"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
+        r'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
+        r'"published"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
+        r'<meta\s+property="article:published_time"\s+content="(\d{4}-\d{2}-\d{2})"',
+        r'<time\s+datetime="(\d{4}-\d{2}-\d{2})"',
+        r'(\d{2}\.\d{2}\.\d{4})',
+        r'(\d{4})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if match:
+            return match.group(1)
+    return "дата не указана"
+
+
+# ==================== ПОИСКОВЫЙ ЗАПРОС ====================
+async def generate_search_query(query):
+    """
+    Всегда ищем актуальные источники на сегодня.
+    Если указан год — ищем статьи, где он упоминается.
+    """
+    stop = {'найди', 'пожалуйста', 'помоги', 'мне', 'лучшие', 'скажи', 'расскажи', 'покажи', 'найти'}
+    words = [w for w in re.sub(r'[^\w\s]', '', query).split()
+             if w.lower() not in stop and len(w) > 2]
+    
+    if not words:
+        return [query]
+    
+    base = " ".join(words[:6])
+    year_match = re.search(r'\b(20[2-9][0-9])\b', query)
+    
+    if year_match:
+        return [f"{base} {year_match.group(1)}"]
+    else:
+        return [f"{base} {now().year}"]
+
+
+async def fetch_content(url: str) -> tuple:
+    """Возвращает (текст, дата_публикации)"""
     if url in html_cache:
-        return html_cache[url]
-
+        cached = html_cache[url]
+        return cached.get("text", ""), cached.get("date", "дата не указана")
+    
     result = ""
-
+    pub_date = "дата не указана"
+    
     if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
         try:
             async with async_playwright() as p:
@@ -396,10 +442,11 @@ async def fetch_content(url: str) -> str:
                 text = re.sub(r'\s+', ' ', text).strip()
                 if len(text) > 500:
                     result = text[:MAX_HTML_LEN]
-                    logger.info(f"✅ Browserless: {url[:50]}")
+                    pub_date = extract_date_from_html(html)
+                    logger.info(f"✅ Browserless: {url[:50]} (дата: {pub_date})")
         except Exception as e:
             logger.warning(f"Browserless ошибка: {e}")
-
+    
     if not result:
         session = await get_http_session()
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -411,19 +458,20 @@ async def fetch_content(url: str) -> str:
                     text = re.sub(r'\s+', ' ', text).strip()
                     if len(text) > 500:
                         result = text[:MAX_HTML_LEN]
-                        logger.info(f"✅ HTTP: {url[:50]}")
+                        pub_date = extract_date_from_html(html)
+                        logger.info(f"✅ HTTP: {url[:50]} (дата: {pub_date})")
         except Exception as e:
             logger.warning(f"HTTP ошибка: {e}")
-
+    
     if result:
-        html_cache[url] = result
+        html_cache[url] = {"text": result, "date": pub_date}
         if len(html_cache) > 100:
             oldest = list(html_cache.keys())[0]
             del html_cache[oldest]
-        return result
-
+        return result, pub_date
+    
     logger.warning(f"❌ Не удалось загрузить {url[:50]}")
-    return ""
+    return "", "дата не указана"
 
 
 async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW):
@@ -431,14 +479,14 @@ async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RE
         return []
     results = []
     semaphore = asyncio.Semaphore(5)
-
+    
     async def fetch_one(url):
         async with semaphore:
-            content = await fetch_content(url)
-            if content and len(content) > 100:
-                return {"url": url, "text": content}
+            text, date = await fetch_content(url)
+            if text and len(text) > 100:
+                return {"url": url, "text": text, "date": date}
             return None
-
+    
     tasks = [fetch_one(url) for url in links[:max_pages]]
     fetched = await asyncio.gather(*tasks)
     valid = [r for r in fetched if r is not None]
@@ -446,6 +494,7 @@ async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RE
     return valid[:top_k]
 
 
+# ==================== ПОИСК ====================
 async def search_apiserpent(query):
     if not APISERPENT_API_KEY:
         return []
@@ -623,18 +672,6 @@ async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER):
         return None, str(e)
 
 
-async def generate_search_query(query):
-    stop = {'найди', 'пожалуйста', 'помоги', 'мне', 'лучшие', 'скажи', 'расскажи', 'покажи', 'найти'}
-    words = [w for w in re.sub(r'[^\w\s]', '', query).split()
-             if w.lower() not in stop and len(w) > 2]
-    if not words:
-        return [query]
-    base = " ".join(words[:5])
-    if not re.search(r'\b20[2-9][0-9]\b', base):
-        base += f" {now().year}"
-    return [base]
-
-
 def build_profile_context(profile):
     parts = []
     for k, v in profile.items():
@@ -645,31 +682,99 @@ def build_profile_context(profile):
     return ". ".join(parts)[:150]
 
 
-# ==================== ГЕНЕРАЦИЯ ОТВЕТОВ ====================
+# ==================== РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ ====================
+async def generate_internet_only(uid, user_message, history, profile):
+    cached = get_cached_answer(user_message)
+    if cached:
+        return mark_source("internet_only", cached, is_cached=True, is_speculation=False)
 
-async def generate_model_only(uid, user_message, history, profile):
-    ctx = build_profile_context(profile)
-    system_prompt = f"""Ты — честный ассистент. Отвечай ТОЛЬКО из своих знаний.
-Если не знаешь — скажи "Я не знаю".
-ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно", "скорее всего", "должно быть".
-Если неуверен — напиши "Не 100%, предположение".
+    variants = await generate_search_query(user_message)
+    all_results = await search_primary(variants[0])
+    
+    logger.info(f"🔍 Интернет: поиск -> {variants[0]}")
 
+    if not all_results:
+        return "❌ В интернете ничего не найдено. Я не буду выдумывать."
+
+    scored = assess_relevance(all_results, user_message)
+    links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
+    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
+
+    if pages and len(pages) > 0:
+        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
+        source_blocks = []
+        for i, p in enumerate(pages_sorted, 1):
+            source_blocks.append(
+                f"--- ИСТОЧНИК {i} ---\n"
+                f"URL: {p['url']}\n"
+                f"Дата публикации: {p.get('date', 'дата не указана')}\n"
+                f"Содержание:\n{p['text']}"
+            )
+        stext = "\n\n".join(source_blocks)
+        logger.info(f"📊 Интернет: использовано {len(source_blocks)} источников")
+    else:
+        stext = "\n\n".join([
+            f"--- ИСТОЧНИК {i+1}: {r['link']} ---\n"
+            f"Заголовок: {r.get('title', '')}\n"
+            f"Описание: {r.get('snippet', '')}"
+            for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW])
+        ])
+        logger.warning("⚠️ Интернет: страницы не загружены, использованы сниппеты")
+
+    year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
+    if year_match:
+        time_context = f"Пользователь указал год {year_match.group(1)}. Ищи информацию за этот год, но используй самые свежие источники."
+    else:
+        time_context = f"Пользователь не указал дату. Ищи самую актуальную информацию на сегодня ({get_current_date()})."
+
+    system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
+
+⚠️ ПРАВИЛА:
+1. НЕ используй свои знания.
+2. НЕ додумывай.
+3. Если в данных нет ответа — напиши "В данных нет ответа".
+4. КАЖДЫЙ ФАКТ сопровождай ссылкой на источник и датой публикации.
+5. В конце ответа укажи, ЗА КАКОЙ ПЕРИОД собрана информация (например, "Информация собрана из источников от 15.07.2026 и 10.07.2026").
+6. Если информация устаревшая — честно скажи об этом.
+
+⚠️ КОНТЕКСТ ДАТЫ:
+{time_context}
+
+Запрос: {user_message}
 Сегодня: {get_current_date()}
-Контекст: {ctx}"""
+Контекст: {build_profile_context(profile)}
+
+ДАННЫЕ ИЗ ИНТЕРНЕТА (ВСЕ ИСТОЧНИКИ):
+{stext}"""
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=0.0)
+    answer, err = await ask_deepseek(messages, temperature=1.0)
 
     if err or not answer:
-        return "⚠️ Не удалось получить ответ от модели."
+        ans = "🔍 Результаты поиска:\n\n"
+        for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW], 1):
+            ans += f"{i}. {r.get('title', 'Без названия')}\n"
+            ans += f"   {r.get('snippet', 'Нет описания')[:150]}\n"
+            if r.get('link') and r['link'] != '#':
+                ans += f"   🔗 {r['link']}\n"
+            ans += "\n"
+        ans += f"📅 Поиск выполнен: {get_current_date()}"
+        return mark_source("internet_only", ans, is_cached=False, is_speculation=False)
 
     forbidden = ['возможно', 'вероятно', 'скорее всего', 'должно быть', 'похоже что']
     is_speculation = any(p in answer.lower() for p in forbidden)
 
-    return mark_source("model_only", answer, is_cached=False, is_speculation=is_speculation)
+    has_links = 'http' in answer or 'ссылка' in answer.lower() or 'источник' in answer.lower()
+    if not has_links:
+        is_speculation = True
+
+    result = mark_source("internet_only", answer, is_cached=False, is_speculation=is_speculation)
+    set_cached_answer(user_message, result)
+    return result
 
 
+# ==================== РЕЖИМ: ГИБРИД ====================
 async def generate_hybrid(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -677,6 +782,8 @@ async def generate_hybrid(uid, user_message, history, profile):
 
     variants = await generate_search_query(user_message)
     results = await search_primary(variants[0])
+    
+    logger.info(f"🔍 Гибрид: поиск -> {variants[0]}")
 
     if not results:
         return await generate_model_only(uid, user_message, history, profile)
@@ -689,23 +796,41 @@ async def generate_hybrid(uid, user_message, history, profile):
         pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
         source_blocks = []
         for i, p in enumerate(pages_sorted, 1):
-            source_blocks.append(f"--- ИСТОЧНИК {i}: {p['url']} ---\n{p['text']}")
+            source_blocks.append(
+                f"--- ИСТОЧНИК {i} ---\n"
+                f"URL: {p['url']}\n"
+                f"Дата публикации: {p.get('date', 'дата не указана')}\n"
+                f"Содержание:\n{p['text']}"
+            )
         stext = "\n\n".join(source_blocks)
         logger.info(f"📊 Гибрид: использовано {len(source_blocks)} источников")
     else:
         stext = "\n\n".join([
-            f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
+            f"--- ИСТОЧНИК {i+1}: {r['link']} ---\n"
+            f"Заголовок: {r.get('title', '')}\n"
+            f"Описание: {r.get('snippet', '')}"
             for i, r in enumerate((scored or results)[:TOP_RESULTS_SHOW])
         ])
         logger.warning("⚠️ Гибрид: страницы не загружены, использованы сниппеты")
 
-    system_prompt = f"""Ты — честный ассистент. Приоритет — данные из интернета.
-Если данных нет — используй свои знания, но отметь это.
-Если не знаешь — скажи "Я не знаю".
-ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно", "скорее всего".
+    year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
+    if year_match:
+        time_context = f"Пользователь указал год {year_match.group(1)}. Ищи информацию за этот год, но используй самые свежие источники."
+    else:
+        time_context = f"Пользователь не указал дату. Ищи самую актуальную информацию на сегодня ({get_current_date()})."
 
-⚠️ ВАЖНО: Ты получил данные из НЕСКОЛЬКИХ источников (ИСТОЧНИК 1, ИСТОЧНИК 2 и т.д.).
-Используй ВСЕ источники для составления ответа, а не только первый.
+    system_prompt = f"""Ты — честный ассистент. Приоритет — данные из интернета.
+
+⚠️ ПРАВИЛА:
+1. Используй данные из интернета В ПЕРВУЮ ОЧЕРЕДЬ.
+2. Если данных нет — используй свои знания, но ОТМЕТЬ ЭТО (напиши "[Из знаний модели]").
+3. Если не знаешь — скажи "Я не знаю".
+4. ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно", "скорее всего".
+5. КАЖДЫЙ ФАКТ из интернета сопровождай ссылкой и датой публикации.
+6. В конце укажи период, за который собрана информация.
+
+⚠️ КОНТЕКСТ ДАТЫ:
+{time_context}
 
 Запрос: {user_message}
 Сегодня: {get_current_date()}
@@ -733,115 +858,34 @@ async def generate_hybrid(uid, user_message, history, profile):
     return result
 
 
-async def generate_internet_only(uid, user_message, history, profile):
-    cached = get_cached_answer(user_message)
-    if cached:
-        return mark_source("internet_only", cached, is_cached=True, is_speculation=False)
+# ==================== РЕЖИМ: ТОЛЬКО ЗНАНИЯ (ЛОКАЛЬНЫЙ) ====================
+async def generate_model_only(uid, user_message, history, profile):
+    ctx = build_profile_context(profile)
+    system_prompt = f"""Ты — честный ассистент. Отвечай ТОЛЬКО из своих знаний.
 
-    variants = await generate_search_query(user_message)
-    all_results = await search_primary(variants[0])
+⚠️ ПРАВИЛА:
+1. Отвечай только тем, что знаешь на 100%.
+2. Если не знаешь — скажи "Я не знаю".
+3. ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно", "скорее всего", "должно быть".
+4. Если неуверен — напиши "⚠️ [НЕ 100%, ПРЕДПОЛОЖЕНИЕ]" перед ответом.
+5. Не выдумывай, не додумывай.
+6. Будь максимально объективным и честным.
 
-    if not all_results:
-        return "❌ В интернете ничего не найдено. Я не буду выдумывать."
-
-    scored = assess_relevance(all_results, user_message)
-    links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
-    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
-
-    if pages and len(pages) > 0:
-        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
-        source_blocks = []
-        for i, p in enumerate(pages_sorted, 1):
-            source_blocks.append(f"--- ИСТОЧНИК {i}: {p['url']} ---\n{p['text']}")
-        stext = "\n\n".join(source_blocks)
-        logger.info(f"📊 Интернет: использовано {len(source_blocks)} источников")
-    else:
-        stext = "\n\n".join([
-            f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title', '')}\nОписание: {r.get('snippet', '')}"
-            for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW])
-        ])
-        logger.warning("⚠️ Интернет: страницы не загружены, использованы сниппеты")
-
-    system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
-НЕ используй свои знания.
-НЕ додумывай.
-Если в данных нет ответа — напиши "В данных нет ответа".
-Каждый факт сопровождай ссылкой.
-
-⚠️ ВАЖНО: Ты получил данные из НЕСКОЛЬКИХ источников (ИСТОЧНИК 1, ИСТОЧНИК 2 и т.д.).
-Используй ВСЕ источники для составления ответа, а не только первый.
-Если в каком-то источнике нет нужной информации — просто укажи это.
-
-Запрос: {user_message}
+📅 Твои знания актуальны до мая 2025 года.
 Сегодня: {get_current_date()}
-Контекст: {build_profile_context(profile)}
-
-ДАННЫЕ ИЗ ИНТЕРНЕТА (ВСЕ ИСТОЧНИКИ):
-{stext}"""
+Контекст: {ctx}"""
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=1.0)
-
-    # ⬅️ НОВЫЙ БЛОК: автоматический повторный поиск, если данных нет
-    if err or not answer or "нет данных" in answer.lower() or "не найдено" in answer.lower():
-        logger.info("🔄 Данных нет, пробую повторный поиск с расширенным запросом...")
-        # Пробуем другой поисковый запрос
-        alt_variants = await generate_search_query(user_message + " список топ рейтинг")
-        alt_results = await search_primary(alt_variants[0])
-        if alt_results:
-            # Повторяем загрузку с новыми результатами
-            alt_scored = assess_relevance(alt_results, user_message)
-            alt_links = [r['link'] for r in (alt_scored or alt_results)[:SEARCH_RESULTS_NUM]]
-            alt_pages = await fetch_multiple_pages(alt_links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
-            if alt_pages and len(alt_pages) > 0:
-                alt_pages_sorted = sorted(alt_pages, key=lambda x: len(x["text"]), reverse=True)
-                alt_source_blocks = []
-                for i, p in enumerate(alt_pages_sorted, 1):
-                    alt_source_blocks.append(f"--- ИСТОЧНИК {i}: {p['url']} ---\n{p['text']}")
-                alt_stext = "\n\n".join(alt_source_blocks)
-                logger.info(f"📊 Повторный поиск: использовано {len(alt_source_blocks)} источников")
-                
-                alt_system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
-НЕ используй свои знания.
-НЕ додумывай.
-Если в данных нет ответа — напиши "В данных нет ответа".
-Каждый факт сопровождай ссылкой.
-
-Запрос: {user_message}
-Сегодня: {get_current_date()}
-Контекст: {build_profile_context(profile)}
-
-ДАННЫЕ ИЗ ИНТЕРНЕТА:
-{alt_stext}"""
-                
-                alt_messages = [{"role": "system", "content": alt_system_prompt}] + history + [
-                    {"role": "user", "content": user_message}]
-                alt_answer, alt_err = await ask_deepseek(alt_messages, temperature=1.0)
-                if not alt_err and alt_answer and "нет данных" not in alt_answer.lower():
-                    answer = alt_answer
+    answer, err = await ask_deepseek(messages, temperature=0.0)
 
     if err or not answer:
-        ans = "🔍 Результаты поиска:\n\n"
-        for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW], 1):
-            ans += f"{i}. {r.get('title', 'Без названия')}\n"
-            ans += f"   {r.get('snippet', 'Нет описания')[:150]}\n"
-            if r.get('link') and r['link'] != '#':
-                ans += f"   Ссылка: {r['link']}\n"
-            ans += "\n"
-        ans += f"📅 {get_current_date()}"
-        return mark_source("internet_only", ans, is_cached=False, is_speculation=False)
+        return "⚠️ Не удалось получить ответ от модели."
 
     forbidden = ['возможно', 'вероятно', 'скорее всего', 'должно быть', 'похоже что']
     is_speculation = any(p in answer.lower() for p in forbidden)
 
-    has_links = 'http' in answer or 'ссылка' in answer.lower() or 'источник' in answer.lower()
-    if not has_links:
-        is_speculation = True
-
-    result = mark_source("internet_only", answer, is_cached=False, is_speculation=is_speculation)
-    set_cached_answer(user_message, result)
-    return result
+    return mark_source("model_only", answer, is_cached=False, is_speculation=is_speculation)
 
 
 # ==================== КНОПКИ ====================
@@ -865,6 +909,10 @@ async def start(update, context):
         return
     await safe_reply(update,
                      "👋 Привет! Я честный ассистент с интернетом.\n\n"
+                     "📋 Режимы:\n"
+                     "🌐 Только интернет — только свежие данные с датами и ссылками\n"
+                     "🔍 Гибрид — интернет + мои знания\n"
+                     "🧠 Только знания — честно, объективно, без выдумок\n\n"
                      "📋 Команды:\n"
                      "/profile — мои знания о тебе\n"
                      "/memory — поиск в истории\n"
@@ -958,7 +1006,6 @@ async def restore_command(update, context):
         await safe_reply(update, "❌ Нет бэкапов.")
 
 
-# ⬅️ НОВАЯ КОМАНДА: очистка кэша
 async def clearcache_command(update, context):
     uid = update.effective_user.id
     if ALLOWED_USERS and uid not in ALLOWED_USERS:
@@ -1132,11 +1179,11 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("restore", restore_command))
-    app.add_handler(CommandHandler("clearcache", clearcache_command))  # ⬅️ НОВАЯ КОМАНДА
+    app.add_handler(CommandHandler("clearcache", clearcache_command))
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (итоговая версия, CACHE_TTL=1 час, /clearcache, авто-повтор)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (итоговая версия: даты+ссылки, 3 режима)")
     app.run_polling()
 
 
