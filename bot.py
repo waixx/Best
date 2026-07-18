@@ -1,9 +1,9 @@
 # ================================================================
-#  BroWaix Bot — ИСПРАВЛЕННАЯ ВЕРСИЯ (сборка из ВСЕХ источников)
-#  - Теперь DeepSeek получает ВСЕ загруженные страницы
-#  - Сортировка по информативности
-#  - Нумерация источников
-#  - Логирование количества использованных источников
+#  BroWaix Bot — ИТОГОВАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ 18.07.2026
+#  - Добавлена команда /clearcache для очистки кэша
+#  - CACHE_TTL уменьшен до 3600 (1 час)
+#  - Автоматический повторный поиск при ответе "нет данных"
+#  - Все функции сохранены
 # ================================================================
 
 import logging
@@ -58,7 +58,7 @@ def get_current_date():
     return now().strftime("%d.%m.%Y")
 
 
-# ==================== ОПТИМАЛЬНЫЕ НАСТРОЙКИ ====================
+# ==================== НАСТРОЙКИ ====================
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
@@ -67,7 +67,7 @@ SEARCH_RESULTS_NUM = 30
 TOP_RESULTS_SHOW = 5
 MAX_HTML_LEN = 8000
 MAX_TOKENS_ANSWER = 3000
-CACHE_TTL = 86400
+CACHE_TTL = 3600  # ⬅️ ИЗМЕНЕНО: 1 час (было 24 часа)
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -645,6 +645,8 @@ def build_profile_context(profile):
     return ". ".join(parts)[:150]
 
 
+# ==================== ГЕНЕРАЦИЯ ОТВЕТОВ ====================
+
 async def generate_model_only(uid, user_message, history, profile):
     ctx = build_profile_context(profile)
     system_prompt = f"""Ты — честный ассистент. Отвечай ТОЛЬКО из своих знаний.
@@ -668,7 +670,6 @@ async def generate_model_only(uid, user_message, history, profile):
     return mark_source("model_only", answer, is_cached=False, is_speculation=is_speculation)
 
 
-# ==================== ИСПРАВЛЕННАЯ ФУНКЦИЯ — сборка из ВСЕХ источников ====================
 async def generate_hybrid(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -684,7 +685,6 @@ async def generate_hybrid(uid, user_message, history, profile):
     links = [r['link'] for r in (scored or results)[:SEARCH_RESULTS_NUM]]
     pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
 
-    # ⭐ СОБИРАЕМ ВСЕ СТРАНИЦЫ С НУМЕРАЦИЕЙ
     if pages and len(pages) > 0:
         pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
         source_blocks = []
@@ -703,6 +703,9 @@ async def generate_hybrid(uid, user_message, history, profile):
 Если данных нет — используй свои знания, но отметь это.
 Если не знаешь — скажи "Я не знаю".
 ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно", "скорее всего".
+
+⚠️ ВАЖНО: Ты получил данные из НЕСКОЛЬКИХ источников (ИСТОЧНИК 1, ИСТОЧНИК 2 и т.д.).
+Используй ВСЕ источники для составления ответа, а не только первый.
 
 Запрос: {user_message}
 Сегодня: {get_current_date()}
@@ -730,7 +733,6 @@ async def generate_hybrid(uid, user_message, history, profile):
     return result
 
 
-# ==================== ИСПРАВЛЕННАЯ ФУНКЦИЯ — сборка из ВСЕХ источников ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -746,7 +748,6 @@ async def generate_internet_only(uid, user_message, history, profile):
     links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
     pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
 
-    # ⭐ СОБИРАЕМ ВСЕ СТРАНИЦЫ С НУМЕРАЦИЕЙ
     if pages and len(pages) > 0:
         pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
         source_blocks = []
@@ -766,7 +767,10 @@ async def generate_internet_only(uid, user_message, history, profile):
 НЕ додумывай.
 Если в данных нет ответа — напиши "В данных нет ответа".
 Каждый факт сопровождай ссылкой.
-СОБИРАЙ ИНФОРМАЦИЮ ИЗ ВСЕХ ИСТОЧНИКОВ, А НЕ ТОЛЬКО ИЗ ПЕРВОГО.
+
+⚠️ ВАЖНО: Ты получил данные из НЕСКОЛЬКИХ источников (ИСТОЧНИК 1, ИСТОЧНИК 2 и т.д.).
+Используй ВСЕ источники для составления ответа, а не только первый.
+Если в каком-то источнике нет нужной информации — просто укажи это.
 
 Запрос: {user_message}
 Сегодня: {get_current_date()}
@@ -778,6 +782,44 @@ async def generate_internet_only(uid, user_message, history, profile):
     messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}]
     answer, err = await ask_deepseek(messages, temperature=1.0)
+
+    # ⬅️ НОВЫЙ БЛОК: автоматический повторный поиск, если данных нет
+    if err or not answer or "нет данных" in answer.lower() or "не найдено" in answer.lower():
+        logger.info("🔄 Данных нет, пробую повторный поиск с расширенным запросом...")
+        # Пробуем другой поисковый запрос
+        alt_variants = await generate_search_query(user_message + " список топ рейтинг")
+        alt_results = await search_primary(alt_variants[0])
+        if alt_results:
+            # Повторяем загрузку с новыми результатами
+            alt_scored = assess_relevance(alt_results, user_message)
+            alt_links = [r['link'] for r in (alt_scored or alt_results)[:SEARCH_RESULTS_NUM]]
+            alt_pages = await fetch_multiple_pages(alt_links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RESULTS_SHOW)
+            if alt_pages and len(alt_pages) > 0:
+                alt_pages_sorted = sorted(alt_pages, key=lambda x: len(x["text"]), reverse=True)
+                alt_source_blocks = []
+                for i, p in enumerate(alt_pages_sorted, 1):
+                    alt_source_blocks.append(f"--- ИСТОЧНИК {i}: {p['url']} ---\n{p['text']}")
+                alt_stext = "\n\n".join(alt_source_blocks)
+                logger.info(f"📊 Повторный поиск: использовано {len(alt_source_blocks)} источников")
+                
+                alt_system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
+НЕ используй свои знания.
+НЕ додумывай.
+Если в данных нет ответа — напиши "В данных нет ответа".
+Каждый факт сопровождай ссылкой.
+
+Запрос: {user_message}
+Сегодня: {get_current_date()}
+Контекст: {build_profile_context(profile)}
+
+ДАННЫЕ ИЗ ИНТЕРНЕТА:
+{alt_stext}"""
+                
+                alt_messages = [{"role": "system", "content": alt_system_prompt}] + history + [
+                    {"role": "user", "content": user_message}]
+                alt_answer, alt_err = await ask_deepseek(alt_messages, temperature=1.0)
+                if not alt_err and alt_answer and "нет данных" not in alt_answer.lower():
+                    answer = alt_answer
 
     if err or not answer:
         ans = "🔍 Результаты поиска:\n\n"
@@ -802,6 +844,7 @@ async def generate_internet_only(uid, user_message, history, profile):
     return result
 
 
+# ==================== КНОПКИ ====================
 def get_mode_keyboard():
     keyboard = [
         [
@@ -815,6 +858,7 @@ def get_mode_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
+# ==================== КОМАНДЫ ====================
 async def start(update, context):
     uid = update.effective_user.id
     if ALLOWED_USERS and uid not in ALLOWED_USERS:
@@ -826,7 +870,8 @@ async def start(update, context):
                      "/memory — поиск в истории\n"
                      "/stats — статистика\n"
                      "/forget — забыть всё\n"
-                     "/restore — восстановить из бэкапа\n\n"
+                     "/restore — восстановить из бэкапа\n"
+                     "/clearcache — очистить кэш\n\n"
                      "Просто напиши вопрос — я покажу кнопки с выбором режима."
                      )
 
@@ -913,6 +958,18 @@ async def restore_command(update, context):
         await safe_reply(update, "❌ Нет бэкапов.")
 
 
+# ⬅️ НОВАЯ КОМАНДА: очистка кэша
+async def clearcache_command(update, context):
+    uid = update.effective_user.id
+    if ALLOWED_USERS and uid not in ALLOWED_USERS:
+        return
+    global html_cache, search_cache, answer_cache
+    html_cache = {}
+    search_cache = {}
+    answer_cache = {}
+    await safe_reply(update, "🧹 Кэш очищен! Теперь ответы будут свежими.")
+
+
 async def handle_remember(update, context):
     uid = update.effective_user.id
     text = update.effective_message.text[8:].strip()
@@ -933,6 +990,7 @@ async def handle_remember(update, context):
             await safe_reply(update, "❌ Не удалось сохранить факт.")
 
 
+# ==================== ОТПРАВКА ====================
 async def safe_reply(update: Update, text: str, reply_markup=None):
     if not text or not isinstance(text, str):
         text = "⚠️ Пустой ответ."
@@ -954,6 +1012,7 @@ async def safe_reply(update: Update, text: str, reply_markup=None):
             pass
 
 
+# ==================== ОБРАБОТЧИКИ ====================
 async def handle_message(update, context):
     try:
         uid = update.effective_user.id
@@ -1030,6 +1089,7 @@ async def handle_mode_selection(update, context):
         await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
 
 
+# ==================== ФОНОВЫЕ ЗАДАЧИ ====================
 async def cleanup_caches_periodic():
     while True:
         await asyncio.sleep(3600)
@@ -1055,6 +1115,7 @@ async def post_init(application):
     logger.info("🚀 Бот запущен")
 
 
+# ==================== MAIN ====================
 def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -1071,10 +1132,11 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("restore", restore_command))
+    app.add_handler(CommandHandler("clearcache", clearcache_command))  # ⬅️ НОВАЯ КОМАНДА
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (исправлена сборка из всех источников)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (итоговая версия, CACHE_TTL=1 час, /clearcache, авто-повтор)")
     app.run_polling()
 
 
