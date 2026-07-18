@@ -1,9 +1,8 @@
 # ================================================================
-#  BroWaix Bot — АНАЛИТИЧЕСКАЯ ВЕРСИЯ
-#  - 10 источников, анализ, сравнение, выводы
-#  - Фильтрация мусорных дат
-#  - Дедупликация доменов
-#  - Увеличенный таймаут
+#  BroWaix Bot — ЛОГИЧЕСКАЯ ВЕРСИЯ
+#  - Анализирует, сравнивает, находит противоречия
+#  - Делает логический вывод, а не пересказывает
+#  - 10 источников
 # ================================================================
 
 import logging
@@ -15,6 +14,7 @@ import asyncio
 import aiohttp
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -66,7 +66,7 @@ DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1"
 SEARCH_RESULTS_NUM = 50
 TOP_RESULTS_SHOW = 10
 MAX_HTML_LEN = 12000
-MAX_TOKENS_ANSWER = 5000       # увеличено для анализа
+MAX_TOKENS_ANSWER = 6000
 CACHE_TTL = 3600
 
 MODE_MODEL = "model_only"
@@ -377,7 +377,7 @@ def set_cached_answer(query, data):
         del answer_cache[oldest]
 
 
-# ==================== 🔥 ФИЛЬТРАЦИЯ ДАТ (убираем мусор) ====================
+# ==================== ФИЛЬТРАЦИЯ ДАТ ====================
 def extract_date_from_html(html: str) -> str:
     if not html:
         return "дата не указана"
@@ -394,14 +394,12 @@ def extract_date_from_html(html: str) -> str:
         match = re.search(pattern, html)
         if match:
             date = match.group(1)
-            # Фильтруем мусор: дата должна быть в разумном диапазоне
             if re.match(r'^\d{4}$', date):
                 year = int(date)
                 if 2000 <= year <= 2030:
                     return date
                 else:
                     return "дата не указана"
-            # Если дата в формате дд.мм.гггг или гггг-мм-дд — пропускаем
             return date
     return "дата не указана"
 
@@ -444,7 +442,7 @@ async def fetch_content(url: str) -> tuple:
                 browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)  # ⬅️ 30 сек
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 html = await page.content()
                 await page.close()
                 text = re.sub(r'<[^>]+>', ' ', html)
@@ -483,9 +481,7 @@ async def fetch_content(url: str) -> tuple:
     return "", "дата не указана"
 
 
-# ==================== 🔥 ДЕДУПЛИКАЦИЯ ДОМЕНОВ ====================
 def deduplicate_domains(pages):
-    """Убирает дублирующиеся домены, оставляя самый информативный"""
     seen_domains = {}
     unique_pages = []
     
@@ -496,10 +492,8 @@ def deduplicate_domains(pages):
             seen_domains[domain] = page
             unique_pages.append(page)
         else:
-            # Если домен уже есть, сравниваем длину текста
             existing = seen_domains[domain]
             if len(page['text']) > len(existing['text']):
-                # Заменяем на более информативный
                 unique_pages.remove(existing)
                 unique_pages.append(page)
                 seen_domains[domain] = page
@@ -525,7 +519,6 @@ async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RE
     valid = [r for r in fetched if r is not None]
     valid.sort(key=lambda x: len(x["text"]), reverse=True)
     
-    # 🔥 Дедуплицируем домены
     valid = deduplicate_domains(valid)
     
     return valid[:top_k]
@@ -719,7 +712,7 @@ def build_profile_context(profile):
     return ". ".join(parts)[:150]
 
 
-# ==================== РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ (АНАЛИТИЧЕСКИЙ) ====================
+# ==================== 🔥 РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ (ЛОГИЧЕСКИЙ) ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -744,11 +737,12 @@ async def generate_internet_only(uid, user_message, history, profile):
             source_blocks.append(
                 f"--- ИСТОЧНИК {i} ---\n"
                 f"URL: {p['url']}\n"
-                f"Дата публикации: {p.get('date', 'дата не указана')}\n"
+                f"Дата: {p.get('date', 'дата не указана')}\n"
                 f"Содержание:\n{p['text']}"
             )
         stext = "\n\n".join(source_blocks)
-        logger.info(f"📊 Интернет: использовано {len(source_blocks)} источников")
+        source_count = len(source_blocks)
+        logger.info(f"📊 Интернет: использовано {source_count} источников")
     else:
         stext = "\n\n".join([
             f"--- ИСТОЧНИК {i+1}: {r['link']} ---\n"
@@ -756,7 +750,8 @@ async def generate_internet_only(uid, user_message, history, profile):
             f"Описание: {r.get('snippet', '')}"
             for i, r in enumerate((scored or all_results)[:TOP_RESULTS_SHOW])
         ])
-        logger.warning("⚠️ Интернет: страницы не загружены, использованы сниппеты")
+        source_count = TOP_RESULTS_SHOW
+        logger.warning(f"⚠️ Интернет: использованы сниппеты ({source_count} источников)")
 
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     if year_match:
@@ -764,37 +759,39 @@ async def generate_internet_only(uid, user_message, history, profile):
     else:
         time_context = f"Ищи самую актуальную информацию на сегодня ({get_current_date()})."
 
-    # 🔥 НОВЫЙ АНАЛИТИЧЕСКИЙ ПРОМПТ
-    system_prompt = f"""Ты — аналитик, который изучает несколько источников и делает обоснованные выводы.
+    # 🔥 НОВЫЙ ПРОМПТ — ЛОГИЧЕСКИЙ АНАЛИЗ
+    system_prompt = f"""Ты — аналитик. Твоя задача — не пересказывать источники, а найти в них логику.
 
-⚠️ ТВОЯ ЗАДАЧА:
-1. Прочитай ВСЕ источники.
-2. Сравни их: что совпадает, что отличается, какие есть противоречия.
-3. Сделай вывод: какая информация наиболее достоверная и почему.
-4. Дай свой вердикт — на основе анализа, а не просто пересказа.
+⚠️ ЧТО ТЫ ДОЛЖЕН СДЕЛАТЬ:
+1. Прочитай ВСЕ {source_count} источника.
+2. Найди, в чём они СОВПАДАЮТ — это скорее всего достоверная информация.
+3. Найди, в чём они ПРОТИВОРЕЧАТ друг другу — отметь эти противоречия.
+4. Проверь, нет ли АНОМАЛИЙ:
+   - слишком идеальные цифры ("100%", "все", "никогда")
+   - даты, которые не совпадают с другими источниками
+   - единственный источник, который противоречит всем остальным
+5. Сделай ЛОГИЧЕСКИЙ ВЫВОД: какая информация наиболее вероятна.
 
-⚠️ ПРАВИЛА:
-1. Не просто копируй информацию — анализируй её.
-2. Если источники противоречат друг другу — укажи это и объясни, чему ты доверяешь больше.
-3. Если информация устаревшая — скажи об этом.
-4. В конце дай краткое резюме: "Мой вердикт: ..."
-5. КАЖДЫЙ ФАКТ сопровождай ссылкой и датой.
-6. Если сериал упоминается в нескольких источниках — объедини данные о нём.
-7. Будь максимально объективен.
+⚠️ ФОРМАТ ОТВЕТА (ОБЯЗАТЕЛЬНО):
+📊 **Что совпадает во всех источниках:**
+[общие факты]
 
-⚠️ КОНТЕКСТ ДАТЫ:
-{time_context}
+⚠️ **Противоречия и аномалии:**
+[что не сходится, какие источники спорят, есть ли подозрительные данные]
+
+✅ **Мой логический вывод:**
+[твой вывод на основе анализа всех источников]
 
 Запрос: {user_message}
 Сегодня: {get_current_date()}
 Контекст: {build_profile_context(profile)}
 
-ДАННЫЕ ИЗ ИНТЕРНЕТА (ВСЕ ИСТОЧНИКИ):
+ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
 {stext}"""
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=1.0)
+    answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
 
     if err or not answer:
         ans = "🔍 Результаты поиска:\n\n"
@@ -815,7 +812,7 @@ async def generate_internet_only(uid, user_message, history, profile):
     return result
 
 
-# ==================== РЕЖИМ: ГИБРИД (АНАЛИТИЧЕСКИЙ) ====================
+# ==================== РЕЖИМ: ГИБРИД ====================
 async def generate_hybrid(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -840,11 +837,12 @@ async def generate_hybrid(uid, user_message, history, profile):
             source_blocks.append(
                 f"--- ИСТОЧНИК {i} ---\n"
                 f"URL: {p['url']}\n"
-                f"Дата публикации: {p.get('date', 'дата не указана')}\n"
+                f"Дата: {p.get('date', 'дата не указана')}\n"
                 f"Содержание:\n{p['text']}"
             )
         stext = "\n\n".join(source_blocks)
-        logger.info(f"📊 Гибрид: использовано {len(source_blocks)} источников")
+        source_count = len(source_blocks)
+        logger.info(f"📊 Гибрид: использовано {source_count} источников")
     else:
         stext = "\n\n".join([
             f"--- ИСТОЧНИК {i+1}: {r['link']} ---\n"
@@ -852,7 +850,8 @@ async def generate_hybrid(uid, user_message, history, profile):
             f"Описание: {r.get('snippet', '')}"
             for i, r in enumerate((scored or results)[:TOP_RESULTS_SHOW])
         ])
-        logger.warning("⚠️ Гибрид: страницы не загружены, использованы сниппеты")
+        source_count = TOP_RESULTS_SHOW
+        logger.warning(f"⚠️ Гибрид: использованы сниппеты ({source_count} источников)")
 
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     if year_match:
@@ -860,35 +859,36 @@ async def generate_hybrid(uid, user_message, history, profile):
     else:
         time_context = f"Ищи самую актуальную информацию на сегодня ({get_current_date()})."
 
-    system_prompt = f"""Ты — аналитик, который изучает несколько источников и делает обоснованные выводы.
+    system_prompt = f"""Ты — аналитик. Твоя задача — не пересказывать источники, а найти в них логику.
 
-⚠️ ТВОЯ ЗАДАЧА:
-1. Прочитай ВСЕ источники.
-2. Сравни их: что совпадает, что отличается.
-3. Сделай вывод: какая информация наиболее достоверная.
-4. Если данных из интернета недостаточно — дополни своими знаниями, но ОТМЕТЬ ЭТО.
-5. Дай свой вердикт.
+⚠️ ЧТО ТЫ ДОЛЖЕН СДЕЛАТЬ:
+1. Прочитай ВСЕ {source_count} источника.
+2. Найди, в чём они СОВПАДАЮТ.
+3. Найди, в чём они ПРОТИВОРЕЧАТ.
+4. Проверь на АНОМАЛИИ.
+5. Сделай ЛОГИЧЕСКИЙ ВЫВОД.
+6. Если данных из интернета недостаточно — дополни своими знаниями, но ОТМЕТЬ ЭТО.
 
-⚠️ ПРАВИЛА:
-1. Приоритет — данные из интернета.
-2. Если интернет-источники противоречат друг другу — укажи это.
-3. Если используешь свои знания — напиши "[Из знаний модели]".
-4. В конце дай резюме: "Мой вердикт: ..."
-5. КАЖДЫЙ ФАКТ из интернета сопровождай ссылкой и датой.
+⚠️ ФОРМАТ ОТВЕТА:
+📊 **Что совпадает во всех источниках:**
+[общие факты]
 
-⚠️ КОНТЕКСТ ДАТЫ:
-{time_context}
+⚠️ **Противоречия и аномалии:**
+[что не сходится]
+
+✅ **Мой логический вывод:**
+[твой вывод]
 
 Запрос: {user_message}
 Сегодня: {get_current_date()}
 Контекст: {build_profile_context(profile)}
 
-ДАННЫЕ ИЗ ИНТЕРНЕТА:
+ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
 {stext}"""
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=1.0)
+    answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
 
     if err or not answer:
         return await generate_internet_only(uid, user_message, history, profile)
@@ -920,7 +920,7 @@ async def generate_model_only(uid, user_message, history, profile):
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=0.0)
+    answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=MAX_TOKENS_ANSWER)
 
     if err or not answer:
         return "⚠️ Не удалось получить ответ от модели."
@@ -953,7 +953,7 @@ async def start(update, context):
     await safe_reply(update,
                      "👋 Привет! Я аналитический ассистент.\n\n"
                      "📋 Режимы:\n"
-                     "🌐 Только интернет — анализирую 10+ источников, сравниваю, делаю выводы\n"
+                     "🌐 Только интернет — анализирую 10+ источников, нахожу противоречия, делаю логический вывод\n"
                      "🔍 Гибрид — интернет + мои знания\n"
                      "🧠 Только знания — честно, объективно, без выдумок\n\n"
                      "📋 Команды:\n"
@@ -1226,7 +1226,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (аналитическая версия, 10 источников, дедупликация)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (логическая версия)")
     app.run_polling()
 
 
