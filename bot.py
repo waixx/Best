@@ -1,10 +1,9 @@
 # ===================================================================
-#  BroWaix Bot — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  - Улучшенный поиск: добавляет "рейтинг", "обзор", год
-#  - Штраф за старые источники (старше 2 лет)
-#  - Извлечение списков (<ul>/<ol>) и таблиц
-#  - Универсальный промпт для любых тем
-#  - Экономичные настройки: 25 страниц, 6000 символов
+#  BroWaix Bot — ФИНАЛЬНАЯ ПОЛНАЯ ВЕРСИЯ (без таймера уточнения, с кнопками после ответа)
+#  - Основной таймер (от вопроса до ответа)
+#  - Кнопки после ответа: Новый запрос / Уточнить текущий
+#  - Кнопка "Стоп" всегда в reply-клавиатуре
+#  - История не обнуляется при новом запросе
 # ===================================================================
 
 import logging
@@ -56,11 +55,10 @@ MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-SEARCH_RESULTS_NUM = 25          # оптимум скорости и качества
-MAX_HTML_LEN = 6000              # больше данных с каждой страницы
+SEARCH_RESULTS_NUM = 25
+MAX_HTML_LEN = 6000
 MAX_TOKENS_ANSWER = 7000
 CACHE_TTL = 3600
-TIMER_TIMEOUT = 300
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -357,35 +355,22 @@ def extract_date_from_html(html: str) -> str:
             return date
     return "дата не указана"
 
-# ==================== УЛУЧШЕННЫЙ ПОИСКОВЫЙ ЗАПРОС ====================
+# ==================== ПОИСКОВЫЙ ЗАПРОС ====================
 async def generate_search_query(query: str) -> list:
-    """
-    Генерирует поисковые запросы, добавляя контекстные слова:
-    - если нет года и не "за всё время" → добавляем текущий год и слово "рейтинг"
-    - если есть указание на "за всё время" → ищем без года
-    - если есть год → используем его
-    """
     stop = {'найди','пожалуйста','помоги','мне','лучшие','скажи','расскажи','покажи','найти'}
     words = [w for w in re.sub(r'[^\w\s]', '', query).split()
              if w.lower() not in stop and len(w)>2]
     if not words:
         return [query]
-    
     base = " ".join(words[:6])
-    
-    # Проверяем маркеры "за всё время"
     evergreen_phrases = ['за всё время','за все время','всех времен','классик','best of all time','в истории']
     is_evergreen = any(p in query.lower() for p in evergreen_phrases)
-    
-    # Ищем год в запросе
     year_match = re.search(r'\b(20[2-9][0-9])\b', query)
-    
     if is_evergreen:
         return [base, f"{base} best of all time"]
     elif year_match:
         return [f"{base} {year_match.group(1)}"]
     else:
-        # Добавляем контекстные слова для поиска рейтингов и обзоров
         context_words = ["рейтинг", "обзор", "лучший", "топ"]
         base_with_year = f"{base} {now().year}"
         queries = [base, base_with_year]
@@ -560,33 +545,29 @@ def extract_year_from_text(text):
     match = re.search(r'\b(20[2-9][0-9])\b', text)
     return int(match.group(1)) if match else None
 
-# ==================== ОЦЕНКА РЕЛЕВАНТНОСТИ (со штрафом за старые данные) ====================
+# ==================== ОЦЕНКА РЕЛЕВАНТНОСТИ ====================
 def assess_relevance(results, query):
     if not results or not isinstance(results, list): return []
     query_year = None
     year_match = re.search(r'\b(20[2-9][0-9])\b', query)
     if year_match:
         query_year = int(year_match.group(1))
-    
     current_year = now().year
     stop_words = {'найди','пожалуйста','помоги','мне','лучшие','скажи','расскажи','покажи','найти'}
     keywords = [w.lower() for w in re.sub(r'[^\w\s]', '', query).split()
                 if w.lower() not in stop_words and len(w)>3]
-    
     scored = []
     for res in results:
         if not isinstance(res, dict): continue
         text = (res.get('title','') or '') + ' ' + (res.get('snippet','') or '')
         text_lower = text.lower()
         link = res.get('link','').lower()
-        
         keyword_score = sum(3 for kw in keywords if kw in text_lower)
         domain_score = 0
         if any(zone in link for zone in ['.gov','.edu','.org','wikipedia.org']):
             domain_score += 5
         spam = ['ozon','wildberries','aliexpress','avito','amazon','ebay','taobao']
         if any(s in link for s in spam): domain_score -= 8
-        
         year = extract_year_from_text(text)
         year_score = 0
         if year:
@@ -597,13 +578,11 @@ def assess_relevance(results, query):
             elif year >= current_year - 2:
                 year_score = 5
             else:
-                year_score = -5   # штраф за старые источники
+                year_score = -5
         else:
             year_score = 0
-        
         total = keyword_score + year_score + domain_score
         scored.append({**res, 'score':total, 'year':year})
-    
     relevant = [r for r in scored if r['score'] > 0]
     relevant.sort(key=lambda x: x['score'], reverse=True)
     return relevant
@@ -710,9 +689,17 @@ def get_mode_keyboard():
 def get_main_reply_keyboard():
     keyboard = [
         ["🔍 Поиск", "💬 Болтовня"],
-        ["🔄 Сброс", "❓ Помощь"]
+        ["🔄 Сброс", "❓ Помощь"],
+        ["⏹️ Стоп"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_after_answer_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🔄 Новый запрос", callback_data="new_query"),
+         InlineKeyboardButton("✏️ Уточнить текущий", callback_data="refine_current")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # ==================== ГЕНЕРАЦИЯ ОТВЕТОВ ====================
 async def generate_chat_response(user_message, history, profile):
@@ -760,7 +747,6 @@ async def generate_internet_only(uid, user_message, history, profile):
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     time_context = f"Ищи информацию за {year_match.group(1)}." if year_match else f"Ищи самую актуальную информацию на {get_current_date()}."
 
-    # ============ УНИВЕРСАЛЬНЫЙ ПРОМПТ ============
     system_prompt = f"""
 Ты — универсальный аналитик. Ты получил {source_count} источников данных.
 
@@ -930,12 +916,15 @@ async def handle_message(update, context):
 
         if user_message == "🔍 Поиск":
             context.user_data['bot_mode'] = BOT_MODE_SEARCH
-            context.user_data.clear()
+            context.user_data.pop('awaiting_confirmation', None)
+            context.user_data.pop('awaiting_hint', None)
+            context.user_data.pop('original_query', None)
+            context.user_data.pop('rephrased_query', None)
+            context.user_data.pop('clarifications', None)
             await safe_reply(update, "🔍 Режим поиска активирован.\n\nЗадай вопрос, я уточню его и предложу режимы поиска.")
             return
         elif user_message == "💬 Болтовня":
             context.user_data['bot_mode'] = BOT_MODE_CHAT
-            context.user_data.clear()
             await safe_reply(update, "💬 Режим болтовни активирован.\n\nПросто общайся, я не ищу в интернете.")
             return
         elif user_message == "🔄 Сброс":
@@ -948,9 +937,14 @@ async def handle_message(update, context):
                 "❓ **Помощь**\n\n"
                 "🔍 **Поиск** – задай вопрос, я уточню и предложу режимы поиска.\n"
                 "💬 **Болтовня** – просто общайся, без интернета.\n"
-                "🔄 **Сброс** – очищает всё и начинает заново.\n\n"
+                "🔄 **Сброс** – очищает всё и начинает заново.\n"
+                "⏹️ **Стоп** – сброс текущего диалога.\n\n"
                 "Команды: /start – приветствие."
             )
+            return
+        elif user_message == "⏹️ Стоп":
+            context.user_data.clear()
+            await safe_reply(update, "⏹️ Диалог остановлен и сброшен.")
             return
 
         if user_message.startswith('/'):
@@ -973,29 +967,18 @@ async def handle_message(update, context):
             return
 
         # === РЕЖИМ ПОИСКА ===
-        if context.user_data.get('timer_start'):
-            if time.time() - context.user_data['timer_start'] > TIMER_TIMEOUT:
-                context.user_data.clear()
-                await safe_reply(update, "⏰ Время на уточнение истекло. Напиши вопрос заново.")
-                return
-
         if not context.user_data.get('awaiting_confirmation') and not context.user_data.get('awaiting_hint'):
-            context.user_data.clear()
-            context.user_data['uid'] = uid
-            context.user_data['history'] = load_memory(uid)
-            context.user_data['profile'] = load_profile(uid)
-            context.user_data['clarifications'] = []
-            context.user_data['timer_start'] = time.time()
-            context.user_data['timer_done'] = False
-            context.user_data['bot_mode'] = BOT_MODE_SEARCH
+            context.user_data.setdefault('uid', uid)
+            context.user_data.setdefault('history', load_memory(uid))
+            context.user_data.setdefault('profile', load_profile(uid))
+            context.user_data.setdefault('clarifications', [])
+            context.user_data['start_time'] = time.time()
 
             understanding = await understand_question(user_message)
             rephrased = understanding.get('rephrased', user_message[:100]+"...")
             context.user_data['original_query'] = user_message
             context.user_data['rephrased_query'] = rephrased
             context.user_data['awaiting_confirmation'] = True
-
-            asyncio.create_task(timer_updater(update, context))
 
             await safe_reply(
                 update,
@@ -1046,8 +1029,38 @@ async def handle_confirmation(update, context):
             "✏️ Напиши подсказку: что именно я понял неправильно?"
         )
     elif query.data == "confirm_cancel":
-        context.user_data.clear()
-        await query.edit_message_text("❌ Уточнение отменено. Диалог сброшен.")
+        context.user_data.pop('awaiting_confirmation', None)
+        context.user_data.pop('awaiting_hint', None)
+        context.user_data.pop('original_query', None)
+        context.user_data.pop('rephrased_query', None)
+        await query.edit_message_text("❌ Уточнение отменено. Можешь задать новый вопрос.")
+
+async def handle_after_answer_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+
+    if query.data == "new_query":
+        context.user_data.pop('awaiting_confirmation', None)
+        context.user_data.pop('awaiting_hint', None)
+        context.user_data.pop('original_query', None)
+        context.user_data.pop('rephrased_query', None)
+        context.user_data.pop('clarifications', None)
+        context.user_data['start_time'] = time.time()
+        await query.edit_message_text(
+            "🔄 Новый запрос готов. Напиши свой вопрос."
+        )
+    elif query.data == "refine_current":
+        rephrased = context.user_data.get('rephrased_query')
+        if not rephrased:
+            await query.edit_message_text("⏳ Нет активного вопроса для уточнения.")
+            return
+        context.user_data['awaiting_confirmation'] = True
+        context.user_data['awaiting_hint'] = False
+        await query.edit_message_text(
+            f"🧐 Ты спрашивал:\n\n**{rephrased}**\n\nУточни или подтверди:",
+            reply_markup=get_confirmation_keyboard()
+        )
 
 async def handle_mode_selection(update, context):
     query = update.callback_query
@@ -1076,9 +1089,8 @@ async def handle_mode_selection(update, context):
         if rephrased:
             answer = f"📌 Ты спросил: {rephrased}\n\n{answer}"
 
-        start = context.user_data.get('timer_start', time.time())
-        elapsed = int(time.time() - start)
-        context.user_data['timer_done'] = True
+        start_time = context.user_data.get('start_time', time.time())
+        elapsed = int(time.time() - start_time)
         answer = f"⏱️ {elapsed} сек\n\n{answer}"
 
         if answer and len(answer) > 10:
@@ -1098,33 +1110,13 @@ async def handle_mode_selection(update, context):
         if len(answer) > 4096:
             for i in range(0, len(answer), 4096):
                 await query.message.reply_text(answer[i:i+4096], disable_web_page_preview=True)
+            await query.message.reply_text("📌 Выбери действие:", reply_markup=get_after_answer_keyboard())
         else:
-            await query.message.reply_text(answer, disable_web_page_preview=True)
+            await query.message.reply_text(answer, disable_web_page_preview=True, reply_markup=get_after_answer_keyboard())
 
     except Exception as e:
         logger.error(f"Ошибка handle_mode_selection: {e}")
         await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
-
-async def timer_updater(update, context):
-    chat_id = update.effective_chat.id
-    start = context.user_data.get('timer_start', time.time())
-    message = None
-    while True:
-        if context.user_data.get('timer_done', False):
-            break
-        elapsed = int(time.time() - start)
-        if elapsed > TIMER_TIMEOUT:
-            await context.bot.send_message(chat_id, "⏰ Время на уточнение истекло. Напиши вопрос заново.")
-            context.user_data.clear()
-            break
-        if message is None:
-            message = await context.bot.send_message(chat_id, f"⏱️ {elapsed} сек (максимум {TIMER_TIMEOUT} сек)")
-        else:
-            try:
-                await message.edit_text(f"⏱️ {elapsed} сек (максимум {TIMER_TIMEOUT} сек)")
-            except:
-                message = await context.bot.send_message(chat_id, f"⏱️ {elapsed} сек (максимум {TIMER_TIMEOUT} сек)")
-        await asyncio.sleep(3)
 
 # ==================== КОМАНДЫ ====================
 async def start(update, context):
@@ -1137,7 +1129,8 @@ async def start(update, context):
         "🔍 **Поиск** – с уточнением и анализом\n"
         "💬 **Болтовня** – без поиска, просто общение\n"
         "🔄 **Сброс** – очистить диалог\n"
-        "❓ **Помощь** – справка\n\n"
+        "❓ **Помощь** – справка\n"
+        "⏹️ **Стоп** – остановить и сбросить\n\n"
         "Просто выбери режим и пиши.",
         reply_markup=get_main_reply_keyboard()
     )
@@ -1270,9 +1263,10 @@ def main():
     app.add_handler(CommandHandler("clearcache", clearcache_command))
     app.add_handler(CallbackQueryHandler(handle_confirmation, pattern="^confirm_"))
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
+    app.add_handler(CallbackQueryHandler(handle_after_answer_callback, pattern="^(new_query|refine_current)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (универсальная версия с улучшенным поиском)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (финальная полная версия)")
     app.run_polling()
 
 if __name__ == "__main__":
