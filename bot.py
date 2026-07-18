@@ -1,10 +1,9 @@
 # ===================================================================
-#  BroWaix Bot — ИТОГОВАЯ ВЕРСИЯ (18.07.2026)
-#  - Универсальная логика: переформулировка → уточнение → поиск
-#  - Таймер от первого вопроса до ответа
+#  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ (18.07.2026)
+#  - Кнопки подтверждения (Да / Нет)
+#  - Таймер с обновлением каждые 3 сек, тайм-аут 5 мин
+#  - Сохранение всех уточнений (бюджет, размеры, ОС и т.д.)
 #  - 10 источников, логический анализ
-#  - Команды: /profile, /memory, /stats, /forget, /restore, /clearcache
-#  - Все критические ошибки исправлены
 # ===================================================================
 
 import logging
@@ -29,8 +28,8 @@ from logging.handlers import RotatingFileHandler
 load_dotenv()
 
 # ==================== ЛОГГЕР ====================
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 handler = RotatingFileHandler("bot.log", maxBytes=5*1024*1024, backupCount=2)
 handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(handler)
@@ -61,6 +60,7 @@ TOP_RESULTS_SHOW = 10
 MAX_HTML_LEN = 12000
 MAX_TOKENS_ANSWER = 6000
 CACHE_TTL = 3600
+TIMER_TIMEOUT = 300  # 5 минут
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -117,17 +117,14 @@ def create_backup(uid, data_type):
     try:
         ts = now().strftime("%Y%m%d_%H%M%S")
         fname = os.path.join(BACKUP_DIR, f"{data_type}_{uid}_{ts}.json")
-        if data_type == "profile":
-            atomic_write(fname, load_profile(uid))
-        elif data_type == "memory":
-            atomic_write(fname, load_memory_raw(uid))
+        if data_type == "profile": atomic_write(fname, load_profile(uid))
+        elif data_type == "memory": atomic_write(fname, load_memory_raw(uid))
         backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.startswith(f"{data_type}_{uid}_")])
         for old in backups[:-5]:
             try: os.remove(os.path.join(BACKUP_DIR, old))
             except: pass
         return True
-    except Exception:
-        return False
+    except Exception: return False
 
 async def restore_backup(uid, data_type):
     try:
@@ -135,13 +132,10 @@ async def restore_backup(uid, data_type):
         if not backups: return False
         with open(os.path.join(BACKUP_DIR, backups[-1]), 'r', encoding='utf-8') as f:
             data = json.load(f)
-        if data_type == "profile":
-            save_profile(uid, data, backup=False)
-        elif data_type == "memory":
-            await save_memory(uid, data, backup=False)
+        if data_type == "profile": save_profile(uid, data, backup=False)
+        elif data_type == "memory": await save_memory(uid, data, backup=False)
         return True
-    except Exception:
-        return False
+    except Exception: return False
 
 # ==================== АВТОВОССТАНОВЛЕНИЕ ====================
 async def auto_restore_all_users():
@@ -224,7 +218,7 @@ async def save_memory(uid, history, backup=True):
     save_counter(uid, load_counter(uid)+1)
     return True
 
-# ==================== HTTP СЕССИЯ ====================
+# ==================== HTTP ====================
 _http_session = None
 _session_lock = asyncio.Lock()
 
@@ -292,7 +286,7 @@ def set_cached_answer(query, data):
         oldest = min(answer_cache.keys(), key=lambda k: answer_cache[k]['time'])
         del answer_cache[oldest]
 
-# ==================== ИЗВЛЕЧЕНИЕ ДАТЫ ИЗ HTML ====================
+# ==================== ИЗВЛЕЧЕНИЕ ДАТЫ ====================
 def extract_date_from_html(html: str) -> str:
     if not html: return "дата не указана"
     patterns = [
@@ -329,7 +323,7 @@ async def generate_search_query(query):
     elif year_match: return [f"{base} {year_match.group(1)}"]
     else: return [base, f"{base} {now().year}"]
 
-# ==================== ПАРСИНГ СТРАНИЦ ====================
+# ==================== ПАРСИНГ ====================
 async def fetch_content(url: str) -> tuple:
     if url in html_cache:
         cached = html_cache[url]
@@ -409,7 +403,7 @@ async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM, top_k=TOP_RE
     valid = deduplicate_domains(valid)
     return valid[:top_k]
 
-# ==================== ПОИСК (APISerpent, Serper) ====================
+# ==================== ПОИСК ====================
 async def search_apiserpent(query):
     if not APISERPENT_API_KEY: return []
     session = await get_http_session()
@@ -519,7 +513,7 @@ def mark_source(mode: str, text: str, is_cached: bool = False, is_speculation: b
         return f"⚠️ [НЕ 100%]\n\n⚠️ ВНИМАНИЕ: Это предположение, не подтвержденный факт.\n\n{text}"
     return f"{marker}\n\n{text}"
 
-# ==================== DEEPSEEK API (исправлена рекурсия) ====================
+# ==================== DEEPSEEK API ====================
 async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
     if attempt >= 5:
         logger.warning("❌ Превышено количество попыток запроса к DeepSeek")
@@ -560,25 +554,27 @@ def build_profile_context(profile):
         if isinstance(v, str): parts.append(f"{k}: {v[:40]}")
     return ". ".join(parts)[:150]
 
-# ==================== ПЕРЕФОРМУЛИРОВКА ВОПРОСОВ ====================
+# ==================== ПЕРЕФОРМУЛИРОВКА ====================
 async def understand_question(user_message: str) -> dict:
     system_prompt = """Ты — ассистент. Переформулируй вопрос пользователя СВОИМИ СЛОВАМИ, кратко и ясно.
 Ответь в формате JSON: {"rephrased": "твоя переформулировка"}"""
     messages = [{"role":"system","content":system_prompt}, {"role":"user","content":user_message}]
     answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=500)
     if err or not answer: return {"rephrased": user_message[:100]+"..."}
-    try:
-        return json.loads(answer)
-    except:
-        return {"rephrased": user_message[:100]+"..."}
+    try: return json.loads(answer)
+    except: return {"rephrased": user_message[:100]+"..."}
 
-async def reframe_with_hint(original_query: str, hint: str) -> str:
-    system_prompt = f"""Ты — ассистент. Переформулируй вопрос с учётом подсказки.
+async def reframe_with_hint(original_query: str, hint: str, clarifications: list = None) -> str:
+    clarifications_text = ""
+    if clarifications:
+        clarifications_text = "\nРанее уточнено:\n" + "\n".join(f"- {c}" for c in clarifications)
+    system_prompt = f"""Ты — ассистент. Переформулируй вопрос с учётом всех уточнений.
 Исходный вопрос: "{original_query}"
-Подсказка: "{hint}"
+Новая подсказка: "{hint}"
+{clarifications_text}
 Ответь в формате JSON: {{"rephrased": "новая формулировка"}}"""
-    messages = [{"role":"system","content":system_prompt}, {"role":"user","content":"Учти подсказку"}]
-    answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=500)
+    messages = [{"role":"system","content":system_prompt}]
+    answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=600)
     if err or not answer: return f"{original_query} (с учётом: {hint})"
     try:
         data = json.loads(answer)
@@ -587,6 +583,13 @@ async def reframe_with_hint(original_query: str, hint: str) -> str:
         return f"{original_query} (с учётом: {hint})"
 
 # ==================== КНОПКИ ====================
+def get_confirmation_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, верно", callback_data="confirm_yes"),
+         InlineKeyboardButton("❌ Нет, переформулируй", callback_data="confirm_no")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 def get_mode_keyboard():
     keyboard = [
         [InlineKeyboardButton("🧠 Только знания", callback_data=f"mode_{MODE_MODEL}"),
@@ -595,7 +598,7 @@ def get_mode_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== РЕЖИМЫ ОТВЕТА ====================
+# ==================== ГЕНЕРАЦИЯ ОТВЕТОВ ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -865,84 +868,91 @@ async def handle_message(update, context):
         if user_message.lower().startswith("запомни "):
             await handle_remember(update, context); return
 
-        # === Ждём подсказку после "Нет" ===
-        if context.user_data.get('awaiting_hint'):
-            hint = user_message
-            original = context.user_data.get('original_query', '')
-            new_rephrased = await reframe_with_hint(original, hint)
-            context.user_data['rephrased_query'] = new_rephrased
-            context.user_data['awaiting_hint'] = False
+        # Проверка тайм-аута
+        if context.user_data.get('timer_start'):
+            if time.time() - context.user_data['timer_start'] > TIMER_TIMEOUT:
+                context.user_data.clear()
+                await safe_reply(update, "⏰ Время на уточнение истекло. Напиши вопрос заново.")
+                return
+
+        # === НОВЫЙ ВОПРОС ===
+        if not context.user_data.get('awaiting_confirmation') and not context.user_data.get('awaiting_hint'):
+            context.user_data.clear()
+            context.user_data['uid'] = uid
+            context.user_data['history'] = load_memory(uid)
+            context.user_data['profile'] = load_profile(uid)
+            context.user_data['clarifications'] = []
+            context.user_data['timer_start'] = time.time()
+            context.user_data['timer_done'] = False
+
+            understanding = await understand_question(user_message)
+            rephrased = understanding.get('rephrased', user_message[:100]+"...")
+            context.user_data['original_query'] = user_message
+            context.user_data['rephrased_query'] = rephrased
             context.user_data['awaiting_confirmation'] = True
+
+            # Запускаем обновление таймера
+            asyncio.create_task(timer_updater(update, context))
+
             await safe_reply(
                 update,
-                f"🧐 Понял! С учётом подсказки:\n\n**{new_rephrased}**\n\nТеперь правильно? (Да / Нет)"
+                f"🧐 Ты спрашиваешь:\n\n**{rephrased}**\n\nЯ правильно понял?",
+                reply_markup=get_confirmation_keyboard()
             )
             return
 
-        # === Ждём подтверждение (Да / Нет) ===
-        if context.user_data.get('awaiting_confirmation'):
-            if user_message.lower() in ['да','yes','+','ага','так','верно','правильно','ок']:
-                context.user_data['awaiting_confirmation'] = False
-                context.user_data['awaiting_hint'] = False  # сброс
-                await safe_reply(
-                    update,
-                    "👍 Отлично! Теперь выбери режим поиска:",
-                    reply_markup=get_mode_keyboard()
-                )
-                return
-            elif user_message.lower() in ['нет','no','-','не','неправильно','переформулируй']:
-                context.user_data['awaiting_confirmation'] = False
-                context.user_data['awaiting_hint'] = True
-                await safe_reply(update, "✏️ Напиши подсказку: что именно я понял неправильно?")
-                return
-            else:
-                # Всё, что не "да" и не "нет" — считаем подсказкой
-                hint = user_message
-                original = context.user_data.get('original_query', '')
-                new_rephrased = await reframe_with_hint(original, hint)
-                context.user_data['rephrased_query'] = new_rephrased
-                context.user_data['awaiting_hint'] = False
-                context.user_data['awaiting_confirmation'] = True
-                await safe_reply(
-                    update,
-                    f"🧐 Я учёл твои слова. Теперь я понимаю так:\n\n**{new_rephrased}**\n\nТеперь правильно? (Да / Нет)"
-                )
-                return
+        # === Ждём подсказку ===
+        if context.user_data.get('awaiting_hint'):
+            hint = user_message
+            original = context.user_data.get('original_query', '')
+            clarifications = context.user_data.get('clarifications', [])
+            clarifications.append(hint)
+            context.user_data['clarifications'] = clarifications
 
-        # === НОВЫЙ ВОПРОС (первый раз) ===
-        # Сбрасываем старые состояния
-        context.user_data.pop('awaiting_confirmation', None)
-        context.user_data.pop('awaiting_hint', None)
+            new_rephrased = await reframe_with_hint(original, hint, clarifications)
+            context.user_data['rephrased_query'] = new_rephrased
+            context.user_data['awaiting_hint'] = False
+            context.user_data['awaiting_confirmation'] = True
 
-        # Запускаем таймер
-        if context.user_data.get('timer_done', True):
-            context.user_data['start_time'] = time.time()
-            context.user_data['timer_done'] = False
+            await safe_reply(
+                update,
+                f"🧐 Понял! С учётом всех уточнений:\n\n**{new_rephrased}**\n\nТеперь правильно?",
+                reply_markup=get_confirmation_keyboard()
+            )
+            return
 
-        understanding = await understand_question(user_message)
-        rephrased = understanding.get('rephrased', user_message[:100]+"...")
-        context.user_data['original_query'] = user_message
-        context.user_data['rephrased_query'] = rephrased
-        context.user_data['awaiting_confirmation'] = True
-        context.user_data['uid'] = uid
-        context.user_data['history'] = load_memory(uid)
-        context.user_data['profile'] = load_profile(uid)
-
-        await safe_reply(
-            update,
-            f"🧐 Ты спрашиваешь:\n\n**{rephrased}**\n\nЯ правильно понял? (Да / Нет)"
-        )
+        # Если сообщение не подходит под состояния
+        await safe_reply(update, "Я жду твоего ответа на уточнение. Нажми кнопку или напиши подсказку.")
 
     except Exception as e:
         logger.error(f"Ошибка handle_message: {e}")
         await safe_reply(update, "⚠️ Произошла ошибка. Попробуйте еще раз.")
+
+# ==================== ОБРАБОТЧИК КНОПОК ====================
+async def handle_confirmation(update, context):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+
+    if query.data == "confirm_yes":
+        context.user_data['awaiting_confirmation'] = False
+        context.user_data['awaiting_hint'] = False
+        await query.edit_message_text(
+            "👍 Отлично! Теперь выбери режим поиска:",
+            reply_markup=get_mode_keyboard()
+        )
+    else:  # confirm_no
+        context.user_data['awaiting_confirmation'] = False
+        context.user_data['awaiting_hint'] = True
+        await query.edit_message_text(
+            "✏️ Напиши подсказку: что именно я понял неправильно? (Например: 'нужны только с 8 ГБ ОЗУ')"
+        )
 
 async def handle_mode_selection(update, context):
     query = update.callback_query
     await query.answer()
     try:
         uid = context.user_data.get('uid')
-        # Используем УТОЧНЁННЫЙ запрос (rephrased), если есть
         user_message = context.user_data.get('rephrased_query', context.user_data.get('original_query'))
         history = context.user_data.get('history', [])
         profile = context.user_data.get('profile', {})
@@ -965,9 +975,8 @@ async def handle_mode_selection(update, context):
         if rephrased:
             answer = f"📌 Ты спросил: {rephrased}\n\n{answer}"
 
-        # Таймер
-        start_time = context.user_data.get('start_time', time.time())
-        elapsed = int(time.time() - start_time)
+        start = context.user_data.get('timer_start', time.time())
+        elapsed = int(time.time() - start)
         context.user_data['timer_done'] = True
         answer = f"⏱️ {elapsed} сек\n\n{answer}"
 
@@ -994,6 +1003,30 @@ async def handle_mode_selection(update, context):
     except Exception as e:
         logger.error(f"Ошибка handle_mode_selection: {e}")
         await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
+
+# ==================== ТАЙМЕР ====================
+async def timer_updater(update, context):
+    chat_id = update.effective_chat.id
+    start = context.user_data.get('timer_start', time.time())
+    message = None
+
+    while True:
+        if context.user_data.get('timer_done', False):
+            break
+        elapsed = int(time.time() - start)
+        if elapsed > TIMER_TIMEOUT:
+            await context.bot.send_message(chat_id, "⏰ Время на уточнение истекло. Напиши вопрос заново.")
+            context.user_data.clear()
+            break
+
+        if message is None:
+            message = await context.bot.send_message(chat_id, f"⏱️ {elapsed} сек (максимум {TIMER_TIMEOUT} сек)")
+        else:
+            try:
+                await message.edit_text(f"⏱️ {elapsed} сек (максимум {TIMER_TIMEOUT} сек)")
+            except:
+                message = await context.bot.send_message(chat_id, f"⏱️ {elapsed} сек (максимум {TIMER_TIMEOUT} сек)")
+        await asyncio.sleep(3)
 
 # ==================== ФОНОВЫЕ ЗАДАЧИ ====================
 async def cleanup_caches_periodic():
@@ -1033,10 +1066,11 @@ def main():
     app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("restore", restore_command))
     app.add_handler(CommandHandler("clearcache", clearcache_command))
+    app.add_handler(CallbackQueryHandler(handle_confirmation, pattern="^confirm_"))
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (универсальная логика + таймер)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (кнопки + таймер + сохранение условий)")
     app.run_polling()
 
 if __name__ == "__main__":
