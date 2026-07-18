@@ -1,8 +1,9 @@
 # ================================================================
-#  BroWaix Bot — ИТОГОВАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ 18.07.2026
-#  - ИСПРАВЛЕНА логика "за всё время"
-#  - Даты публикации + ссылки в ответе
+#  BroWaix Bot — МАКСИМАЛЬНАЯ ОБЪЕКТИВНОСТЬ (10 источников)
+#  - 10 источников для баланса скорости и качества
+#  - Дата + ссылка на каждый факт
 #  - 3 режима: интернет, гибрид, локальный
+#  - Логика "за всё время" исправлена
 # ================================================================
 
 import logging
@@ -57,16 +58,16 @@ def get_current_date():
     return now().strftime("%d.%m.%Y")
 
 
-# ==================== НАСТРОЙКИ ====================
+# ==================== НАСТРОЙКИ ДЛЯ МАКСИМАЛЬНОЙ ОБЪЕКТИВНОСТИ ====================
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-SEARCH_RESULTS_NUM = 30
-TOP_RESULTS_SHOW = 5
-MAX_HTML_LEN = 8000
-MAX_TOKENS_ANSWER = 3000
-CACHE_TTL = 3600
+SEARCH_RESULTS_NUM = 50        # ищем 50 ссылок
+TOP_RESULTS_SHOW = 10          # парсим 10 лучших
+MAX_HTML_LEN = 12000           # больше текста
+MAX_TOKENS_ANSWER = 4000       # больше ответа
+CACHE_TTL = 3600               # 1 час
 
 MODE_MODEL = "model_only"
 MODE_HYBRID = "hybrid"
@@ -302,9 +303,9 @@ async def get_http_session():
                 ttl_dns_cache=300
             )
             timeout = aiohttp.ClientTimeout(
-                total=60,
+                total=90,
                 connect=15,
-                sock_read=30
+                sock_read=45
             )
             _http_session = aiohttp.ClientSession(
                 connector=connector,
@@ -396,11 +397,11 @@ def extract_date_from_html(html: str) -> str:
     return "дата не указана"
 
 
-# ==================== 🔥 ИСПРАВЛЕННАЯ ФУНКЦИЯ ПОИСКОВОГО ЗАПРОСА ====================
+# ==================== 🔥 ИСПРАВЛЕННАЯ ЛОГИКА "ЗА ВСЁ ВРЕМЯ" ====================
 async def generate_search_query(query):
     """
     Генерирует поисковый запрос с учётом:
-    - "за всё время" → ищем без года, добавляем best of all time
+    - "за всё время" → ищем без года
     - указан год → ищем с этим годом
     - нейтральный запрос → пробуем оба варианта
     """
@@ -413,21 +414,17 @@ async def generate_search_query(query):
     
     base = " ".join(words[:6])
     
-    # ⬅️ ОПРЕДЕЛЯЕМ "ЗА ВСЁ ВРЕМЯ"
+    # Определяем "за всё время"
     evergreen_phrases = ['за всё время', 'за все время', 'всех времен', 'классик', 'best of all time', 'в истории']
     is_evergreen = any(phrase in query.lower() for phrase in evergreen_phrases)
     
-    # Проверяем, указал ли пользователь конкретный год
     year_match = re.search(r'\b(20[2-9][0-9])\b', query)
     
     if is_evergreen:
-        # Для "за всё время" — ищем без года
         return [base, f"{base} best of all time"]
     elif year_match:
-        # Если указан год — ищем с этим годом
         return [f"{base} {year_match.group(1)}"]
     else:
-        # Нейтральный запрос — пробуем оба варианта
         return [base, f"{base} {now().year}"]
 
 
@@ -668,7 +665,7 @@ async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER):
             f"{DEEPSEEK_API_BASE}/chat/completions",
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
             json=payload,
-            timeout=30
+            timeout=45
         ) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -704,7 +701,7 @@ async def generate_internet_only(uid, user_message, history, profile):
     logger.info(f"🔍 Интернет: поиск -> {variants[0]}")
 
     if not all_results:
-        return "❌ В интернете ничего не найдено. Я не буду выдумывать."
+        return "❌ В интернете ничего не найдено."
 
     scored = assess_relevance(all_results, user_message)
     links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
@@ -733,19 +730,20 @@ async def generate_internet_only(uid, user_message, history, profile):
 
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     if year_match:
-        time_context = f"Пользователь указал год {year_match.group(1)}. Ищи информацию за этот год, но используй самые свежие источники."
+        time_context = f"Пользователь указал год {year_match.group(1)}. Ищи информацию за этот год."
     else:
-        time_context = f"Пользователь не указал дату. Ищи самую актуальную информацию на сегодня ({get_current_date()})."
+        time_context = f"Ищи самую актуальную информацию на сегодня ({get_current_date()})."
 
     system_prompt = f"""Ты — честный ассистент. Твой ЕДИНСТВЕННЫЙ источник — данные из интернета.
 
 ⚠️ ПРАВИЛА:
 1. НЕ используй свои знания.
 2. НЕ додумывай.
-3. Если в данных нет ответа — напиши "В данных нет ответа".
-4. КАЖДЫЙ ФАКТ сопровождай ссылкой на источник и датой публикации.
-5. В конце ответа укажи, ЗА КАКОЙ ПЕРИОД собрана информация.
-6. Если информация устаревшая — честно скажи об этом.
+3. КАЖДЫЙ ФАКТ сопровождай ссылкой и датой публикации.
+4. В конце укажи период, за который собрана информация.
+5. Обобщи ВСЕ источники, не дублируй одинаковую информацию.
+6. Если сериал упоминается в нескольких источниках — объедини данные о нём.
+7. Будь максимально объективен.
 
 ⚠️ КОНТЕКСТ ДАТЫ:
 {time_context}
@@ -769,15 +767,11 @@ async def generate_internet_only(uid, user_message, history, profile):
             if r.get('link') and r['link'] != '#':
                 ans += f"   🔗 {r['link']}\n"
             ans += "\n"
-        ans += f"📅 Поиск выполнен: {get_current_date()}"
+        ans += f"📅 {get_current_date()}"
         return mark_source("internet_only", ans, is_cached=False, is_speculation=False)
 
     forbidden = ['возможно', 'вероятно', 'скорее всего', 'должно быть', 'похоже что']
     is_speculation = any(p in answer.lower() for p in forbidden)
-
-    has_links = 'http' in answer or 'ссылка' in answer.lower() or 'источник' in answer.lower()
-    if not has_links:
-        is_speculation = True
 
     result = mark_source("internet_only", answer, is_cached=False, is_speculation=is_speculation)
     set_cached_answer(user_message, result)
@@ -825,19 +819,18 @@ async def generate_hybrid(uid, user_message, history, profile):
 
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     if year_match:
-        time_context = f"Пользователь указал год {year_match.group(1)}. Ищи информацию за этот год, но используй самые свежие источники."
+        time_context = f"Пользователь указал год {year_match.group(1)}."
     else:
-        time_context = f"Пользователь не указал дату. Ищи самую актуальную информацию на сегодня ({get_current_date()})."
+        time_context = f"Ищи самую актуальную информацию на сегодня ({get_current_date()})."
 
     system_prompt = f"""Ты — честный ассистент. Приоритет — данные из интернета.
 
 ⚠️ ПРАВИЛА:
 1. Используй данные из интернета В ПЕРВУЮ ОЧЕРЕДЬ.
-2. Если данных нет — используй свои знания, но ОТМЕТЬ ЭТО (напиши "[Из знаний модели]").
-3. Если не знаешь — скажи "Я не знаю".
-4. ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно", "скорее всего".
-5. КАЖДЫЙ ФАКТ из интернета сопровождай ссылкой и датой публикации.
-6. В конце укажи период, за который собрана информация.
+2. Если данных нет — используй свои знания, но ОТМЕТЬ ЭТО.
+3. КАЖДЫЙ ФАКТ из интернета сопровождай ссылкой и датой.
+4. В конце укажи период, за который собрана информация.
+5. Не дублируй одинаковую информацию из разных источников.
 
 ⚠️ КОНТЕКСТ ДАТЫ:
 {time_context}
@@ -846,7 +839,7 @@ async def generate_hybrid(uid, user_message, history, profile):
 Сегодня: {get_current_date()}
 Контекст: {build_profile_context(profile)}
 
-ДАННЫЕ ИЗ ИНТЕРНЕТА (ВСЕ ИСТОЧНИКИ):
+ДАННЫЕ ИЗ ИНТЕРНЕТА:
 {stext}"""
 
     messages = [{"role": "system", "content": system_prompt}] + history + [
@@ -858,10 +851,6 @@ async def generate_hybrid(uid, user_message, history, profile):
 
     forbidden = ['возможно', 'вероятно', 'скорее всего', 'должно быть', 'похоже что']
     is_speculation = any(p in answer.lower() for p in forbidden)
-
-    has_links = 'http' in answer or 'ссылка' in answer.lower() or 'источник' in answer.lower()
-    if not has_links and not is_speculation:
-        is_speculation = True
 
     result = mark_source("hybrid", answer, is_cached=False, is_speculation=is_speculation)
     set_cached_answer(user_message, result)
@@ -876,10 +865,10 @@ async def generate_model_only(uid, user_message, history, profile):
 ⚠️ ПРАВИЛА:
 1. Отвечай только тем, что знаешь на 100%.
 2. Если не знаешь — скажи "Я не знаю".
-3. ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно", "скорее всего", "должно быть".
-4. Если неуверен — напиши "⚠️ [НЕ 100%, ПРЕДПОЛОЖЕНИЕ]" перед ответом.
-5. Не выдумывай, не додумывай.
-6. Будь максимально объективным и честным.
+3. ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно".
+4. Если неуверен — напиши "⚠️ [НЕ 100%]".
+5. Не выдумывай.
+6. Будь максимально объективным.
 
 📅 Твои знания актуальны до мая 2025 года.
 Сегодня: {get_current_date()}
@@ -1193,7 +1182,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (исправлена логика 'за всё время')")
+    logger.info("🚀 БОТ ЗАПУЩЕН (10 источников, объективность)")
     app.run_polling()
 
 
