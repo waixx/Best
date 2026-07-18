@@ -1,8 +1,9 @@
 # ================================================================
-#  BroWaix Bot — ЛОГИЧЕСКАЯ ВЕРСИЯ
-#  - Анализирует, сравнивает, находит противоречия
-#  - Делает логический вывод, а не пересказывает
-#  - 10 источников
+#  BroWaix Bot — УНИВЕРСАЛЬНАЯ ЛОГИКА
+#  - Сначала понимает вопрос, уточняет, если нужно
+#  - Сохраняет контекст диалога
+#  - 10 источников, аналитический вывод
+#  - Экономичный (кэш, оптимизация)
 # ================================================================
 
 import logging
@@ -712,7 +713,72 @@ def build_profile_context(profile):
     return ". ".join(parts)[:150]
 
 
-# ==================== 🔥 РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ (ЛОГИЧЕСКИЙ) ====================
+# ==================== ФУНКЦИЯ ПОНИМАНИЯ ВОПРОСА ====================
+async def understand_question(user_message: str, history: list) -> dict:
+    system_prompt = """Ты — аналитик. Твоя задача — понять, что спрашивает пользователь.
+
+Анализируй вопрос и верни JSON с полями:
+- topic: тема вопроса (кратко, 3-5 слов)
+- intent: что нужно (facts, recommendations, instructions, comparison, opinion, other)
+- is_ambiguous: true/false (есть ли неоднозначность)
+- clarification: если есть неоднозначность — предложи уточнение
+- is_clear: true/false (понятен ли вопрос на 100%)
+- understanding: как ты понял вопрос (1-2 предложения)
+
+Примеры:
+Вопрос: "какие планшеты подходят для работы с рейлвей?"
+Ответ: {"topic": "бюджетные планшеты для Railway", "intent": "recommendations", "is_ambiguous": false, "clarification": null, "is_clear": true, "understanding": "Пользователь ищет бюджетные планшеты для работы с веб-интерфейсом Railway"}
+
+Вопрос: "что лучше?"
+Ответ: {"topic": "сравнение", "intent": "comparison", "is_ambiguous": true, "clarification": "Что именно сравнивать? Уточни, пожалуйста, что ты хочешь сравнить.", "is_clear": false, "understanding": "Пользователь хочет сравнить что-то, но не указал что"}"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message}
+    ]
+    answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=1500)
+    if err or not answer:
+        return {"is_clear": False, "understanding": "Не удалось понять вопрос. Попробуйте переформулировать."}
+    
+    try:
+        import json
+        return json.loads(answer)
+    except:
+        return {
+            "topic": "неопределено",
+            "intent": "other",
+            "is_ambiguous": False,
+            "clarification": None,
+            "is_clear": True,
+            "understanding": answer[:100]
+        }
+
+
+# ==================== КНОПКИ ====================
+def get_mode_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton("🧠 Только знания", callback_data=f"mode_{MODE_MODEL}"),
+            InlineKeyboardButton("🔍 Гибрид", callback_data=f"mode_{MODE_HYBRID}"),
+        ],
+        [
+            InlineKeyboardButton("🌐 Только интернет", callback_data=f"mode_{MODE_INTERNET}"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_clarification_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Да, верно", callback_data="clarify_confirm"),
+            InlineKeyboardButton("✏️ Нет, переформулируй", callback_data="clarify_rephrase"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ==================== РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -759,7 +825,6 @@ async def generate_internet_only(uid, user_message, history, profile):
     else:
         time_context = f"Ищи самую актуальную информацию на сегодня ({get_current_date()})."
 
-    # 🔥 НОВЫЙ ПРОМПТ — ЛОГИЧЕСКИЙ АНАЛИЗ
     system_prompt = f"""Ты — аналитик. Твоя задача — не пересказывать источники, а найти в них логику.
 
 ⚠️ ЧТО ТЫ ДОЛЖЕН СДЕЛАТЬ:
@@ -931,20 +996,6 @@ async def generate_model_only(uid, user_message, history, profile):
     return mark_source("model_only", answer, is_cached=False, is_speculation=is_speculation)
 
 
-# ==================== КНОПКИ ====================
-def get_mode_keyboard():
-    keyboard = [
-        [
-            InlineKeyboardButton("🧠 Только знания", callback_data=f"mode_{MODE_MODEL}"),
-            InlineKeyboardButton("🔍 Гибрид", callback_data=f"mode_{MODE_HYBRID}"),
-        ],
-        [
-            InlineKeyboardButton("🌐 Только интернет", callback_data=f"mode_{MODE_INTERNET}"),
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
 # ==================== КОМАНДЫ ====================
 async def start(update, context):
     uid = update.effective_user.id
@@ -963,7 +1014,7 @@ async def start(update, context):
                      "/forget — забыть всё\n"
                      "/restore — восстановить из бэкапа\n"
                      "/clearcache — очистить кэш\n\n"
-                     "Просто напиши вопрос — я покажу кнопки с выбором режима."
+                     "Просто напиши вопрос — я сначала уточню, правильно ли я понял, а потом предложу режимы."
                      )
 
 
@@ -1117,20 +1168,90 @@ async def handle_message(update, context):
             await handle_remember(update, context)
             return
 
+        # Проверяем, есть ли текущая тема
+        current_topic = context.user_data.get('topic')
+        topic_closed = context.user_data.get('topic_closed', False)
+        
+        if current_topic and not topic_closed:
+            # Если тема уже есть — продолжаем её
+            await safe_reply(
+                update,
+                f"🔄 Возвращаемся к твоему вопросу о **{current_topic}**.\n\n"
+                f"Ты хочешь уточнить, дополнить или задать новый вопрос?",
+                reply_markup=get_mode_keyboard()
+            )
+            context.user_data['last_query'] = user_message
+            context.user_data['uid'] = uid
+            context.user_data['history'] = load_memory(uid)
+            context.user_data['profile'] = load_profile(uid)
+            return
+
+        # Если темы нет — анализируем вопрос
+        understanding = await understand_question(user_message, [])
+        
+        if not understanding.get('is_clear', False):
+            await safe_reply(
+                update,
+                f"🤔 Я не совсем понял. {understanding.get('understanding', 'Попробуй переформулировать.')}"
+            )
+            return
+        
+        # Вопрос понятен
+        context.user_data['topic'] = understanding.get('topic', 'неопределено')
+        context.user_data['topic_closed'] = False
         context.user_data['last_query'] = user_message
         context.user_data['uid'] = uid
         context.user_data['history'] = load_memory(uid)
         context.user_data['profile'] = load_profile(uid)
-
-        await safe_reply(
-            update,
-            "🤔 Как мне ответить на твой вопрос?",
-            reply_markup=get_mode_keyboard()
-        )
+        context.user_data['understanding'] = understanding.get('understanding', '')
+        context.user_data['confirmed'] = False
+        
+        # Проверяем, есть ли неоднозначность
+        if understanding.get('is_ambiguous', False):
+            clarification = understanding.get('clarification', 'Уточни, пожалуйста.')
+            await safe_reply(
+                update,
+                f"🧐 Я понял твой вопрос так:\n\n"
+                f"**{understanding.get('understanding', '')}**\n\n"
+                f"⚠️ Но есть неоднозначность: {clarification}\n\n"
+                f"Я правильно понял?",
+                reply_markup=get_clarification_keyboard()
+            )
+        else:
+            context.user_data['confirmed'] = True
+            await safe_reply(
+                update,
+                f"🧠 Я понял твой вопрос:\n\n"
+                f"**{understanding.get('understanding', '')}**\n\n"
+                f"Теперь выбери режим ответа:",
+                reply_markup=get_mode_keyboard()
+            )
 
     except Exception as e:
         logger.error(f"Ошибка handle_message: {e}")
         await safe_reply(update, "⚠️ Произошла ошибка. Попробуйте еще раз.")
+
+
+async def handle_clarification(update, context):
+    """Обрабатывает подтверждение или уточнение"""
+    query = update.callback_query
+    await query.answer()
+    
+    uid = update.effective_user.id
+    action = query.data.replace("clarify_", "")
+    
+    if action == "confirm":
+        context.user_data['confirmed'] = True
+        await query.edit_message_text(
+            "👍 Отлично! Теперь выбери, как я должен ответить:",
+            reply_markup=get_mode_keyboard()
+        )
+    elif action == "rephrase":
+        context.user_data['confirmed'] = False
+        context.user_data['topic_closed'] = True
+        await query.edit_message_text(
+            "✏️ Напиши, что именно я понял неправильно, или переформулируй вопрос."
+        )
 
 
 async def handle_mode_selection(update, context):
@@ -1142,13 +1263,18 @@ async def handle_mode_selection(update, context):
         user_message = context.user_data.get('last_query')
         history = context.user_data.get('history', [])
         profile = context.user_data.get('profile', {})
+        topic = context.user_data.get('topic', 'неопределено')
+        understanding = context.user_data.get('understanding', '')
 
         if not user_message:
             await query.edit_message_text("⏳ Вопрос утерян, напиши заново.")
             return
 
         mode = query.data.replace("mode_", "")
-        await query.edit_message_text(f"⏳ Обрабатываю в режиме: {mode}...")
+        
+        context.user_data['topic_closed'] = True
+        
+        await query.edit_message_text(f"⏳ Ищу информацию по теме: **{topic}**...")
 
         if mode == MODE_MODEL:
             answer = await generate_model_only(uid, user_message, history, profile)
@@ -1156,6 +1282,9 @@ async def handle_mode_selection(update, context):
             answer = await generate_hybrid(uid, user_message, history, profile)
         else:
             answer = await generate_internet_only(uid, user_message, history, profile)
+
+        if understanding and "Я понял твой вопрос" not in answer:
+            answer = f"📌 Ты спрашивал: {understanding}\n\n{answer}"
 
         if answer and len(answer) > 10:
             clean_answer = re.sub(r'<[^>]+>', '', answer)
@@ -1223,10 +1352,11 @@ def main():
     app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("restore", restore_command))
     app.add_handler(CommandHandler("clearcache", clearcache_command))
+    app.add_handler(CallbackQueryHandler(handle_clarification, pattern="^clarify_"))
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (логическая версия)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (универсальная логика, уточнение вопросов)")
     app.run_polling()
 
 
