@@ -1,9 +1,9 @@
 # ===================================================================
-#  BroWaix Bot — ФИНАЛЬНАЯ ПОЛНАЯ ВЕРСИЯ
-#  - Все источники принудительно
-#  - MAX_HTML_LEN=4000, SEARCH_RESULTS_NUM=30 (экономия)
-#  - Улучшенная очистка текста
-#  - Повторная попытка при неполном ответе
+#  BroWaix Bot — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ
+#  - Все функции: память, бэкапы, поиск, парсинг, анализ
+#  - Извлечение заголовков, таблиц, текста
+#  - Принудительное использование всех источников
+#  - Экономичные настройки: 30 страниц, 4000 символов
 # ===================================================================
 
 import logging
@@ -50,13 +50,13 @@ TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 def now(): return datetime.now(TZ)
 def get_current_date(): return now().strftime("%d.%m.%Y")
 
-# ==================== НАСТРОЙКИ (экономичные) ====================
+# ==================== НАСТРОЙКИ ====================
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-SEARCH_RESULTS_NUM = 30          # снижено для экономии
-MAX_HTML_LEN = 4000              # снижено для экономии
+SEARCH_RESULTS_NUM = 30
+MAX_HTML_LEN = 4000
 MAX_TOKENS_ANSWER = 7000
 CACHE_TTL = 3600
 TIMER_TIMEOUT = 300
@@ -287,7 +287,42 @@ def set_cached_answer(query, data):
         oldest = min(answer_cache.keys(), key=lambda k: answer_cache[k]['time'])
         del answer_cache[oldest]
 
-# ==================== ИЗВЛЕЧЕНИЕ ДАТЫ ====================
+# ==================== ИЗВЛЕЧЕНИЕ ДАННЫХ ИЗ HTML ====================
+def extract_headers(html: str) -> list:
+    headers = re.findall(r'<h[1-6][^>]*>(.*?)</h[1-6]>', html, re.IGNORECASE | re.DOTALL)
+    return [re.sub(r'<[^>]+>', '', h).strip() for h in headers if h]
+
+def extract_tables(html: str) -> list:
+    tables = re.findall(r'<table[^>]*>(.*?)</table>', html, re.IGNORECASE | re.DOTALL)
+    table_data = []
+    for table in tables:
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table, re.IGNORECASE | re.DOTALL)
+        for row in rows:
+            cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.IGNORECASE | re.DOTALL)
+            if cells:
+                clean_cells = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+                table_data.append(clean_cells)
+    return table_data
+
+def clean_html_text(html: str) -> str:
+    text = re.sub(r'<[^>]+>', ' ', html)
+    text = re.sub(r'\s+', ' ', text).strip()
+    lines = text.split('. ')
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ', '//')):
+            continue
+        if re.match(r'^[\d\s\.,;:!?()\-]+$', stripped):
+            continue
+        if any(kw in stripped.lower() for kw in ['планшет', 'модель', 'gb', 'гб', 'snapdragon', 'mediatek', 'android', 'дюйм', 'цена', 'аккумулятор', 'батарея', 'os', 'операционная']):
+            clean_lines.append(stripped)
+        elif len(stripped) > 40:
+            clean_lines.append(stripped)
+    return '. '.join(clean_lines)
+
 def extract_date_from_html(html: str) -> str:
     if not html: return "дата не указана"
     patterns = [
@@ -324,23 +359,6 @@ async def generate_search_query(query):
     elif year_match: return [f"{base} {year_match.group(1)}"]
     else: return [base, f"{base} {now().year}"]
 
-# ==================== УЛУЧШЕННАЯ ОЧИСТКА ТЕКСТА ====================
-def clean_html_text(html: str) -> str:
-    text = re.sub(r'<[^>]+>', ' ', html)
-    text = re.sub(r'\s+', ' ', text).strip()
-    lines = text.split('\n')
-    clean_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ', '//')):
-            continue
-        if re.match(r'^[\d\s\.,;:!?()\-]+$', stripped):
-            continue
-        clean_lines.append(stripped)
-    return ' '.join(clean_lines)
-
 # ==================== ПАРСИНГ ====================
 async def fetch_content(url: str) -> tuple:
     if url in html_cache:
@@ -356,9 +374,19 @@ async def fetch_content(url: str) -> tuple:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 html = await page.content()
                 await page.close()
-                text = clean_html_text(html)
-                if len(text) > 50:
-                    result = text[:MAX_HTML_LEN]
+                parts = []
+                headers = extract_headers(html)
+                if headers:
+                    parts.append("Заголовки: " + " | ".join(headers))
+                tables = extract_tables(html)
+                for table in tables:
+                    parts.append("Таблица: " + " | ".join([" | ".join(row) for row in table]))
+                text_part = clean_html_text(html)
+                if text_part:
+                    parts.append(text_part)
+                combined = " ".join(parts)
+                if len(combined) > 50:
+                    result = combined[:MAX_HTML_LEN]
                     pub_date = extract_date_from_html(html)
                     logger.info(f"✅ Browserless: {url[:50]} (дата: {pub_date}, длина: {len(result)})")
         except Exception as e:
@@ -370,9 +398,19 @@ async def fetch_content(url: str) -> tuple:
             async with session.get(url, headers=headers, timeout=20) as resp:
                 if resp.status == 200:
                     html = await resp.text()
-                    text = clean_html_text(html)
-                    if len(text) > 50:
-                        result = text[:MAX_HTML_LEN]
+                    parts = []
+                    headers2 = extract_headers(html)
+                    if headers2:
+                        parts.append("Заголовки: " + " | ".join(headers2))
+                    tables2 = extract_tables(html)
+                    for table in tables2:
+                        parts.append("Таблица: " + " | ".join([" | ".join(row) for row in table]))
+                    text_part2 = clean_html_text(html)
+                    if text_part2:
+                        parts.append(text_part2)
+                    combined = " ".join(parts)
+                    if len(combined) > 50:
+                        result = combined[:MAX_HTML_LEN]
                         pub_date = extract_date_from_html(html)
                         logger.info(f"✅ HTTP: {url[:50]} (дата: {pub_date}, длина: {len(result)})")
         except Exception as e:
@@ -403,7 +441,6 @@ def deduplicate_domains(pages):
     return unique
 
 async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM):
-    """Загружает все страницы без ограничения top_k"""
     if not links: return []
     results = []
     semaphore = asyncio.Semaphore(5)
@@ -636,7 +673,6 @@ async def generate_chat_response(user_message, history, profile):
         return "⚠️ Не удалось получить ответ."
     return answer
 
-# ==================== ОСНОВНАЯ ФУНКЦИЯ ИНТЕРНЕТ (с принудительным перечислением) ====================
 async def generate_internet_only(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -707,17 +743,13 @@ async def generate_internet_only(uid, user_message, history, profile):
 ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
 {stext}
 """
-
     messages = [{"role":"system","content":system_prompt}] + history + [{"role":"user","content":user_message}]
     answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
-    
-    # Повторная попытка, если ответ не содержит упоминания всех источников
     if err or not answer or not re.search(r'Источник \d+', answer):
         logger.warning("⚠️ Ответ не содержит перечисления источников, отправляем повторный запрос с напоминанием.")
         system_prompt += "\n\n⚠️ В предыдущем ответе ты не перечислил все источники. ОБЯЗАТЕЛЬНО перечисли каждый из {source_count} источников в секции 'Использованные источники'."
         messages = [{"role":"system","content":system_prompt}] + history + [{"role":"user","content":user_message}]
         answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
-
     if err or not answer:
         ans = "🔍 Результаты поиска:\n\n"
         for i, r in enumerate((scored or all_results)[:10], 1):
@@ -732,7 +764,6 @@ async def generate_internet_only(uid, user_message, history, profile):
     set_cached_answer(user_message, result)
     return result
 
-# ==================== ГИБРИД ====================
 async def generate_hybrid(uid, user_message, history, profile):
     cached = get_cached_answer(user_message)
     if cached:
@@ -761,7 +792,6 @@ async def generate_hybrid(uid, user_message, history, profile):
         ])
         source_count = 10
         logger.warning("⚠️ Гибрид: страницы не загружены, использованы сниппеты")
-
     year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
     time_context = f"Ищи информацию за {year_match.group(1)}." if year_match else f"Ищи самую актуальную информацию на {get_current_date()}."
 
@@ -805,7 +835,6 @@ async def generate_hybrid(uid, user_message, history, profile):
 ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
 {stext}
 """
-
     messages = [{"role":"system","content":system_prompt}] + history + [{"role":"user","content":user_message}]
     answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
     if err or not answer:
@@ -816,7 +845,6 @@ async def generate_hybrid(uid, user_message, history, profile):
     set_cached_answer(user_message, result)
     return result
 
-# ==================== ТОЛЬКО МОДЕЛЬ ====================
 async def generate_model_only(uid, user_message, history, profile):
     ctx = build_profile_context(profile)
     system_prompt = f"""Ты — честный ассистент. Отвечай ТОЛЬКО из своих знаний.
@@ -1189,7 +1217,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 БОТ ЗАПУЩЕН (полная версия, экономия, все источники)")
+    logger.info("🚀 БОТ ЗАПУЩЕН (финальная полная версия)")
     app.run_polling()
 
 if __name__ == "__main__":
