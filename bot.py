@@ -1,6 +1,6 @@
 # ===================================================================
 #  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
-#  Двойной запрет "нет доступа" + Исправленный таймер + Гибридный режим
+#  Увеличенный парсинг + Двойной запрет "нет доступа" + Исправленный таймер
 # ===================================================================
 
 import logging
@@ -49,8 +49,8 @@ MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
 SEARCH_RESULTS_NUM = 25
-MAX_HTML_LEN = 6000
-MAX_TOKENS_ANSWER = 6000
+MAX_HTML_LEN = 15000  # 🔥 УВЕЛИЧЕНО!
+MAX_TOKENS_ANSWER = 8000  # 🔥 УВЕЛИЧЕНО!
 CACHE_TTL = 3600
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
@@ -168,18 +168,31 @@ def normalize_query(query):
         return ""
     return re.sub(r'[^\w\s]', '', query.lower())[:100]
 
-# ==================== ПАРСИНГ ====================
+# ==================== ПАРСИНГ (УЛУЧШЕННЫЙ) ====================
 def clean_html_text(html: str) -> str:
+    # Удаляем теги
     text = re.sub(r'<[^>]+>', ' ', html)
+    # Убираем лишние пробелы
     text = re.sub(r'\s+', ' ', text).strip()
+    
+    # 🔥 Убираем CSS блоки
+    text = re.sub(r'\{[^}]*\}', '', text)
+    # 🔥 Убираем JS функции
+    text = re.sub(r'function\s*\([^)]*\)\s*\{[^}]*\}', '', text)
+    # 🔥 Убираем JSON
+    text = re.sub(r'"[^"]*":\s*"[^"]*"', '', text)
+    
     lines = []
     for line in text.split('. '):
         line = line.strip()
         if not line:
             continue
-        if len(line) > 30:
+        # Оставляем больше строк
+        if len(line) > 20:
             lines.append(line)
-    return '. '.join(lines[:20])
+    
+    # Возвращаем больше строк
+    return '. '.join(lines[:40])
 
 def extract_date_from_html(html: str) -> str:
     patterns = [
@@ -199,8 +212,8 @@ def extract_date_from_html(html: str) -> str:
             return date
     return "дата не указана"
 
-# ==================== ЗАГРУЗКА ====================
-async def fetch_content(url: str, timeout: int = 15):
+# ==================== ЗАГРУЗКА (УВЕЛИЧЕННАЯ) ====================
+async def fetch_content(url: str, timeout: int = 20):  # 🔥 Увеличен таймаут
     if url in html_cache:
         cached = html_cache[url]
         return cached.get("text", ""), cached.get("date", "дата не указана")
@@ -247,7 +260,7 @@ async def fetch_content(url: str, timeout: int = 15):
     
     return "", "дата не указана"
 
-async def fetch_multiple_pages(links, max_pages=8):
+async def fetch_multiple_pages(links, max_pages=10):  # 🔥 10 страниц!
     if not links:
         return []
     
@@ -358,7 +371,7 @@ async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, 
             f"{DEEPSEEK_API_BASE}/chat/completions",
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
             json=payload,
-            timeout=45
+            timeout=60
         ) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -377,7 +390,7 @@ async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, 
             return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
         return None, str(e)
 
-# ==================== ДИНАМИЧЕСКИЙ ТАЙМЕР (ИСПРАВЛЕННЫЙ) ====================
+# ==================== ДИНАМИЧЕСКИЙ ТАЙМЕР ====================
 async def send_progress_updates(chat_id, context, start_time):
     """Отправляет обновления таймера каждые 3 секунды"""
     message = None
@@ -389,10 +402,10 @@ async def send_progress_updates(chat_id, context, start_time):
         
         elapsed = 0
         dots = 0
-        while elapsed < 120:  # Максимум 120 секунд
+        while elapsed < 120:
             await asyncio.sleep(3)
             
-            # ✅ ПРОВЕРЯЕМ ФЛАГ ПОСЛЕ КАЖДОГО SLEEP!
+            # Проверяем флаг после каждого sleep
             if context.user_data.get('found_answer'):
                 try:
                     await message.edit_text("✅ Информация найдена! Формирую ответ...")
@@ -452,11 +465,11 @@ async def search_and_answer_safe(uid, user_message, history):
     logger.info(f"✅ ШАГ 2: Найдено {len(all_results)} результатов")
     
     # ================================================================
-    # ШАГ 3: ЗАГРУЗКА СТРАНИЦ
+    # ШАГ 3: ЗАГРУЗКА СТРАНИЦ (УВЕЛИЧЕННАЯ)
     # ================================================================
     
-    links = [r['link'] for r in all_results[:12]]
-    pages = await fetch_multiple_pages(links, max_pages=8)
+    links = [r['link'] for r in all_results[:15]]  # Больше ссылок
+    pages = await fetch_multiple_pages(links, max_pages=10)  # 10 страниц
     
     good_sources = [p for p in pages if len(p.get('text', '')) > 200]
     source_count = len(good_sources)
@@ -479,18 +492,24 @@ async def search_and_answer_safe(uid, user_message, history):
         logger.info("✅ ШАГ 4: Режим ГИБРИД")
     
     # ================================================================
-    # ШАГ 5: ФОРМИРОВАНИЕ ПРОМПТА С ДВОЙНЫМ ЗАПРЕТОМ
+    # ШАГ 5: ФОРМИРОВАНИЕ ПРОМПТА С ДВОЙНЫМ ЗАПРЕТОМ И УВЕЛИЧЕННЫМИ ИСТОЧНИКАМИ
     # ================================================================
     
     # 5.1. ИСТОЧНИКИ (САМОЕ ВАЖНОЕ — ПЕРВЫМИ!)
     source_text = "⚠️ **ВОТ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА:**\n\n"
-    for i, p in enumerate(good_sources[:8], 1):
+    for i, p in enumerate(good_sources[:10], 1):  # 10 источников
+        # Извлекаем название страницы
+        page_title = p.get('title', 'не указано')
+        if not page_title or page_title == 'не указано':
+            url_parts = p['url'].split('/')
+            page_title = url_parts[-1] if url_parts else 'не указано'
+        
         source_text += f"""
 --- ИСТОЧНИК {i} ---
 URL: {p['url']}
+Название: {page_title}
 Дата: {p.get('date', 'дата не указана')}
-Содержание: {p['text'][:1500]}
-
+Содержание: {p['text'][:4000]}  # 4000 символов!
 """
     
     # 5.2. ЗАПРЕТ В НАЧАЛЕ
@@ -504,15 +523,18 @@ URL: {p['url']}
 3. **НЕЛЬЗЯ** говорить "не могу проверить" — ТЫ МОЖЕШЬ, ИСТОЧНИКИ ПЕРЕД ТОБОЙ!
 4. **НЕЛЬЗЯ** использовать "возможно", "вероятно" — БЕЗ ⚠️ [НЕ 100%]
 5. **НЕЛЬЗЯ** игнорировать источники — ОНИ ПЕРЕД ТОБОЙ!
+6. **НЕЛЬЗЯ** говорить "в источниках нет данных" — ТЫ ДОЛЖЕН ИХ НАЙТИ!
 
 ⚠️ **ТВОЯ ЗАДАЧА:**
-1. Проанализируй источники выше
-2. Дай ответ на основе ТОЛЬКО ИХ
-3. Если в них нет информации — скажи "В источниках нет"
+1. Проанализируй КАЖДЫЙ источник
+2. Найди ВСЕ упоминания фильмов в тексте
+3. Составь список ТОЛЬКО из найденных фильмов
+4. Если в источнике есть список — возьми его
+5. Если фильмов меньше 30 — напиши сколько нашёл
 
 ⚠️ **ФОРМАТ ОТВЕТА:**
 📊 **Использованные источники:** (перечисли ВСЕ {len(good_sources)})
-📊 **Общие факты:**
+📊 **Найденные фильмы:** (перечисли ТОЛЬКО из источников)
 ⚠️ **Противоречия:**
 ✅ **Вывод:**
 
@@ -527,12 +549,13 @@ URL: {p['url']}
 1. **НЕЛЬЗЯ** говорить "нет доступа к интернету" — ТЫ ТОЛЬКО ЧТО ЕГО ПОЛУЧИЛ!
 2. **НЕЛЬЗЯ** говорить "инструменты поиска не активированы" — ОНИ АКТИВИРОВАНЫ!
 3. **НЕЛЬЗЯ** говорить "не могу проверить" — ТЫ МОЖЕШЬ, ИСТОЧНИКИ ПЕРЕД ТОБОЙ!
-4. **НЕЛЬЗЯ** использовать "возможно", "вероятно" — БЕЗ ⚠️ [НЕ 100%]
+4. **НЕЛЬЗЯ** говорить "в источниках нет данных" — ТЫ ДОЛЖЕН ИХ НАЙТИ!
 
 ⚠️ **ТВОЯ ЗАДАЧА:**
-1. Сначала используй информацию из источников выше
-2. Если данных мало — дополни знаниями
-3. ОТМЕЧАЙ, что взято из знаний
+1. Сначала используй информацию из источников
+2. Найди ВСЕ фильмы в источниках
+3. Если данных мало — дополни знаниями
+4. ОТМЕЧАЙ, что взято из знаний
 
 ⚠️ **ФОРМАТ ОТВЕТА:**
 📊 **Из интернета:** (что взято из источников)
@@ -553,6 +576,7 @@ URL: {p['url']}
 - "нет доступа к интернету"
 - "инструменты поиска не активированы"
 - "не могу проверить"
+- "в источниках нет данных"
 
 **ОТВЕЧАЙ ЧЕСТНО НА ОСНОВЕ ИСТОЧНИКОВ!**
 """
@@ -587,6 +611,8 @@ URL: {p['url']}
         "инструменты поиска не активированы",
         "не могу проверить",
         "у меня нет информации",
+        "в источниках нет данных",
+        "в предоставленных фрагментах нет"
     ]
     
     for phrase in forbidden:
@@ -866,7 +892,6 @@ async def safe_reply(update, text, reply_markup=None):
     
     except Exception as e:
         logger.error(f"❌ Ошибка отправки: {e}")
-        # Пытаемся отправить хотя бы первую часть
         try:
             await msg.reply_text(text[:4000], disable_web_page_preview=True, reply_markup=reply_markup)
         except Exception:
@@ -916,7 +941,7 @@ def main():
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("⚠️ РЕЖИМ: ДВОЙНОЙ ЗАПРЕТ 'НЕТ ДОСТУПА' + ДИНАМИЧЕСКИЙ ТАЙМЕР")
+    logger.info("⚠️ РЕЖИМ: ДВОЙНОЙ ЗАПРЕТ + УВЕЛИЧЕННЫЙ ПАРСИНГ")
     
     if not APISERPENT_API_KEY and not SERPER_API_KEY:
         logger.error("🚨 ВНИМАНИЕ: НЕТ API КЛЮЧЕЙ ДЛЯ ПОИСКА!")
