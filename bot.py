@@ -1,6 +1,7 @@
 # ===================================================================
-#  BroWaix Bot — ФИНАЛЬНАЯ НАДЕЖНАЯ ВЕРСИЯ
-#  Все функции сохранены, баги исправлены, добавлена защита
+#  BroWaix Bot — ФИНАЛЬНАЯ ВЕРСИЯ
+#  ТОЛЬКО ПОИСК В ИНТЕРНЕТЕ с гибридным дополнением
+#  Супер-память + Защита от вранья
 # ===================================================================
 
 import logging
@@ -12,9 +13,8 @@ import asyncio
 import aiohttp
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
-from urllib.parse import urlparse
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -29,42 +29,20 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Форматтер
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-# Консоль
 console = logging.StreamHandler()
 console.setFormatter(formatter)
 logger.addHandler(console)
 
-# Файл с ротацией
 try:
-    file_handler = RotatingFileHandler(
-        "bot.log", 
-        maxBytes=10*1024*1024,  # 10MB
-        backupCount=5,
-        encoding='utf-8'
-    )
+    file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=3, encoding='utf-8')
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-except Exception:
+except:
     pass
 
-# Отдельный файл для ошибок
-try:
-    error_handler = RotatingFileHandler(
-        "errors.log",
-        maxBytes=5*1024*1024,
-        backupCount=3,
-        encoding='utf-8'
-    )
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
-    logger.addHandler(error_handler)
-except Exception:
-    pass
-
-# ==================== ПЕРЕМЕННЫЕ ====================
+# ==================== КОНФИГ ====================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
@@ -76,38 +54,21 @@ ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",
 if ADMIN_USER_ID and ADMIN_USER_ID not in ALLOWED_USERS:
     ALLOWED_USERS.append(ADMIN_USER_ID)
 
-# Настройки
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
-MODEL_FALLBACK = os.getenv("MODEL_FALLBACK", "deepseek-v4-pro")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
+TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
 SEARCH_RESULTS_NUM = 25
 MAX_HTML_LEN = 6000
 MAX_TOKENS_ANSWER = 7000
 CACHE_TTL = 3600
 
-# Режимы
-MODE_MODEL = "model_only"
-MODE_HYBRID = "hybrid"
-MODE_INTERNET = "internet_only"
-BOT_MODE_SEARCH = "search"
-BOT_MODE_CHAT = "chat"
-
-# Временная зона
-try:
-    TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
-except Exception:
-    TZ = ZoneInfo("UTC")
-
-def now(): 
-    return datetime.now(TZ)
-
-def get_current_date(): 
-    return now().strftime("%d.%m.%Y")
-
 if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
+
+def now(): return datetime.now(TZ)
+def get_current_date(): return now().strftime("%d.%m.%Y")
 
 # ==================== ПУТИ ====================
 DATA_DIR = "data"
@@ -117,271 +78,149 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 
 def memory_path(uid): return os.path.join(DATA_DIR, f"memory_{uid}.json")
 def profile_path(uid): return os.path.join(DATA_DIR, f"profile_{uid}.json")
+def episodic_path(uid): return os.path.join(DATA_DIR, f"episodic_{uid}.json")
+def learning_path(uid): return os.path.join(DATA_DIR, f"learning_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
 
-# ==================== ФАЙЛОВЫЕ ОПЕРАЦИИ С ЗАЩИТОЙ ====================
-def atomic_write(filename, data, as_json=True):
-    """Атомарная запись с защитой от сбоев"""
-    tmp = filename + ".tmp"
-    try:
-        with open(tmp, 'w', encoding='utf-8') as f:
-            if as_json:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            else:
-                f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, filename)
-        return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка записи {filename}: {e}")
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except:
-                pass
-        return False
-
-def atomic_read(filename, default=None, as_json=True):
-    """Безопасное чтение с восстановлением"""
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            if as_json:
+# ==================== СУПЕР-ПАМЯТЬ ====================
+class SuperMemory:
+    """Многоуровневая память для личного помощника"""
+    
+    def __init__(self, uid):
+        self.uid = uid
+        self.data_dir = DATA_DIR
+        self.backup_dir = BACKUP_DIR
+        
+        self.short_term = self._safe_load(memory_path(uid), [])
+        self.profile = self._safe_load(profile_path(uid), {})
+        self.episodic = self._safe_load(episodic_path(uid), [])
+        self.learning = self._safe_load(learning_path(uid), {})
+        self.counter = self._safe_load(counter_path(uid), {"count": 0}).get("count", 0)
+        
+        logger.info(f"🧠 Память для {uid} загружена")
+    
+    def _safe_load(self, filename, default):
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
                 return json.load(f)
-            return f.read()
-    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
-        if not isinstance(e, FileNotFoundError):
-            logger.warning(f"⚠️ Ошибка чтения {filename}: {e}")
-        return default
-
-def create_backup(uid, data_type):
-    """Создает бэкап с ограничением количества"""
-    try:
-        ts = now().strftime("%Y%m%d_%H%M%S")
-        fname = os.path.join(BACKUP_DIR, f"{data_type}_{uid}_{ts}.json")
-        
-        if data_type == "profile":
-            data = atomic_read(profile_path(uid), default={})
-        elif data_type == "memory":
-            data = atomic_read(memory_path(uid), default=[])
-        else:
-            return False
-        
-        if not atomic_write(fname, data):
-            return False
-        
-        # Оставляем только последние 10 бэкапов
-        backups = sorted([
-            f for f in os.listdir(BACKUP_DIR) 
-            if f.startswith(f"{data_type}_{uid}_")
-        ])
-        for old in backups[:-10]:
-            try:
-                os.remove(os.path.join(BACKUP_DIR, old))
-            except:
-                pass
-        
-        return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания бэкапа: {e}")
-        return False
-
-async def restore_backup(uid, data_type):
-    """Восстанавливает из последнего бэкапа"""
-    try:
-        backups = sorted([
-            f for f in os.listdir(BACKUP_DIR) 
-            if f.startswith(f"{data_type}_{uid}_")
-        ])
-        if not backups:
-            return False
-        
-        with open(os.path.join(BACKUP_DIR, backups[-1]), 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        if data_type == "profile":
-            return atomic_write(profile_path(uid), data)
-        elif data_type == "memory":
-            return atomic_write(memory_path(uid), data)
-        return False
-    except Exception as e:
-        logger.error(f"❌ Ошибка восстановления: {e}")
-        return False
-
-# ==================== ПАМЯТЬ (СОХРАНЯЕМ ВСЕ ФУНКЦИИ) ====================
-STOP_WORDS = {'это','так','вот','ну','просто','очень','что','как','где','когда','для','без','по'}
-
-def extract_key_points(text, max_len=40):
-    """Извлекает ключевые точки из текста для сжатия"""
-    if not text or len(text) <= max_len:
-        return str(text)[:max_len]
-    imp = [w for w in text.split() if w.lower() not in STOP_WORDS and len(w) > 2]
-    result = ' '.join(imp[:8])[:max_len]
-    return result + "..." if len(result) == max_len else result
-
-def compress_history(history):
-    """Сжимает историю для экономии места"""
-    if not isinstance(history, list):
-        return []
-    if len(history) <= 50:
-        return history
+        except:
+            return default
     
-    recent = history[-5:]
-    old = history[:-5]
-    summary = []
+    def _safe_save(self, filename, data):
+        try:
+            tmp = filename + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, filename)
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения {filename}: {e}")
+            return False
     
-    for m in old[-10:]:
-        if not isinstance(m, dict):
-            continue
-        r = m.get("role", "")
-        c = m.get("content", "")
-        if r == "user":
-            summary.append(f"Q: {extract_key_points(c, 50)}")
-        elif r == "assistant":
-            summary.append(f"A: {extract_key_points(c, 50)}")
-    
-    if summary:
-        return [{"role":"system","content":"📚 История:\n" + "\n".join(summary[-5:])}] + recent
-    return recent
-
-def _update_level_2(uid, messages):
-    """Сохраняет сжатые старые сообщения в профиль"""
-    try:
-        profile = atomic_read(profile_path(uid), default={})
-        profile.setdefault("level_2", [])
+    def add_message(self, role: str, content: str):
+        """Добавляет сообщение в память"""
+        message = {
+            "role": role,
+            "content": content,
+            "timestamp": now().isoformat()
+        }
         
-        ts = now().strftime("%d.%m")
-        for m in messages[-20:]:
-            if not isinstance(m, dict):
+        self.short_term.append(message)
+        
+        if len(self.short_term) > 100:
+            old = self.short_term[:-100]
+            self._compress_memory(old)
+            self.short_term = self.short_term[-100:]
+        
+        self.counter += 1
+        self._extract_info(content)
+        self.save()
+    
+    def _compress_memory(self, messages):
+        """Сжимает старые сообщения"""
+        for msg in messages:
+            content = msg.get('content', '')
+            if len(content) < 20:
                 continue
-            r = m.get("role", "")
-            c = m.get("content", "")
-            if r == "user":
-                profile["level_2"].append(f"[{ts}] Q: {extract_key_points(c, 40)}")
-            elif r == "assistant":
-                profile["level_2"].append(f"[{ts}] A: {extract_key_points(c, 40)}")
-        
-        if len(profile["level_2"]) > 30:
-            profile["level_2"] = profile["level_2"][-30:]
-        
-        atomic_write(profile_path(uid), profile)
-    except Exception as e:
-        logger.error(f"❌ Ошибка _update_level_2: {e}")
-
-def load_memory(uid):
-    """Загружает историю с автоматическим сжатием"""
-    raw = atomic_read(memory_path(uid), default=[])
-    if not isinstance(raw, list):
-        raw = []
-    
-    # Если много сообщений - сжимаем
-    if len(raw) > 50:
-        _update_level_2(uid, raw[:-10])
-        return raw[-10:]  # Возвращаем последние 10 сообщений
-    
-    return compress_history(raw)
-
-async def save_memory(uid, history, backup=True):
-    """Сохраняет историю с бэкапом"""
-    if not isinstance(history, list):
-        return False
-    
-    # Сжимаем перед сохранением
-    compressed = compress_history(history)
-    if not atomic_write(memory_path(uid), compressed):
-        return False
-    
-    if backup:
-        create_backup(uid, "memory")
-    
-    # Обновляем счетчик
-    counter = atomic_read(counter_path(uid), default={"count": 0}).get("count", 0)
-    atomic_write(counter_path(uid), {"count": counter + 1})
-    
-    return True
-
-def load_profile(uid):
-    """Загружает профиль пользователя"""
-    return atomic_read(profile_path(uid), default={})
-
-def save_profile(uid, profile, backup=True):
-    """Сохраняет профиль"""
-    profile["updated"] = now().strftime("%d.%m.%Y %H:%M:%S")
-    if not atomic_write(profile_path(uid), profile):
-        return False
-    if backup:
-        create_backup(uid, "profile")
-    return True
-
-def load_counter(uid):
-    """Загружает счетчик"""
-    return atomic_read(counter_path(uid), default={"count": 0}).get("count", 0)
-
-def save_counter(uid, count):
-    """Сохраняет счетчик"""
-    return atomic_write(counter_path(uid), {"count": count})
-
-def load_memory_raw(uid):
-    """Загружает сырую историю без сжатия"""
-    return atomic_read(memory_path(uid), default=[])
-
-async def auto_restore_all_users():
-    """Автоматическое восстановление всех пользователей при старте"""
-    logger.info("🔄 Проверка данных при старте...")
-    try:
-        if not os.path.exists(BACKUP_DIR):
-            return
-        
-        user_ids = set()
-        for fname in os.listdir(BACKUP_DIR):
-            parts = fname.split('_')
-            if len(parts) >= 2 and parts[0] in ('profile', 'memory'):
-                try:
-                    user_ids.add(int(parts[1]))
-                except ValueError:
-                    continue
-        
-        restored = 0
-        for uid in user_ids:
-            mem_data = atomic_read(memory_path(uid), default=None)
-            prof_data = atomic_read(profile_path(uid), default=None)
             
-            need_restore = False
-            if mem_data is None or (isinstance(mem_data, list) and len(mem_data) == 0):
-                if await restore_backup(uid, "memory"):
-                    restored += 1
-                    need_restore = True
-            
-            if prof_data is None or (isinstance(prof_data, dict) and len(prof_data) == 0):
-                if await restore_backup(uid, "profile"):
-                    if not need_restore:
-                        restored += 1
+            # Важные факты
+            if any(kw in content.lower() for kw in ['это', 'является', 'состоит', 'находится']):
+                self.episodic.append({
+                    'content': content[:200],
+                    'timestamp': now().isoformat(),
+                    'priority': 5
+                })
         
-        if restored:
-            logger.info(f"✅ Восстановлено {restored} пользователей")
+        if len(self.episodic) > 200:
+            self.episodic = self.episodic[-200:]
     
-    except Exception as e:
-        logger.error(f"❌ Ошибка auto_restore: {e}")
+    def _extract_info(self, text: str):
+        """Извлекает личную информацию"""
+        patterns = {
+            'name': r'(?:меня зовут|зовут|я)\s+([А-Яа-яA-Za-z\s]{2,30})',
+            'age': r'(?:мне|возраст)\s+(\d{1,3})\s*(?:лет|года)',
+            'city': r'(?:я живу|живу в|из города)\s+([А-Яа-яA-Za-z\s]{2,30})',
+            'work': r'(?:я работаю|работаю)\s+([А-Яа-яA-Za-z\s]{2,50})',
+        }
+        
+        for key, pattern in patterns.items():
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                if not self.profile.get(key):
+                    self.profile[key] = value
+                    logger.info(f"📝 {key}: {value}")
+    
+    def get_context(self, limit: int = 10) -> list:
+        """Возвращает контекст для диалога"""
+        return self.short_term[-limit:] if self.short_term else []
+    
+    def get_personalized_context(self) -> str:
+        """Персонализированный контекст"""
+        if not self.profile:
+            return ""
+        
+        lines = ["👤 О пользователе:"]
+        for key, value in self.profile.items():
+            lines.append(f"• {key}: {value}")
+        return '\n'.join(lines)
+    
+    def save(self):
+        """Сохраняет все уровни памяти"""
+        self._safe_save(memory_path(self.uid), self.short_term)
+        self._safe_save(profile_path(self.uid), self.profile)
+        self._safe_save(episodic_path(self.uid), self.episodic)
+        self._safe_save(learning_path(self.uid), self.learning)
+        self._safe_save(counter_path(self.uid), {"count": self.counter})
+    
+    def get_stats(self) -> dict:
+        return {
+            'messages': len(self.short_term),
+            'profile': len(self.profile),
+            'episodic': len(self.episodic),
+            'total': self.counter
+        }
+
+# Глобальный кэш памяти
+_memory_cache = {}
+
+def get_memory(uid) -> SuperMemory:
+    if uid not in _memory_cache:
+        _memory_cache[uid] = SuperMemory(uid)
+    return _memory_cache[uid]
 
 # ==================== HTTP СЕССИЯ ====================
 _http_session = None
-_session_lock = asyncio.Lock()
 
 async def get_http_session():
     global _http_session
-    async with _session_lock:
-        if _http_session is None:
-            connector = aiohttp.TCPConnector(limit=15, limit_per_host=8, ttl_dns_cache=300)
-            timeout = aiohttp.ClientTimeout(total=90, connect=15, sock_read=45)
-            _http_session = aiohttp.ClientSession(connector=connector, timeout=timeout)
-            logger.info("✅ HTTP сессия создана")
-        return _http_session
-
-async def cleanup_http_session():
-    global _http_session
-    if _http_session:
-        await _http_session.close()
-        _http_session = None
+    if _http_session is None:
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5, ttl_dns_cache=300)
+        timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
+        _http_session = aiohttp.ClientSession(connector=connector, timeout=timeout)
+    return _http_session
 
 # ==================== BROWSERLESS ====================
 PLAYWRIGHT_AVAILABLE = False
@@ -389,72 +228,41 @@ if BROWSERLESS_WS_ENDPOINT:
     try:
         from playwright.async_api import async_playwright
         PLAYWRIGHT_AVAILABLE = True
-        logger.info(f"✅ Playwright подключен к Browserless")
-    except ImportError:
-        logger.warning("⚠️ Playwright не установлен, только HTTP")
+        logger.info("✅ Playwright подключен")
+    except:
+        logger.warning("⚠️ Playwright не установлен")
 
+# ==================== КЭШИ ====================
 html_cache = {}
 search_cache = {}
 answer_cache = {}
 
-# ==================== ИЗВЛЕЧЕНИЕ ДАННЫХ ====================
-def extract_headers(html: str) -> list:
-    headers = re.findall(r'<h[1-6][^>]*>(.*?)</h[1-6]>', html, re.IGNORECASE | re.DOTALL)
-    return [re.sub(r'<[^>]+>', '', h).strip() for h in headers if h]
+def normalize_query(query):
+    if not isinstance(query, str):
+        return ""
+    return re.sub(r'[^\w\s]', '', query.lower())[:100]
 
-def extract_tables(html: str) -> list:
-    tables = re.findall(r'<table[^>]*>(.*?)</table>', html, re.IGNORECASE | re.DOTALL)
-    table_data = []
-    for table in tables:
-        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table, re.IGNORECASE | re.DOTALL)
-        for row in rows:
-            cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.IGNORECASE | re.DOTALL)
-            if cells:
-                clean_cells = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
-                table_data.append(clean_cells)
-    return table_data
-
-def extract_lists(html: str) -> list:
-    lists = re.findall(r'<(ul|ol)[^>]*>(.*?)</\1>', html, re.IGNORECASE | re.DOTALL)
-    items = []
-    for _, list_content in lists:
-        li_items = re.findall(r'<li[^>]*>(.*?)</li>', list_content, re.IGNORECASE | re.DOTALL)
-        for li in li_items:
-            clean_li = re.sub(r'<[^>]+>', '', li).strip()
-            if clean_li:
-                items.append(clean_li)
-    return items
-
+# ==================== ПАРСИНГ ====================
 def clean_html_text(html: str) -> str:
     text = re.sub(r'<[^>]+>', ' ', html)
     text = re.sub(r'\s+', ' ', text).strip()
-    lines = text.split('. ')
-    clean_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
+    
+    lines = []
+    for line in text.split('. '):
+        line = line.strip()
+        if not line or len(line) < 30:
             continue
         # Пропускаем код и мусор
-        if stripped.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ', '//')):
+        if line.startswith(('{', '}', '/*', '.', '#', 'function', 'var ', 'let ', 'const ')):
             continue
-        if re.match(r'^[\d\s\.,;:!?()\-]+$', stripped):
-            continue
-        # Оставляем полезный текст
-        if any(kw in stripped.lower() for kw in ['планшет', 'модель', 'gb', 'гб', 'snapdragon', 'mediatek', 'android', 'дюйм', 'цена', 'аккумулятор', 'батарея', 'os', 'операционная']):
-            clean_lines.append(stripped)
-        elif len(stripped) > 40:
-            clean_lines.append(stripped)
-    return '. '.join(clean_lines)
+        lines.append(line)
+    
+    return '. '.join(lines[:20])
 
 def extract_date_from_html(html: str) -> str:
-    if not html:
-        return "дата не указана"
     patterns = [
-        r'"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
-        r'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
-        r'"published"\s*:\s*"(\d{4}-\d{2}-\d{2})"',
-        r'<meta\s+property="article:published_time"\s+content="(\d{4}-\d{2}-\d{2})"',
-        r'<time\s+datetime="(\d{4}-\d{2}-\d{2})"',
+        r'"datePublished":"(\d{4}-\d{2}-\d{2})"',
+        r'"date":"(\d{4}-\d{2}-\d{2})"',
         r'(\d{2}\.\d{2}\.\d{4})',
         r'(\d{4})',
     ]
@@ -466,9 +274,76 @@ def extract_date_from_html(html: str) -> str:
                 year = int(date)
                 if 2000 <= year <= 2030:
                     return date
-                return "дата не указана"
             return date
     return "дата не указана"
+
+# ==================== ЗАГРУЗКА КОНТЕНТА ====================
+async def fetch_content(url: str, timeout: int = 15):
+    if url in html_cache:
+        cached = html_cache[url]
+        return cached.get("text", ""), cached.get("date", "дата не указана")
+    
+    result = ""
+    pub_date = "дата не указана"
+    
+    if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = await context.new_page()
+                
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                html = await page.content()
+                await page.close()
+                
+                result = clean_html_text(html)
+                pub_date = extract_date_from_html(html)
+                
+                if result:
+                    logger.info(f"✅ Browserless: {url[:50]}")
+        except Exception as e:
+            logger.warning(f"⚠️ Browserless: {str(e)[:50]}")
+    
+    if not result:
+        session = await get_http_session()
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        try:
+            async with session.get(url, headers=headers, timeout=timeout) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    result = clean_html_text(html)
+                    pub_date = extract_date_from_html(html)
+                    if result:
+                        logger.info(f"✅ HTTP: {url[:50]}")
+        except Exception as e:
+            logger.warning(f"⚠️ HTTP: {str(e)[:50]}")
+    
+    if result:
+        html_cache[url] = {"text": result, "date": pub_date}
+        if len(html_cache) > 50:
+            oldest = list(html_cache.keys())[0]
+            del html_cache[oldest]
+        return result, pub_date
+    
+    return "", "дата не указана"
+
+async def fetch_multiple_pages(links, max_pages=10):
+    if not links:
+        return []
+    
+    semaphore = asyncio.Semaphore(5)
+    
+    async def fetch_one(url):
+        async with semaphore:
+            text, date = await fetch_content(url)
+            if text and len(text) > 50:
+                return {"url": url, "text": text, "date": date}
+            return None
+    
+    tasks = [fetch_one(url) for url in links[:max_pages]]
+    fetched = await asyncio.gather(*tasks)
+    return [r for r in fetched if r is not None]
 
 # ==================== ПОИСК ====================
 async def search_apiserpent(query):
@@ -481,7 +356,7 @@ async def search_apiserpent(query):
             "https://apiserpent.com/api/search",
             params=params,
             headers={"X-API-Key": APISERPENT_API_KEY},
-            timeout=30
+            timeout=15
         ) as r:
             if r.status != 200:
                 return []
@@ -496,8 +371,7 @@ async def search_apiserpent(query):
                         "link": str(x.get("url", x.get("link", "#")))[:120]
                     })
             return results
-    except Exception as e:
-        logger.warning(f"⚠️ APISerpent ошибка: {e}")
+    except:
         return []
 
 async def search_serper(query):
@@ -509,7 +383,7 @@ async def search_serper(query):
             "https://google.serper.dev/search",
             json={"q": query, "num": SEARCH_RESULTS_NUM},
             headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-            timeout=15
+            timeout=10
         ) as r:
             if r.status != 200:
                 return []
@@ -522,257 +396,70 @@ async def search_serper(query):
                     "link": item.get("link", "#")[:120]
                 })
             return results
-    except Exception as e:
-        logger.warning(f"⚠️ Serper ошибка: {e}")
+    except:
         return []
 
 async def search_primary(query):
-    """Основной поиск с кэшированием"""
-    # Проверяем кэш
     norm = normalize_query(query)
     if norm in search_cache:
         cached = search_cache[norm]
         if (datetime.now() - cached['time']).total_seconds() < CACHE_TTL:
             return cached['data']
     
-    # Пробуем APISerpent
     results = await search_apiserpent(query)
     if results:
         search_cache[norm] = {'data': results, 'time': datetime.now()}
         return results
     
-    # Пробуем Serper
     results = await search_serper(query)
     if results:
         search_cache[norm] = {'data': results, 'time': datetime.now()}
     
     return results
 
-def normalize_query(query):
-    if not isinstance(query, str):
-        return ""
-    return re.sub(r'[^\w\s]', '', query.lower())[:100]
+# ==================== АНАЛИЗ ====================
+def detect_intent(query: str) -> str:
+    query_lower = query.lower()
+    intents = {
+        'best': ['лучшие', 'топ', 'рейтинг', 'список', 'классный'],
+        'howto': ['инструкция', 'руководство', 'как сделать', 'как настроить'],
+        'problem': ['ошибка', 'проблема', 'не работает', 'исправить'],
+        'info': ['что такое', 'кто такой', 'сколько', 'описание', 'обзор'],
+        'news': ['новости', 'новый', 'свежий', 'актуальный', 'сегодня'],
+    }
+    for intent, keywords in intents.items():
+        if any(kw in query_lower for kw in keywords):
+            return intent
+    return 'general'
 
-# ==================== ЗАГРУЗКА КОНТЕНТА ====================
-async def fetch_content(url: str) -> tuple:
-    """Загружает контент страницы через Browserless или HTTP"""
-    # Проверяем кэш
-    if url in html_cache:
-        cached = html_cache[url]
-        return cached.get("text", ""), cached.get("date", "дата не указана")
+def calculate_relevance(url: str, text: str, query: str) -> int:
+    score = 0
+    query_words = set(query.lower().split())
+    text_lower = text.lower()
     
-    result = ""
-    pub_date = "дата не указана"
-    
-    # Пробуем Browserless
-    if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
-                context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                page = await context.new_page()
-                
-                # Устанавливаем таймаут
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                html = await page.content()
-                await page.close()
-                
-                # Парсим
-                parts = []
-                headers = extract_headers(html)
-                if headers:
-                    parts.append("Заголовки: " + " | ".join(headers))
-                
-                tables = extract_tables(html)
-                for table in tables:
-                    parts.append("Таблица: " + " | ".join([" | ".join(row) for row in table]))
-                
-                list_items = extract_lists(html)
-                if list_items:
-                    parts.append("Список: " + " | ".join(list_items))
-                
-                text_part = clean_html_text(html)
-                if text_part:
-                    parts.append(text_part)
-                
-                combined = " ".join(parts)
-                if len(combined) > 50:
-                    result = combined[:MAX_HTML_LEN]
-                    pub_date = extract_date_from_html(html)
-                    logger.info(f"✅ Browserless: {url[:50]} (дата: {pub_date}, длина: {len(result)})")
-        except Exception as e:
-            logger.warning(f"⚠️ Browserless ошибка: {e}")
-    
-    # Пробуем HTTP если Browserless не сработал
-    if not result:
-        session = await get_http_session()
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        try:
-            async with session.get(url, headers=headers, timeout=20) as resp:
-                if resp.status == 200:
-                    html = await resp.text()
-                    
-                    parts = []
-                    headers2 = extract_headers(html)
-                    if headers2:
-                        parts.append("Заголовки: " + " | ".join(headers2))
-                    
-                    tables2 = extract_tables(html)
-                    for table in tables2:
-                        parts.append("Таблица: " + " | ".join([" | ".join(row) for row in table]))
-                    
-                    list_items2 = extract_lists(html)
-                    if list_items2:
-                        parts.append("Список: " + " | ".join(list_items2))
-                    
-                    text_part2 = clean_html_text(html)
-                    if text_part2:
-                        parts.append(text_part2)
-                    
-                    combined = " ".join(parts)
-                    if len(combined) > 50:
-                        result = combined[:MAX_HTML_LEN]
-                        pub_date = extract_date_from_html(html)
-                        logger.info(f"✅ HTTP: {url[:50]} (дата: {pub_date}, длина: {len(result)})")
-        except Exception as e:
-            logger.warning(f"⚠️ HTTP ошибка: {e}")
-    
-    # Сохраняем в кэш
-    if result:
-        html_cache[url] = {"text": result, "date": pub_date}
-        # Ограничиваем размер кэша
-        if len(html_cache) > 100:
-            oldest = list(html_cache.keys())[0]
-            del html_cache[oldest]
-        return result, pub_date
-    
-    logger.warning(f"❌ Не удалось загрузить {url[:50]}")
-    return "", "дата не указана"
-
-async def fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM):
-    """Загружает несколько страниц параллельно"""
-    if not links:
-        return []
-    
-    results = []
-    semaphore = asyncio.Semaphore(5)  # Ограничиваем параллельные запросы
-    
-    async def fetch_one(url):
-        async with semaphore:
-            text, date = await fetch_content(url)
-            if text and len(text) > 50:
-                return {"url": url, "text": text, "date": date}
-            return None
-    
-    tasks = [fetch_one(url) for url in links[:max_pages]]
-    fetched = await asyncio.gather(*tasks)
-    valid = [r for r in fetched if r is not None]
-    
-    # Дедупликация
-    seen = {}
-    unique = []
-    for page in valid:
-        domain = re.sub(r'^https?://(www\.)?([^/]+).*', r'\2', page['url'])
-        if domain not in seen:
-            seen[domain] = page
-            unique.append(page)
-        else:
-            existing = seen[domain]
-            if len(page['text']) > len(existing['text']):
-                unique.remove(existing)
-                unique.append(page)
-                seen[domain] = page
-    
-    return unique
-
-def extract_year_from_text(text):
-    if not isinstance(text, str):
-        return None
-    match = re.search(r'\b(20[2-9][0-9])\b', text)
-    return int(match.group(1)) if match else None
-
-def assess_relevance(results, query):
-    """Оценивает релевантность результатов с приоритетом актуальности"""
-    if not results or not isinstance(results, list):
-        return []
-    
-    query_year = None
-    year_match = re.search(r'\b(20[2-9][0-9])\b', query)
-    if year_match:
-        query_year = int(year_match.group(1))
+    for word in query_words:
+        if len(word) > 3 and word in text_lower:
+            score += 2
     
     current_year = now().year
-    stop_words = {'найди','пожалуйста','помоги','мне','лучшие','скажи','расскажи','покажи','найти'}
-    keywords = [w.lower() for w in re.sub(r'[^\w\s]', '', query).split()
-                if w.lower() not in stop_words and len(w) > 3]
-    
-    scored = []
-    for res in results:
-        if not isinstance(res, dict):
-            continue
-        
-        text = (res.get('title', '') or '') + ' ' + (res.get('snippet', '') or '')
-        text_lower = text.lower()
-        link = res.get('link', '').lower()
-        
-        # Оценка по ключевым словам
-        keyword_score = sum(3 for kw in keywords if kw in text_lower)
-        
-        # Оценка домена
-        domain_score = 0
-        if any(zone in link for zone in ['.gov', '.edu', '.org', 'wikipedia.org']):
-            domain_score += 5
-        spam = ['ozon', 'wildberries', 'aliexpress', 'avito', 'amazon', 'ebay', 'taobao']
-        if any(s in link for s in spam):
-            domain_score -= 8
-        
-        # Оценка актуальности (повышенный приоритет)
-        year = extract_year_from_text(text)
-        year_score = 0
-        if year:
-            if query_year and year == query_year:
-                year_score = 20  # Максимальный приоритет для указанного года
-            elif year >= current_year - 1:
-                year_score = 15  # Прошлый год - очень актуально
-            elif year >= current_year - 2:
-                year_score = 8
-            elif year >= current_year - 3:
-                year_score = 3
-            else:
-                year_score = -10  # Старые данные штрафуем
+    year_match = re.search(r'\b(20[2-5][0-9])\b', text)
+    if year_match:
+        year = int(year_match.group(1))
+        if year >= current_year:
+            score += 15
+        elif year >= current_year - 1:
+            score += 10
         else:
-            year_score = -2  # Неизвестная дата - небольшой штраф
-        
-        total = keyword_score * 2 + year_score + domain_score
-        scored.append({**res, 'score': total, 'year': year})
+            score -= 5
     
-    relevant = [r for r in scored if r['score'] > 0]
-    relevant.sort(key=lambda x: x['score'], reverse=True)
-    return relevant
-
-def mark_source(mode: str, text: str, is_cached: bool = False, is_speculation: bool = False) -> str:
-    """Добавляет маркер источника к ответу"""
-    markers = {
-        "model_only": "🧠 [ЗНАНИЯ МОДЕЛИ]",
-        "hybrid": "🔍 [ГИБРИД]",
-        "internet_only": "🌐 [ИНТЕРНЕТ]",
-        "local_memory": "💾 [ЛОКАЛЬНАЯ ПАМЯТЬ]"
-    }
-    marker = markers.get(mode, "📌 [ИСТОЧНИК НЕИЗВЕСТЕН]")
+    if len(text) > 500:
+        score += 5
     
-    if is_cached:
-        marker = f"📦 [КЭШ] {marker}"
-    
-    if is_speculation:
-        return f"⚠️ [НЕ 100%]\n\n⚠️ ВНИМАНИЕ: Это предположение, не подтвержденный факт.\n\n{text}"
-    
-    return f"{marker}\n\n{text}"
+    return max(0, score)
 
 # ==================== DEEPSEEK API ====================
-async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
-    """Запрос к DeepSeek с автоматическим восстановлением"""
-    if attempt >= 5:
-        logger.error("❌ Превышено количество попыток запроса к DeepSeek")
+async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
+    if attempt >= 3:
         return None, "max_retries"
     
     session = await get_http_session()
@@ -782,14 +469,13 @@ async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER, 
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "top_p": 0.95
         }
         
         async with session.post(
             f"{DEEPSEEK_API_BASE}/chat/completions",
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
             json=payload,
-            timeout=60
+            timeout=45
         ) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -797,434 +483,144 @@ async def ask_deepseek(messages, temperature=1.0, max_tokens=MAX_TOKENS_ANSWER, 
                     return data["choices"][0]["message"]["content"], None
             
             if resp.status == 429:
-                wait = 2 ** attempt
-                logger.warning(f"⏳ DeepSeek: лимит запросов, повтор через {wait} сек (попытка {attempt+1}/5)")
-                await asyncio.sleep(wait)
-                return await ask_deepseek(messages, temperature, max_tokens, attempt+1)
+                await asyncio.sleep(2 ** attempt)
+                return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
             
             return None, f"HTTP {resp.status}"
-    
-    except asyncio.TimeoutError:
-        logger.warning(f"⏳ DeepSeek: таймаут (попытка {attempt+1}/5)")
-        if attempt < 4:
-            await asyncio.sleep(2 ** attempt)
-            return await ask_deepseek(messages, temperature, max_tokens, attempt+1)
-        return None, "timeout"
-    
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка DeepSeek: {e}")
-        if attempt < 4:
+        if attempt < 2:
             await asyncio.sleep(2 ** attempt)
-            return await ask_deepseek(messages, temperature, max_tokens, attempt+1)
+            return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
         return None, str(e)
 
-def build_profile_context(profile):
-    """Строит контекст из профиля"""
-    parts = []
-    for k, v in profile.items():
-        if k in ("updated", "level_2"):
-            continue
-        if isinstance(v, str):
-            parts.append(f"{k}: {v[:40]}")
-    return ". ".join(parts)[:150]
-
-# ==================== ПЕРЕФОРМУЛИРОВКА ====================
-async def understand_question(user_message: str) -> dict:
-    """Переформулирует вопрос пользователя"""
-    system_prompt = """Ты — ассистент. Переформулируй вопрос пользователя СВОИМИ СЛОВАМИ, кратко и ясно.
-Ответь в формате JSON: {"rephrased": "твоя переформулировка"}"""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message}
-    ]
-    answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=500)
-    if err or not answer:
-        return {"rephrased": user_message[:100] + "..."}
-    try:
-        return json.loads(answer)
-    except:
-        return {"rephrased": user_message[:100] + "..."}
-
-async def reframe_with_hint(original_query: str, hint: str, clarifications: list = None) -> str:
-    """Переформулирует вопрос с учетом уточнений"""
-    clarifications_text = ""
-    if clarifications:
-        clarifications_text = "\nРанее уточнено:\n" + "\n".join(f"- {c}" for c in clarifications)
+# ==================== ГЛАВНАЯ ФУНКЦИЯ - ПОИСК ====================
+async def search_and_answer(uid, user_message, history):
+    """Основная функция поиска с гибридным дополнением"""
     
-    system_prompt = f"""Ты — ассистент. Переформулируй вопрос с учётом всех уточнений.
-Исходный вопрос: "{original_query}"
-Новая подсказка: "{hint}"
-{clarifications_text}
-Ответь в формате JSON: {{"rephrased": "новая формулировка"}}"""
+    memory = get_memory(uid)
+    personal_context = memory.get_personalized_context()
     
-    messages = [{"role": "system", "content": system_prompt}]
-    answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=600)
-    if err or not answer:
-        return f"{original_query} (с учётом: {hint})"
-    try:
-        data = json.loads(answer)
-        return data.get('rephrased', f"{original_query} (с учётом: {hint})")
-    except:
-        return f"{original_query} (с учётом: {hint})"
-
-async def generate_search_query(query: str) -> list:
-    """Генерирует варианты поисковых запросов"""
-    stop = {'найди','пожалуйста','помоги','мне','лучшие','скажи','расскажи','покажи','найти'}
-    words = [w for w in re.sub(r'[^\w\s]', '', query).split()
-             if w.lower() not in stop and len(w) > 2]
-    if not words:
-        return [query]
+    # Генерируем запросы
+    variants = [user_message]
+    intent = detect_intent(user_message)
     
-    base = " ".join(words[:6])
-    evergreen_phrases = ['за всё время','за все время','всех времен','классик','best of all time','в истории']
-    is_evergreen = any(p in query.lower() for p in evergreen_phrases)
-    year_match = re.search(r'\b(20[2-9][0-9])\b', query)
+    if intent == 'best':
+        variants.append(f"рейтинг {user_message}")
+    elif intent == 'howto':
+        variants.append(f"инструкция {user_message}")
+    elif intent == 'problem':
+        variants.append(f"решение {user_message}")
     
-    if is_evergreen:
-        return [base, f"{base} best of all time"]
-    elif year_match:
-        return [f"{base} {year_match.group(1)}"]
-    else:
-        context_words = ["рейтинг", "обзор", "лучший", "топ"]
-        base_with_year = f"{base} {now().year}"
-        queries = [base, base_with_year]
-        for cw in context_words:
-            queries.append(f"{cw} {base}")
-            queries.append(f"{cw} {base_with_year}")
-        return list(dict.fromkeys(queries))
-
-# ==================== ГЕНЕРАЦИЯ ОТВЕТОВ ====================
-async def generate_chat_response(user_message, history, profile):
-    """Генерация ответа в режиме болтовни"""
-    ctx = build_profile_context(profile)
-    system_prompt = f"""Ты — дружелюбный ассистент. Отвечай естественно, как в разговоре.
-Не используй поиск в интернете, отвечай из своих знаний.
-Если не знаешь — скажи честно.
-Сегодня: {get_current_date()}
-Контекст: {ctx}"""
-    
-    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=0.7, max_tokens=MAX_TOKENS_ANSWER)
-    if err or not answer:
-        return "⚠️ Не удалось получить ответ."
-    return answer
-
-async def generate_model_only(uid, user_message, history, profile):
-    """Генерация ответа только из знаний модели"""
-    ctx = build_profile_context(profile)
-    system_prompt = f"""Ты — честный ассистент. Отвечай ТОЛЬКО из своих знаний.
-⚠️ ПРАВИЛА:
-1. Отвечай только тем, что знаешь на 100%.
-2. Если не знаешь — скажи "Я не знаю".
-3. ЗАПРЕЩЕНО использовать фразы: "возможно", "вероятно".
-4. Если неуверен — напиши "⚠️ [НЕ 100%]".
-5. Не выдумывай.
-6. Будь максимально объективным.
-📅 Твои знания актуальны до мая 2025 года.
-Сегодня: {get_current_date()}
-Контекст: {ctx}"""
-    
-    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=MAX_TOKENS_ANSWER)
-    if err or not answer:
-        return "⚠️ Не удалось получить ответ от модели."
-    
-    forbidden = ['возможно','вероятно','скорее всего','должно быть','похоже что']
-    is_speculation = any(p in answer.lower() for p in forbidden)
-    return mark_source("model_only", answer, is_cached=False, is_speculation=is_speculation)
-
-async def generate_internet_only(uid, user_message, history, profile):
-    """Генерация ответа только из интернета"""
-    # Проверяем кэш
-    norm = normalize_query(user_message)
-    if norm in answer_cache:
-        cached = answer_cache[norm]
-        if (datetime.now() - cached['time']).total_seconds() < CACHE_TTL:
-            return mark_source("internet_only", cached['data'], is_cached=True, is_speculation=False)
+    variants.append(f"{user_message} {now().year}")
     
     # Поиск
-    variants = await generate_search_query(user_message)
-    all_results = await search_primary(variants[0])
+    all_results = []
+    for variant in variants[:3]:
+        results = await search_primary(variant)
+        if results:
+            all_results.extend(results)
+            if len(all_results) >= 20:
+                break
+    
     if not all_results:
-        return "❌ В интернете ничего не найдено."
+        return "❌ В интернете ничего не найдено. Попробуйте переформулировать запрос."
     
-    scored = assess_relevance(all_results, user_message)
-    links = [r['link'] for r in (scored or all_results)[:SEARCH_RESULTS_NUM]]
-    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM)
+    # Оценка
+    scored = []
+    for res in all_results[:20]:
+        if isinstance(res, dict):
+            text = f"{res.get('title', '')} {res.get('snippet', '')}"
+            score = calculate_relevance(res.get('link', ''), text, user_message)
+            if score > 0:
+                scored.append({**res, 'score': score})
     
-    if pages and len(pages) > 0:
-        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
-        source_blocks = []
-        for i, p in enumerate(pages_sorted, 1):
-            source_blocks.append(
-                f"--- ИСТОЧНИК {i} ---\nURL: {p['url']}\nДата: {p.get('date','дата не указана')}\nСодержание:\n{p['text']}"
-            )
-        stext = "\n\n".join(source_blocks)
-        source_count = len(source_blocks)
-        logger.info(f"📊 Интернет: загружено {source_count} источников")
-    else:
-        stext = "\n\n".join([
-            f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title','')}\nОписание: {r.get('snippet','')}"
-            for i, r in enumerate((scored or all_results)[:10])
-        ])
-        source_count = 10
-        logger.warning("⚠️ Интернет: страницы не загружены, использованы сниппеты")
+    scored.sort(key=lambda x: x['score'], reverse=True)
+    scored = scored[:15]
     
-    # Формируем промпт
-    year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
-    time_context = f"Ищи информацию за {year_match.group(1)}." if year_match else f"Ищи самую актуальную информацию на {get_current_date()}."
+    if not scored:
+        return "❌ Не найдено релевантных источников."
     
-    system_prompt = f"""
-Ты — универсальный аналитик. Ты получил {source_count} источников данных.
-
-⚠️ ТВОЯ ЗАДАЧА:
-1. Проанализируй КАЖДЫЙ источник (от 1 до {source_count}).
-2. Для каждого источника определи:
-   - Есть ли полезная информация по запросу пользователя.
-   - Если есть – выпиши ключевые факты (цифры, модели, названия, даты, цены, характеристики).
-   - Если нет – кратко укажи причину (пустая страница, техническая ошибка, нерелевантный контент).
-3. После анализа всех источников:
-   - Найди общие факты, которые повторяются в нескольких источниках (это наиболее достоверно).
-   - Найди противоречия и аномалии.
-   - Обрати внимание на свежесть данных: отдай приоритет источникам с актуальной датой (2025–2026).
-4. Сделай ЛОГИЧЕСКИЙ ВЫВОД на основе всех источников.
-   - Если информации достаточно – дай чёткий ответ.
-   - Если данных мало или они противоречивы – честно скажи об этом и предложи альтернативы.
-
-⚠️ ФОРМАТ ОТВЕТА (ОБЯЗАТЕЛЬНО):
-📊 **Использованные источники:**
-Источник 1 (URL): [краткое содержание, что взято]
-Источник 2 (URL): [краткое содержание, что взято]
-...
-(перечисли ВСЕ источники)
-
-📊 **Общие факты (что совпадает в нескольких источниках):**
-...
-
-⚠️ **Противоречия и аномалии:**
-...
-
-✅ **Мой логический вывод:**
-...
-
-Запрос пользователя: {user_message}
-Сегодня: {get_current_date()}
-Контекст о пользователе: {build_profile_context(profile)}
-
-ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
-{stext}
-"""
+    # Загрузка страниц
+    links = [r['link'] for r in scored[:10]]
+    pages = await fetch_multiple_pages(links, max_pages=8)
     
-    # Получаем ответ
-    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
-    
-    # Проверяем наличие источников
-    if err or not answer or not re.search(r'Источник \d+', answer):
-        logger.warning("⚠️ Ответ не содержит перечисления источников, отправляем повторный запрос")
-        system_prompt += "\n\n⚠️ ТЫ ОБЯЗАН перечислить ВСЕ источники в секции 'Использованные источники'!"
-        messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-        answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
-        
-        if err or not answer or not re.search(r'Источник \d+', answer):
-            # Отдаем сырые результаты
-            ans = "🔍 Результаты поиска:\n\n"
-            for i, r in enumerate((scored or all_results)[:10], 1):
-                ans += f"{i}. {r.get('title','Без названия')}\n   {r.get('snippet','Нет описания')[:150]}\n"
-                if r.get('link') and r['link'] != '#':
-                    ans += f"   🔗 {r['link']}\n"
-                ans += "\n"
-            ans += f"📅 {get_current_date()}"
-            return mark_source("internet_only", ans, is_cached=False, is_speculation=False)
-    
-    # Проверка на предположения
-    forbidden = ['возможно','вероятно','скорее всего','должно быть','похоже что']
-    is_speculation = any(p in answer.lower() for p in forbidden)
-    
-    result = mark_source("internet_only", answer, is_cached=False, is_speculation=is_speculation)
-    
-    # Сохраняем в кэш
-    answer_cache[norm] = {'data': result, 'time': datetime.now()}
-    if len(answer_cache) > 100:
-        oldest = min(answer_cache.keys(), key=lambda k: answer_cache[k]['time'])
-        del answer_cache[oldest]
-    
-    return result
-
-async def generate_hybrid(uid, user_message, history, profile):
-    """Гибридный режим: интернет + знания модели"""
-    # Проверяем кэш
-    norm = normalize_query(user_message)
-    if norm in answer_cache:
-        cached = answer_cache[norm]
-        if (datetime.now() - cached['time']).total_seconds() < CACHE_TTL:
-            return mark_source("hybrid", cached['data'], is_cached=True, is_speculation=False)
-    
-    # Поиск в интернете
-    variants = await generate_search_query(user_message)
-    results = await search_primary(variants[0])
-    
-    if not results:
-        # Если интернет не нашел, используем знания модели
-        logger.warning("⚠️ Интернет ничего не нашел, использую знания модели")
-        return await generate_model_only(uid, user_message, history, profile)
-    
-    scored = assess_relevance(results, user_message)
-    links = [r['link'] for r in (scored or results)[:SEARCH_RESULTS_NUM]]
-    pages = await fetch_multiple_pages(links, max_pages=SEARCH_RESULTS_NUM)
-    
-    if pages and len(pages) > 0:
-        pages_sorted = sorted(pages, key=lambda x: len(x["text"]), reverse=True)
-        source_blocks = []
-        for i, p in enumerate(pages_sorted, 1):
-            source_blocks.append(
-                f"--- ИСТОЧНИК {i} ---\nURL: {p['url']}\nДата: {p.get('date','дата не указана')}\nСодержание:\n{p['text']}"
-            )
-        stext = "\n\n".join(source_blocks)
-        source_count = len(source_blocks)
-        logger.info(f"📊 Гибрид: загружено {source_count} источников")
-    else:
-        stext = "\n\n".join([
-            f"--- ИСТОЧНИК {i+1}: {r['link']} ---\nЗаголовок: {r.get('title','')}\nОписание: {r.get('snippet','')}"
-            for i, r in enumerate((scored or results)[:10])
-        ])
-        source_count = 10
-        logger.warning("⚠️ Гибрид: страницы не загружены, использованы сниппеты")
+    if not pages:
+        pages = []
+        for r in scored[:8]:
+            pages.append({
+                'url': r['link'],
+                'text': f"{r.get('title', '')} {r.get('snippet', '')}",
+                'date': 'дата не указана'
+            })
     
     # Формируем промпт
-    year_match = re.search(r'\b(20[2-9][0-9])\b', user_message)
-    time_context = f"Ищи информацию за {year_match.group(1)}." if year_match else f"Ищи самую актуальную информацию на {get_current_date()}."
+    source_text = "\n\n".join([
+        f"--- ИСТОЧНИК {i+1} ---\nURL: {p['url']}\nДата: {p.get('date', 'дата не указана')}\n{p['text'][:1500]}"
+        for i, p in enumerate(pages)
+    ])
     
     system_prompt = f"""
-Ты — универсальный аналитик. Ты получил {source_count} источников данных.
+Ты — аналитик. Проанализируй источники и дай точный ответ.
 
-⚠️ ТВОЯ ЗАДАЧА:
-1. Проанализируй КАЖДЫЙ источник (от 1 до {source_count}).
-2. Для каждого источника определи, есть ли полезная информация по запросу.
-3. После анализа всех источников:
-   - Найди общие факты, противоречия и аномалии.
-   - Отдай приоритет свежим данным.
-4. Сделай ЛОГИЧЕСКИЙ ВЫВОД.
-5. Если данных из интернета недостаточно – дополни своими знаниями, но ОТМЕТЬ ЭТО.
+{personal_context}
 
-⚠️ ФОРМАТ ОТВЕТА (ОБЯЗАТЕЛЬНО):
-📊 **Использованные источники:**
-Источник 1 (URL): [краткое содержание]
-Источник 2 (URL): [краткое содержание]
-...
-(перечисли ВСЕ источники)
+Запрос: {user_message}
 
+⚠️ ПРАВИЛА:
+1. Если знаешь точно - отвечай
+2. Если не уверен - напиши "⚠️ [НЕ 100%]"
+3. Обязательно перечисли все источники
+4. Если данных нет - скажи честно
+
+⚠️ ФОРМАТ ОТВЕТА:
+📊 **Использованные источники:** (каждый с кратким содержанием)
 📊 **Общие факты:**
-...
+⚠️ **Противоречия:** (если есть)
+✅ **Вывод:**
 
-⚠️ **Противоречия и аномалии:**
-...
-
-✅ **Мой логический вывод:**
-...
-(если данных недостаточно – предложи альтернативы)
-
-Запрос пользователя: {user_message}
-Сегодня: {get_current_date()}
-Контекст: {build_profile_context(profile)}
-
-ДАННЫЕ (ВСЕ {source_count} ИСТОЧНИКОВ):
-{stext}
+ДАННЫЕ:
+{source_text}
 """
     
-    # Получаем ответ
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
     answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
     
-    if err or not answer:
-        # Если ошибка - пробуем интернет-only
-        logger.warning("⚠️ Гибрид не сработал, пробую интернет-only")
-        return await generate_internet_only(uid, user_message, history, profile)
+    if err or not answer or not re.search(r'Источник \d+', answer):
+        # Простой ответ с сырыми данными
+        simple = "🔍 Результаты поиска:\n\n"
+        for i, r in enumerate(scored[:10], 1):
+            simple += f"{i}. {r.get('title', 'Без названия')}\n"
+            simple += f"   {r.get('snippet', '')[:150]}\n"
+            simple += f"   🔗 {r.get('link', '')}\n\n"
+        simple += f"📅 {get_current_date()}"
+        return simple
     
     # Проверка на предположения
-    forbidden = ['возможно','вероятно','скорее всего','должно быть','похоже что']
-    is_speculation = any(p in answer.lower() for p in forbidden)
+    speculation = ['возможно', 'вероятно', 'скорее всего', 'должно быть', 'похоже что']
+    if any(p in answer.lower() for p in speculation):
+        answer = f"⚠️ [НЕ 100%]\n\n{answer}"
     
-    result = mark_source("hybrid", answer, is_cached=False, is_speculation=is_speculation)
+    # Сохраняем в память
+    memory.add_message('assistant', answer[:500])
     
-    # Сохраняем в кэш
-    answer_cache[norm] = {'data': result, 'time': datetime.now()}
-    if len(answer_cache) > 100:
-        oldest = min(answer_cache.keys(), key=lambda k: answer_cache[k]['time'])
-        del answer_cache[oldest]
-    
-    return result
-
-# ==================== КНОПКИ ====================
-def get_confirmation_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("✅ Да, верно", callback_data="confirm_yes"),
-         InlineKeyboardButton("❌ Нет, переформулируй", callback_data="confirm_no")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="confirm_cancel")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_mode_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("🧠 Только знания", callback_data=f"mode_{MODE_MODEL}"),
-         InlineKeyboardButton("🔍 Гибрид", callback_data=f"mode_{MODE_HYBRID}")],
-        [InlineKeyboardButton("🌐 Только интернет", callback_data=f"mode_{MODE_INTERNET}")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_main_reply_keyboard():
-    keyboard = [
-        ["🔍 Поиск", "💬 Болтовня"],
-        ["🔄 Сброс", "❓ Помощь"],
-        ["⏹️ Стоп"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def get_after_answer_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("🔄 Новый запрос", callback_data="new_query"),
-         InlineKeyboardButton("✏️ Уточнить текущий", callback_data="refine_current")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ==================== ОБРАБОТЧИК УТОЧНЕНИЯ ====================
-async def handle_followup(update, context, user_message):
-    """Обрабатывает уточняющий вопрос по предыдущему ответу"""
-    uid = update.effective_user.id
-    history = context.user_data.get('history', [])
-    last_query = context.user_data.get('last_query', '')
-    last_answer = context.user_data.get('last_answer', '')
-    last_sources = context.user_data.get('last_sources', '')
-
-    system_prompt = f"""
-Ты — аналитик. Пользователь уточняет информацию по предыдущему ответу.
-
-Исходный запрос пользователя: {last_query}
-Твой предыдущий ответ (с анализом источников): {last_answer}
-
-Если ты использовал источники, вот собранные данные: {last_sources}
-
-Теперь пользователь уточняет: "{user_message}"
-
-Ответь на уточнение, используя контекст предыдущего ответа и, если нужно, данные источников.
-Если в предыдущем ответе не было информации по уточнению, а в источниках она есть — используй её.
-Если информации нет — честно скажи.
-Будь краток и точен.
-"""
-    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
-    if err or not answer:
-        return "⚠️ Не удалось обработать уточнение."
-
-    clean_answer = re.sub(r'<[^>]+>', '', answer)
-    history.append({"role": "assistant", "content": clean_answer, "timestamp": now().strftime("%Y-%m-%d %H:%M:%S")})
-    await save_memory(uid, history)
-    context.user_data['last_answer'] = answer
     return answer
 
-# ==================== ОСНОВНАЯ ЛОГИКА ====================
+# ==================== КНОПКИ ====================
+def get_main_keyboard():
+    return ReplyKeyboardMarkup([
+        ["🔍 Новый поиск", "❓ Помощь"],
+        ["🔄 Сброс", "⏹️ Стоп"]
+    ], resize_keyboard=True)
+
+def get_after_answer_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Новый поиск", callback_data="new_search"),
+         InlineKeyboardButton("✏️ Уточнить", callback_data="refine")]
+    ])
+
+# ==================== ОБРАБОТЧИКИ ====================
 async def handle_message(update, context):
-    """Обработка всех текстовых сообщений"""
+    """Главный обработчик"""
     try:
         uid = update.effective_user.id
         if ALLOWED_USERS and uid not in ALLOWED_USERS:
@@ -1234,17 +630,20 @@ async def handle_message(update, context):
         if not user_message:
             return
         
-        # Обработка кнопок меню
-        if user_message == "🔍 Поиск":
-            context.user_data['bot_mode'] = BOT_MODE_SEARCH
-            context.user_data.pop('awaiting_followup', None)
-            await safe_reply(update, "🔍 Режим поиска активирован.\n\nЗадай вопрос, я уточню его и предложу режимы поиска.")
+        # Кнопки меню
+        if user_message == "🔍 Новый поиск":
+            context.user_data.clear()
+            await safe_reply(update, "🔍 Задай вопрос для поиска в интернете.")
             return
         
-        elif user_message == "💬 Болтовня":
-            context.user_data['bot_mode'] = BOT_MODE_CHAT
-            context.user_data.pop('awaiting_followup', None)
-            await safe_reply(update, "💬 Режим болтовни активирован.\n\nПросто общайся, я не ищу в интернете.")
+        elif user_message == "❓ Помощь":
+            await safe_reply(update,
+                "❓ **Помощь**\n\n"
+                "🔍 **Новый поиск** - задай вопрос, я найду в интернете\n"
+                "🔄 **Сброс** - очистить диалог\n"
+                "⏹️ **Стоп** - остановить\n\n"
+                "Просто напиши вопрос и я найду ответ!"
+            )
             return
         
         elif user_message == "🔄 Сброс":
@@ -1252,276 +651,113 @@ async def handle_message(update, context):
             await safe_reply(update, "🔄 Диалог сброшен.")
             return
         
-        elif user_message == "❓ Помощь":
-            await safe_reply(
-                update,
-                "❓ **Помощь**\n\n"
-                "🔍 **Поиск** – задай вопрос, я уточню и предложу режимы поиска.\n"
-                "💬 **Болтовня** – просто общайся, без интернета.\n"
-                "🔄 **Сброс** – очищает всё и начинает заново.\n"
-                "⏹️ **Стоп** – сброс текущего диалога.\n\n"
-                "Команды: /start – приветствие."
-            )
-            return
-        
         elif user_message == "⏹️ Стоп":
             context.user_data.clear()
-            await safe_reply(update, "⏹️ Диалог остановлен и сброшен.")
+            await safe_reply(update, "⏹️ Остановлено.")
             return
         
         if user_message.startswith('/'):
             return
         
-        bot_mode = context.user_data.get('bot_mode', BOT_MODE_SEARCH)
-        
-        # Режим болтовни
-        if bot_mode == BOT_MODE_CHAT:
-            history = load_memory(uid)
-            profile = load_profile(uid)
-            answer = await generate_chat_response(user_message, history, profile)
-            if answer:
-                clean_answer = re.sub(r'<[^>]+>', '', answer)
-                history.append({"role": "assistant", "content": clean_answer, "timestamp": now().strftime("%Y-%m-%d %H:%M:%S")})
-                await save_memory(uid, history)
-                await safe_reply(update, answer)
-            else:
-                await safe_reply(update, "⚠️ Не удалось получить ответ.")
-            return
-        
-        # Режим поиска - обработка уточнений
+        # Уточнение
         if context.user_data.get('awaiting_followup'):
-            new_search_keywords = ['найди', 'поищи', 'проверь', 'ещё раз', 'перепроверь', 'не ври', 'ищи', 'найди в интернете']
-            if any(kw in user_message.lower() for kw in new_search_keywords):
-                context.user_data.pop('awaiting_followup', None)
-                context.user_data.pop('awaiting_confirmation', None)
-                context.user_data.pop('awaiting_hint', None)
-                context.user_data.pop('original_query', None)
-                context.user_data.pop('rephrased_query', None)
-                context.user_data.pop('clarifications', None)
-                context.user_data.pop('last_query', None)
-                context.user_data.pop('last_answer', None)
-                context.user_data.pop('last_sources', None)
-                context.user_data['start_time'] = time.time()
-            else:
-                answer = await handle_followup(update, context, user_message)
-                if answer:
-                    await safe_reply(update, answer)
-                else:
-                    await safe_reply(update, "⚠️ Не удалось обработать уточнение.")
-                return
-        
-        # Ожидание подтверждения или подсказки
-        if context.user_data.get('awaiting_confirmation') or context.user_data.get('awaiting_hint'):
-            if context.user_data.get('awaiting_hint'):
-                hint = user_message
-                original = context.user_data.get('original_query', '')
-                clarifications = context.user_data.get('clarifications', [])
-                clarifications.append(hint)
-                context.user_data['clarifications'] = clarifications
-                
-                new_rephrased = await reframe_with_hint(original, hint, clarifications)
-                context.user_data['rephrased_query'] = new_rephrased
-                context.user_data['awaiting_hint'] = False
-                context.user_data['awaiting_confirmation'] = True
-                
-                await safe_reply(
-                    update,
-                    f"🧐 Понял! С учётом всех уточнений:\n\n**{new_rephrased}**\n\nТеперь правильно?",
-                    reply_markup=get_confirmation_keyboard()
-                )
-                return
-            else:
-                await safe_reply(update, "Я жду твоего ответа на уточнение. Нажми кнопку или напиши подсказку.")
-                return
+            answer = await handle_followup(update, context, user_message)
+            if answer:
+                await safe_reply(update, answer)
+            return
         
         # НОВЫЙ ВОПРОС
-        context.user_data.setdefault('uid', uid)
-        context.user_data.setdefault('history', load_memory(uid))
-        context.user_data.setdefault('profile', load_profile(uid))
-        context.user_data.setdefault('clarifications', [])
-        context.user_data['start_time'] = time.time()  # ✅ ТАЙМЕР СТАРТ
+        uid = update.effective_user.id
+        memory = get_memory(uid)
+        history = memory.get_context(limit=10)
         
-        understanding = await understand_question(user_message)
-        rephrased = understanding.get('rephrased', user_message[:100] + "...")
-        context.user_data['original_query'] = user_message
-        context.user_data['rephrased_query'] = rephrased
-        context.user_data['awaiting_confirmation'] = True
-        context.user_data['awaiting_followup'] = False
+        context.user_data['uid'] = uid
+        context.user_data['history'] = history
+        context.user_data['start_time'] = time.time()
+        context.user_data['query'] = user_message
         
-        await safe_reply(
-            update,
-            f"🧐 Ты спрашиваешь:\n\n**{rephrased}**\n\nЯ правильно понял?",
-            reply_markup=get_confirmation_keyboard()
-        )
-    
-    except Exception as e:
-        logger.error(f"❌ Ошибка handle_message: {e}")
-        logger.error(traceback.format_exc())
-        await safe_reply(update, "⚠️ Произошла ошибка. Попробуйте еще раз.")
-
-async def handle_confirmation(update, context):
-    """Обработка подтверждения переформулировки"""
-    query = update.callback_query
-    await query.answer()
-    
-    try:
-        if query.data == "confirm_yes":
-            context.user_data['awaiting_confirmation'] = False
-            context.user_data['awaiting_hint'] = False
-            await query.edit_message_text(
-                "👍 Отлично! Теперь выбери режим поиска:",
-                reply_markup=get_mode_keyboard()
-            )
-        elif query.data == "confirm_no":
-            context.user_data['awaiting_confirmation'] = False
-            context.user_data['awaiting_hint'] = True
-            await query.edit_message_text(
-                "✏️ Напиши подсказку: что именно я понял неправильно?"
-            )
-        elif query.data == "confirm_cancel":
-            context.user_data.pop('awaiting_confirmation', None)
-            context.user_data.pop('awaiting_hint', None)
-            context.user_data.pop('original_query', None)
-            context.user_data.pop('rephrased_query', None)
-            await query.edit_message_text("❌ Уточнение отменено. Можешь задать новый вопрос.")
-    
-    except Exception as e:
-        logger.error(f"❌ Ошибка handle_confirmation: {e}")
-        await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
-
-async def handle_mode_selection(update, context):
-    """Обработка выбора режима поиска"""
-    query = update.callback_query
-    await query.answer()
-    
-    try:
-        uid = context.user_data.get('uid')
-        user_message = context.user_data.get('rephrased_query', context.user_data.get('original_query'))
-        history = context.user_data.get('history', [])
-        profile = context.user_data.get('profile', {})
-        rephrased = context.user_data.get('rephrased_query', '')
+        await safe_reply(update, "⏳ Ищу информацию...")
         
-        # ✅ ТАЙМЕР - берем время старта
-        start_time = context.user_data.get('start_time', time.time())
+        # Поиск
+        answer = await search_and_answer(uid, user_message, history)
         
-        if not user_message:
-            await query.edit_message_text("⏳ Вопрос утерян, напиши заново.")
-            return
-        
-        mode = query.data.replace("mode_", "")
-        await query.edit_message_text(f"⏳ Ищу информацию...")
-        
-        # Генерация ответа
-        if mode == MODE_MODEL:
-            answer = await generate_model_only(uid, user_message, history, profile)
-        elif mode == MODE_HYBRID:
-            answer = await generate_hybrid(uid, user_message, history, profile)
-        else:
-            answer = await generate_internet_only(uid, user_message, history, profile)
-        
-        # ✅ ТАЙМЕР - считаем секунды
-        elapsed = int(time.time() - start_time)
+        # Таймер
+        elapsed = int(time.time() - context.user_data['start_time'])
         answer = f"⏱️ {elapsed} сек\n\n{answer}"
         
-        if rephrased:
-            answer = f"📌 Ты спросил: {rephrased}\n\n{answer}"
-        
         # Сохраняем для уточнений
-        context.user_data['last_query'] = user_message
         context.user_data['last_answer'] = answer
-        context.user_data['last_sources'] = context.user_data.get('last_sources', '')
         context.user_data['awaiting_followup'] = True
         
-        # Сохраняем в память
-        if answer and len(answer) > 10:
-            clean_answer = re.sub(r'<[^>]+>', '', answer)
-            history.append({
-                "role": "assistant",
-                "content": clean_answer,
-                "timestamp": now().strftime("%Y-%m-%d %H:%M:%S")
-            })
-            await save_memory(uid, history)
-        
-        # Удаляем старое сообщение
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        
-        # Отправляем ответ
-        if len(answer) > 4096:
-            for i in range(0, len(answer), 4096):
-                await query.message.reply_text(answer[i:i+4096], disable_web_page_preview=True)
-            await query.message.reply_text(
-                "📌 Если хочешь уточнить по этому ответу, просто напиши уточняющий вопрос.\nИли нажми «Новый запрос» для нового вопроса.",
-                reply_markup=get_after_answer_keyboard()
-            )
-        else:
-            await query.message.reply_text(
-                answer,
-                disable_web_page_preview=True,
-                reply_markup=get_after_answer_keyboard()
-            )
+        await safe_reply(update, answer, reply_markup=get_after_answer_keyboard())
     
     except Exception as e:
-        logger.error(f"❌ Ошибка handle_mode_selection: {e}")
-        logger.error(traceback.format_exc())
-        await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
+        logger.error(f"❌ Ошибка: {e}")
+        await safe_reply(update, "⚠️ Ошибка. Попробуйте еще раз.")
 
 async def handle_after_answer_callback(update, context):
-    """Обработка кнопок после ответа"""
     query = update.callback_query
     await query.answer()
-    uid = update.effective_user.id
     
-    try:
-        if query.data == "new_query":
-            context.user_data.pop('awaiting_confirmation', None)
-            context.user_data.pop('awaiting_hint', None)
-            context.user_data.pop('original_query', None)
-            context.user_data.pop('rephrased_query', None)
-            context.user_data.pop('clarifications', None)
-            context.user_data.pop('awaiting_followup', None)
-            context.user_data.pop('last_query', None)
-            context.user_data.pop('last_answer', None)
-            context.user_data.pop('last_sources', None)
-            context.user_data.pop('start_time', None)  # ✅ Сбрасываем таймер
-            
-            try:
-                await query.edit_message_text(
-                    "🔄 Новый запрос готов. Напиши свой вопрос."
-                )
-            except Exception as e:
-                if "not modified" not in str(e):
-                    raise
-                await query.message.reply_text("🔄 Новый запрос готов. Напиши свой вопрос.")
+    if query.data == "new_search":
+        context.user_data.clear()
+        try:
+            await query.edit_message_text("🔍 Новый поиск. Напиши вопрос.")
+        except:
+            await query.message.reply_text("🔍 Новый поиск. Напиши вопрос.")
+    
+    elif query.data == "refine":
+        last_query = context.user_data.get('query', '')
+        if not last_query:
+            await query.edit_message_text("⏳ Нет активного вопроса.")
+            return
         
-        elif query.data == "refine_current":
-            rephrased = context.user_data.get('rephrased_query')
-            if not rephrased:
-                await query.edit_message_text("⏳ Нет активного вопроса для уточнения.")
-                return
-            
-            context.user_data['awaiting_confirmation'] = True
-            context.user_data['awaiting_hint'] = False
-            
-            try:
-                await query.edit_message_text(
-                    f"🧐 Ты спрашивал:\n\n**{rephrased}**\n\nУточни или подтверди:",
-                    reply_markup=get_confirmation_keyboard()
-                )
-            except Exception as e:
-                if "not modified" not in str(e):
-                    raise
-                await query.message.reply_text(
-                    f"🧐 Ты спрашивал:\n\n**{rephrased}**\n\nУточни или подтверди:",
-                    reply_markup=get_confirmation_keyboard()
-                )
+        context.user_data['awaiting_followup'] = True
+        try:
+            await query.edit_message_text(
+                f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить."
+            )
+        except:
+            await query.message.reply_text(
+                f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить."
+            )
+
+async def handle_followup(update, context, user_message):
+    """Обработка уточнения"""
+    last_answer = context.user_data.get('last_answer', '')
     
+    system_prompt = f"""
+Пользователь уточняет по предыдущему ответу.
+
+Предыдущий ответ: {last_answer[:500]}
+
+Уточнение: {user_message}
+
+Ответь на уточнение кратко и по делу. Если нужно - обнови информацию из интернета.
+"""
+    messages = [{"role": "system", "content": system_prompt}]
+    answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=2000)
+    
+    if err or not answer:
+        return "⚠️ Не удалось обработать уточнение."
+    
+    # Проверка на предположения
+    speculation = ['возможно', 'вероятно', 'скорее всего', 'должно быть']
+    if any(p in answer.lower() for p in speculation):
+        answer = f"⚠️ [НЕ 100%]\n\n{answer}"
+    
+    return answer
+
+async def safe_reply(update, text, reply_markup=None):
+    if not text:
+        text = "⚠️ Пустой ответ."
+    msg = update.effective_message
+    if not msg:
+        return
+    try:
+        await msg.reply_text(text, disable_web_page_preview=True, reply_markup=reply_markup)
     except Exception as e:
-        logger.error(f"❌ Ошибка handle_after_answer_callback: {e}")
-        logger.error(traceback.format_exc())
-        await query.message.reply_text("⚠️ Произошла ошибка. Попробуйте еще раз.")
+        logger.error(f"❌ Ошибка отправки: {e}")
 
 # ==================== КОМАНДЫ ====================
 async def start(update, context):
@@ -1531,213 +767,63 @@ async def start(update, context):
     
     await safe_reply(
         update,
-        "👋 Привет! Я аналитический ассистент.\n\n"
-        "Внизу экрана всегда доступны кнопки:\n"
-        "🔍 **Поиск** – с уточнением и анализом\n"
-        "💬 **Болтовня** – без поиска, просто общение\n"
-        "🔄 **Сброс** – очистить диалог\n"
-        "❓ **Помощь** – справка\n"
-        "⏹️ **Стоп** – остановить и сбросить\n\n"
-        "Просто выбери режим и пиши.",
-        reply_markup=get_main_reply_keyboard()
+        "👋 Привет! Я поисковый ассистент.\n\n"
+        "🔍 **Просто напиши вопрос** - я найду ответ в интернете\n"
+        "📊 Покажу источники и дам точный вывод\n"
+        "🧠 Запоминаю тебя и твои предпочтения\n\n"
+        "Попробуй спросить что-нибудь!",
+        reply_markup=get_main_keyboard()
     )
-
-async def profile_command(update, context):
-    uid = update.effective_user.id
-    if ALLOWED_USERS and uid not in ALLOWED_USERS:
-        return
-    
-    p = load_profile(uid)
-    if not p:
-        await safe_reply(update, "📭 Я пока ничего не знаю о тебе.")
-        return
-    
-    lines = ["🧠 Память:", f"• сообщений: {len(load_memory_raw(uid))}"]
-    lines.append("\n👤 Личное:")
-    exclude = {'updated', 'level_2'}
-    personal = {k: v for k, v in p.items() if k not in exclude}
-    if personal:
-        for k, v in personal.items():
-            lines.append(f"• {k}: {v}")
-    else:
-        lines.append("• Пока ничего не запомнил")
-    lines.append(f"\n🔄 Обновлено: {p.get('updated', 'неизвестно')}")
-    await safe_reply(update, "\n".join(lines))
-
-async def memory_command(update, context):
-    uid = update.effective_user.id
-    if ALLOWED_USERS and uid not in ALLOWED_USERS:
-        return
-    
-    if not context.args:
-        await safe_reply(update, "🔍 Поиск: /memory что искать")
-        return
-    
-    query = ' '.join(context.args).lower()
-    res = []
-    for m in load_memory_raw(uid)[-50:]:
-        if not isinstance(m, dict):
-            continue
-        c = m.get("content", "")
-        if query in c.lower():
-            role = "👤" if m.get("role") == "user" else "🤖"
-            res.append(f"{role} {extract_key_points(c, 80)}")
-    
-    if not res:
-        await safe_reply(update, f"📭 Ничего не найдено: '{query}'")
-        return
-    
-    lines = [f"🔍 Результаты '{query}':"] + [f"{i}. {r}" for i, r in enumerate(res[:10], 1)]
-    await safe_reply(update, "\n".join(lines))
 
 async def stats_command(update, context):
     uid = update.effective_user.id
     if ALLOWED_USERS and uid not in ALLOWED_USERS:
         return
     
-    p = load_profile(uid)
-    raw = load_memory_raw(uid)
-    lines = ["📊 Статистика:"]
-    lines.append(f"• Обработано сообщений: {load_counter(uid)}")
-    lines.append(f"• В истории: {len(raw)}")
-    lines.append(f"• Сжатых пунктов: {len(p.get('level_2', []))}")
-    bc = len([f for f in os.listdir(BACKUP_DIR) if f.startswith(f"profile_{uid}_")])
-    lines.append(f"💾 Бэкапов: {bc}")
-    await safe_reply(update, "\n".join(lines))
+    memory = get_memory(uid)
+    stats = memory.get_stats()
+    
+    await safe_reply(
+        update,
+        f"📊 **Статистика**\n\n"
+        f"💬 В памяти: {stats['messages']} сообщений\n"
+        f"👤 В профиле: {stats['profile']} полей\n"
+        f"⭐ Важных фактов: {stats['episodic']}\n"
+        f"📝 Всего сообщений: {stats['total']}"
+    )
 
 async def forget_command(update, context):
     uid = update.effective_user.id
     if ALLOWED_USERS and uid not in ALLOWED_USERS:
         return
     
-    atomic_write(profile_path(uid), {})
-    atomic_write(memory_path(uid), [])
-    atomic_write(counter_path(uid), {"count": 0})
-    await safe_reply(update, "🧹 Я забыл всё, что знал о тебе!")
-
-async def restore_command(update, context):
-    uid = update.effective_user.id
-    if ALLOWED_USERS and uid not in ALLOWED_USERS:
-        return
+    if uid in _memory_cache:
+        del _memory_cache[uid]
     
-    pr = await restore_backup(uid, "profile")
-    mr = await restore_backup(uid, "memory")
-    if pr or mr:
-        await safe_reply(update, "✅ Восстановлено!\n" + ("📋 Профиль\n" if pr else "") + ("💬 История" if mr else ""))
-    else:
-        await safe_reply(update, "❌ Нет бэкапов.")
-
-async def clearcache_command(update, context):
-    uid = update.effective_user.id
-    if ALLOWED_USERS and uid not in ALLOWED_USERS:
-        return
-    
-    global html_cache, search_cache, answer_cache
-    html_cache.clear()
-    search_cache.clear()
-    answer_cache.clear()
-    await safe_reply(update, "🧹 Кэш очищен! Теперь ответы будут свежими.")
-
-async def safe_reply(update: Update, text: str, reply_markup=None):
-    """Безопасная отправка сообщения с защитой от ошибок"""
-    if not text or not isinstance(text, str):
-        text = "⚠️ Пустой ответ."
-    
-    msg = update.effective_message
-    if msg is None:
-        return
-    
-    try:
-        if len(text) > 4096:
-            for i in range(0, len(text), 4096):
-                await msg.reply_text(text[i:i+4096], disable_web_page_preview=True, reply_markup=reply_markup if i == 0 else None)
-        else:
-            await msg.reply_text(text, disable_web_page_preview=True, reply_markup=reply_markup)
-    except Exception as e:
-        logger.error(f"❌ Ошибка safe_reply: {e}")
+    # Удаляем файлы
+    for path in [memory_path(uid), profile_path(uid), episodic_path(uid), learning_path(uid), counter_path(uid)]:
         try:
-            await msg.reply_text(text[:4096], reply_markup=reply_markup)
-        except Exception:
+            os.remove(path)
+        except:
             pass
-
-# ==================== ФОНОВЫЕ ЗАДАЧИ ====================
-async def cleanup_caches_periodic():
-    """Периодическая очистка кэшей"""
-    while True:
-        await asyncio.sleep(3600)
-        try:
-            # Очищаем старые записи
-            now_time = datetime.now()
-            
-            # HTML кэш
-            if len(html_cache) > 100:
-                keys = list(html_cache.keys())[:20]
-                for k in keys:
-                    del html_cache[k]
-            
-            # Поисковый кэш
-            if len(search_cache) > 50:
-                oldest = min(search_cache.keys(), key=lambda k: search_cache[k]['time'])
-                del search_cache[oldest]
-            
-            # Кэш ответов
-            if len(answer_cache) > 100:
-                oldest = min(answer_cache.keys(), key=lambda k: answer_cache[k]['time'])
-                del answer_cache[oldest]
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка очистки кэша: {e}")
-
-async def post_init(application):
-    """Инициализация после запуска"""
-    asyncio.create_task(cleanup_caches_periodic())
-    await auto_restore_all_users()
-    logger.info("🚀 Бот запущен и готов к работе!")
-
-# ==================== MAIN ====================
-def main():
-    """Точка входа с защитой от падений"""
-    try:
-        # Запускаем асинхронную инициализацию
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            loop.run_until_complete(auto_restore_all_users())
-        except Exception as e:
-            logger.error(f"❌ Ошибка авто-восстановления: {e}")
-        
-        # Создаем приложение
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-        
-        # Хендлеры команд
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("profile", profile_command))
-        app.add_handler(CommandHandler("memory", memory_command))
-        app.add_handler(CommandHandler("stats", stats_command))
-        app.add_handler(CommandHandler("forget", forget_command))
-        app.add_handler(CommandHandler("restore", restore_command))
-        app.add_handler(CommandHandler("clearcache", clearcache_command))
-        
-        # Хендлеры callback
-        app.add_handler(CallbackQueryHandler(handle_confirmation, pattern="^confirm_"))
-        app.add_handler(CallbackQueryHandler(handle_mode_selection, pattern="^mode_"))
-        app.add_handler(CallbackQueryHandler(handle_after_answer_callback, pattern="^(new_query|refine_current)$"))
-        
-        # Хендлер сообщений
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        logger.info("🚀 БОТ ЗАПУЩЕН (полная надежная версия)")
-        app.run_polling()
     
-    except Exception as e:
-        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        logger.error(traceback.format_exc())
-        
-        # Пытаемся перезапустить
-        logger.info("🔄 Пытаюсь перезапустить через 5 секунд...")
-        time.sleep(5)
-        main()  # Рекурсивный перезапуск
+    context.user_data.clear()
+    await safe_reply(update, "🧹 Всё забыто! Начинаем с чистого листа.")
+
+# ==================== ЗАПУСК ====================
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("forget", forget_command))
+    
+    app.add_handler(CallbackQueryHandler(handle_after_answer_callback, pattern="^(new_search|refine)$"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    logger.info("🚀 БОТ ЗАПУЩЕН - ТОЛЬКО ПОИСК!")
+    logger.info("🔍 Ищу в интернете, не вру, запоминаю пользователя")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
