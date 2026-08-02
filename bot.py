@@ -1,6 +1,6 @@
 # ===================================================================
 #  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
-#  Динамический таймер + Анти-враньё + Гибридный режим
+#  Жёсткий запрет "нет доступа" + Мягкая проверка + Динамический таймер
 # ===================================================================
 
 import logging
@@ -50,7 +50,7 @@ DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1"
 
 SEARCH_RESULTS_NUM = 25
 MAX_HTML_LEN = 6000
-MAX_TOKENS_ANSWER = 4000
+MAX_TOKENS_ANSWER = 6000
 CACHE_TTL = 3600
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
@@ -377,62 +377,7 @@ async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, 
             return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
         return None, str(e)
 
-# ============================================================
-#  ЗАПРЕЩЁННЫЕ ФРАЗЫ (ЖЁСТКИЙ БЛОК)
-# ============================================================
-
-FORBIDDEN_PHRASES = [
-    ("нет доступа к интернету", "У тебя ЕСТЬ доступ к интернету через источники!"),
-    ("инструменты поиска не активированы", "Инструменты поиска АКТИВИРОВАНЫ!"),
-    ("не могу проверить", "Ты ПОЛУЧИЛ данные из интернета, проверь их!"),
-    ("у меня нет информации", "У тебя ЕСТЬ информация из источников!"),
-    ("возможно", "⚠️ ЗАПРЕЩЕНО: 'возможно'! Используй факты!"),
-    ("вероятно", "⚠️ ЗАПРЕЩЕНО: 'вероятно'! Используй факты!"),
-    ("скорее всего", "⚠️ ЗАПРЕЩЕНО: 'скорее всего'! Используй факты!"),
-    ("должно быть", "⚠️ ЗАПРЕЩЕНО: 'должно быть'! Используй факты!"),
-    ("похоже что", "⚠️ ЗАПРЕЩЕНО: 'похоже что'! Используй факты!"),
-    ("я думаю", "Ты НЕ ДУМАЕШЬ, ты АНАЛИЗИРУЕШЬ источники!"),
-    ("мне кажется", "Ты НЕ ДУМАЕШЬ, ты АНАЛИЗИРУЕШЬ источники!"),
-]
-
-def check_forbidden_phrases(text: str) -> Tuple[bool, List[Dict]]:
-    violations = []
-    text_lower = text.lower()
-    for phrase, warning in FORBIDDEN_PHRASES:
-        if phrase in text_lower:
-            violations.append({'phrase': phrase, 'warning': warning})
-    return len(violations) > 0, violations
-
-def has_sources_in_answer(text: str) -> bool:
-    patterns = [r'Источник \d+', r'источник \d+', r'📊 .*источник', r'http', r'www\.', r'🔗']
-    for pattern in patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return True
-    return False
-
-def detect_lies(answer: str, pages: List[Dict]) -> Tuple[bool, List[str]]:
-    lies = []
-    answer_lower = answer.lower()
-    
-    if "нет доступа" in answer_lower or "инструменты поиска не активированы" in answer_lower:
-        lies.append("❌ Утверждает, что нет доступа к интернету (хотя есть)")
-    
-    if "не могу проверить" in answer_lower or "не могу подтвердить" in answer_lower:
-        lies.append("❌ Говорит, что не может проверить (хотя может)")
-    
-    if pages and not has_sources_in_answer(answer):
-        lies.append("❌ Есть источники, но не перечислены")
-    
-    speculation = ['возможно', 'вероятно', 'скорее всего', 'должно быть']
-    if any(p in answer_lower for p in speculation) and "⚠️ [НЕ 100%]" not in answer:
-        lies.append("⚠️ Использует 'возможно' без предупреждения")
-    
-    return len(lies) > 0, lies
-
-# ============================================================
-#  ДИНАМИЧЕСКИЙ ТАЙМЕР
-# ============================================================
-
+# ==================== ДИНАМИЧЕСКИЙ ТАЙМЕР ====================
 async def send_progress_updates(chat_id, context, start_time):
     message = None
     try:
@@ -464,114 +409,14 @@ async def send_progress_updates(chat_id, context, start_time):
         logger.error(f"❌ Ошибка таймера: {e}")
     return message
 
-# ============================================================
-#  ПОСТРОЕНИЕ ЧЕСТНОГО ПРОМПТА
-# ============================================================
-
-def build_honest_prompt(user_message: str, pages: List[Dict], mode: str) -> str:
-    source_text = ""
-    for i, p in enumerate(pages[:8], 1):
-        source_text += f"""
---- ИСТОЧНИК {i} ---
-URL: {p['url']}
-Дата: {p.get('date', 'дата не указана')}
-Содержание: {p['text'][:1500]}
-"""
-    
-    base_rules = """
-⚠️ **ГЛАВНОЕ ПРАВИЛО: НИКОГДА НЕ ВРАТЬ!**
-
-1. **Если знаешь точно** → отвечай
-2. **Если не уверен** → напиши "⚠️ [НЕ 100%]" и объясни почему
-3. **Если не знаешь** → скажи "Я не знаю" (это честно!)
-4. **Если додумываешь** → напиши "🧠 [МОЁ МНЕНИЕ]" и объясни
-
-⚠️ **ЗАПРЕЩЕНО (НАРУШЕНИЕ = ОШИБКА):**
-- Говорить "нет доступа к интернету"
-- Говорить "не могу проверить"
-- Говорить "возможно", "вероятно" (без ⚠️ [НЕ 100%])
-- Придумывать факты
-- Игнорировать источники
-"""
-    
-    if mode == "internet_only":
-        return f"""
-Ты — аналитик. У тебя ЕСТЬ доступ к интернету.
-
-{base_rules}
-
-⚠️ **РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ**
-
-{source_text}
-
-⚠️ **ОБЯЗАТЕЛЬНО:**
-1. Используй ТОЛЬКО информацию из источников
-2. Перечисли ВСЕ источники ({len(pages)})
-3. Если информации нет в источниках - скажи "В источниках нет"
-
-⚠️ **ФОРМАТ ОТВЕТА:**
-📊 **Использованные источники:** (перечисли ВСЕ)
-📊 **Общие факты:**
-⚠️ **Противоречия:**
-✅ **Вывод:**
-
-Запрос: {user_message}
-Сегодня: {get_current_date()}
-"""
-    
-    elif mode == "hybrid":
-        return f"""
-Ты — аналитик. У тебя ЕСТЬ доступ к интернету.
-
-{base_rules}
-
-⚠️ **РЕЖИМ: ГИБРИД (ИНТЕРНЕТ + ЗНАНИЯ)**
-
-{source_text}
-
-⚠️ **ОБЯЗАТЕЛЬНО:**
-1. Сначала используй информацию из источников
-2. Если данных мало - дополни знаниями
-3. ОТМЕЧАЙ, что взято из знаний
-4. НЕЛЬЗЯ выдавать знания за интернет-факты
-
-⚠️ **ФОРМАТ ОТВЕТА:**
-📊 **Из интернета:**
-🧠 **Дополнено из знаний:**
-✅ **Вывод:**
-
-Запрос: {user_message}
-"""
-    
-    else:
-        return f"""
-Ты — честный ассистент. Отвечаешь из своих знаний.
-
-{base_rules}
-
-⚠️ **РЕЖИМ: ТОЛЬКО ЗНАНИЯ**
-
-⚠️ **ОБЯЗАТЕЛЬНО:**
-1. Отвечай ТОЛЬКО тем, что знаешь на 100%
-2. Если не знаешь - скажи "Я не знаю"
-3. Если данные старые - напиши "📅 Данные могут быть устаревшими"
-
-⚠️ **ФОРМАТ ОТВЕТА:**
-🧠 **Знания модели:**
-✅ **Вывод:**
-
-Запрос: {user_message}
-Сегодня: {get_current_date()}
-"""
-
-# ============================================================
-#  ОСНОВНАЯ ФУНКЦИЯ
-# ============================================================
-
+# ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
 async def search_and_answer_safe(uid, user_message, history):
-    logger.info(f"🛡️ ЗАПУСК: {user_message[:50]}")
+    logger.info(f"🛡️ ШАГ 1: ЗАПРОС — {user_message[:50]}")
     
-    # Поиск
+    # ================================================================
+    # ШАГ 2: ПОИСК В ИНТЕРНЕТЕ
+    # ================================================================
+    
     if not APISERPENT_API_KEY and not SERPER_API_KEY:
         return await generate_knowledge_safe(user_message, history, "Нет API ключей для поиска")
     
@@ -588,63 +433,171 @@ async def search_and_answer_safe(uid, user_message, history):
     if not all_results:
         return await generate_knowledge_safe(user_message, history, "В интернете ничего не найдено")
     
-    # Загрузка и проверка источников
+    logger.info(f"✅ ШАГ 2: Найдено {len(all_results)} результатов")
+    
+    # ================================================================
+    # ШАГ 3: ЗАГРУЗКА СТРАНИЦ
+    # ================================================================
+    
     links = [r['link'] for r in all_results[:12]]
     pages = await fetch_multiple_pages(links, max_pages=8)
     
     good_sources = [p for p in pages if len(p.get('text', '')) > 200]
     source_count = len(good_sources)
     
-    logger.info(f"📊 Источников: {len(all_results)}, загружено: {len(pages)}, качественных: {source_count}")
+    logger.info(f"✅ ШАГ 3: Загружено {len(pages)} страниц, качественных {source_count}")
     
-    # Выбор режима
+    # ================================================================
+    # ШАГ 4: ВЫБОР РЕЖИМА
+    # ================================================================
+    
+    if source_count == 0:
+        logger.warning("⚠️ ШАГ 4: Нет качественных источников → фоллбэк")
+        return await fallback_safe(all_results, "Нет качественных источников для анализа")
+    
     if source_count >= 3:
         mode = "internet_only"
-        logger.info("✅ Интернет-режим")
-    elif source_count >= 1:
-        mode = "hybrid"
-        logger.info("⚠️ Гибридный режим")
+        logger.info("✅ ШАГ 4: Режим ТОЛЬКО ИНТЕРНЕТ")
     else:
-        return await generate_knowledge_safe(user_message, history, "Нет качественных источников")
+        mode = "hybrid"
+        logger.info("✅ ШАГ 4: Режим ГИБРИД")
     
-    # Строим честный промпт
-    system_prompt = build_honest_prompt(user_message, pages, mode)
+    # ================================================================
+    # ШАГ 5: ЖЁСТКИЙ ПРОМПТ
+    # ================================================================
+    
+    system_prompt = f"""
+⚠️ **ТЫ ИМЕЕШЬ ПОЛНЫЙ ДОСТУП К ИНТЕРНЕТУ!**
+
+⚠️ **СТРОГО ЗАПРЕЩЕНО (НАРУШЕНИЕ = ОШИБКА):**
+1. НЕЛЬЗЯ говорить "нет доступа к интернету" — ЭТО НЕПРАВДА!
+2. НЕЛЬЗЯ говорить "инструменты поиска не активированы" — ЭТО НЕПРАВДА!
+3. НЕЛЬЗЯ говорить "не могу проверить" — ТЫ МОЖЕШЬ!
+4. НЕЛЬЗЯ использовать "возможно", "вероятно" — БЕЗ ⚠️ [НЕ 100%]
+5. НЕЛЬЗЯ игнорировать источники — ОНИ ПЕРЕД ТОБОЙ!
+
+Ты получил РЕАЛЬНЫЕ данные из интернета (ВСЕГО {len(good_sources)} ИСТОЧНИКОВ):
+
+"""
+    for i, p in enumerate(good_sources[:8], 1):
+        system_prompt += f"""
+--- ИСТОЧНИК {i} ---
+URL: {p['url']}
+Дата: {p.get('date', 'дата не указана')}
+Содержание: {p['text'][:1500]}
+"""
+
+    if mode == "internet_only":
+        system_prompt += f"""
+⚠️ **РЕЖИМ: ТОЛЬКО ИНТЕРНЕТ**
+
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. Проанализируй ТОЛЬКО эти источники
+2. Перечисли ВСЕ источники
+3. Сделай вывод ТОЛЬКО на их основе
+
+⚠️ **ФОРМАТ ОТВЕТА:**
+📊 **Использованные источники:** (перечисли ВСЕ {len(good_sources)})
+📊 **Общие факты:**
+⚠️ **Противоречия:**
+✅ **Вывод:**
+
+Запрос: {user_message}
+Сегодня: {get_current_date()}
+"""
+    else:
+        system_prompt += f"""
+⚠️ **РЕЖИМ: ГИБРИД (ИНТЕРНЕТ + ЗНАНИЯ)**
+
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. Сначала используй информацию из источников
+2. Если данных мало - дополни знаниями
+3. ОТМЕЧАЙ, что взято из знаний
+
+⚠️ **ФОРМАТ ОТВЕТА:**
+📊 **Из интернета:** (что взято из источников)
+🧠 **Дополнено из знаний:** (что добавил)
+✅ **Вывод:**
+
+Запрос: {user_message}
+"""
+
+    logger.info("✅ ШАГ 5: Промпт сформирован с ЖЁСТКИМ ЗАПРЕТОМ")
+    
+    # ================================================================
+    # ШАГ 6: ГЕНЕРАЦИЯ ОТВЕТА
+    # ================================================================
+    
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-    
     answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
     
     if err or not answer:
+        logger.warning("⚠️ ШАГ 6: DeepSeek не ответил → фоллбэк")
         return await fallback_safe(all_results, "DeepSeek не ответил")
     
-    # Проверка на враньё
-    has_lies, lie_list = detect_lies(answer, pages)
+    logger.info("✅ ШАГ 6: Ответ получен")
     
-    if has_lies:
-        logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_list}")
-        
-        system_prompt += "\n\n⚠️ **ТЫ БЫЛ УЛИЧЁН ВО ЛЖИ!** Ответь честно, без обмана!"
-        messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-        answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
-        
-        if err or not answer:
-            return await fallback_safe(all_results, "DeepSeek не ответил после предупреждения")
-        
-        has_lies, lie_list = detect_lies(answer, pages)
-        if has_lies:
-            logger.error(f"❌ ВТОРАЯ ПОПЫТКА: снова ложь! {lie_list}")
-            return await fallback_safe(all_results, "Обнаружена ложь во второй раз")
+    # ================================================================
+    # ШАГ 7: МЯГКАЯ ПРОВЕРКА (НЕ БЛОКИРУЕТ!)
+    # ================================================================
     
-    # Добавляем маркер режима
+    warnings = []
+    answer_lower = answer.lower()
+    
+    # Проверяем запрещённые фразы (НО НЕ БЛОКИРУЕМ)
+    forbidden = [
+        "нет доступа к интернету",
+        "инструменты поиска не активированы",
+        "не могу проверить",
+        "у меня нет информации",
+    ]
+    
+    for phrase in forbidden:
+        if phrase in answer_lower:
+            warnings.append(f"⚠️ В ответе есть фраза '{phrase}' — это НЕПРАВДА, у тебя есть доступ!")
+    
+    # Проверка на предположения без предупреждения
+    speculation = ['возможно', 'вероятно', 'скорее всего']
+    if any(p in answer_lower for p in speculation) and "⚠️ [НЕ 100%]" not in answer:
+        warnings.append("⚠️ Использует предположения без предупреждения")
+    
+    # Проверка на наличие источников в ответе (если есть хорошие источники)
+    if good_sources and not has_sources_in_answer(answer):
+        warnings.append("⚠️ Есть источники, но они не перечислены в ответе")
+    
+    # Добавляем предупреждения в ответ (НЕ БЛОКИРУЕМ!)
+    if warnings:
+        logger.info(f"⚠️ ШАГ 7: Предупреждения: {warnings}")
+        answer = answer + "\n\n⚠️ **Примечание:** " + "; ".join(warnings)
+    else:
+        logger.info("✅ ШАГ 7: Проверка пройдена")
+    
+    # ================================================================
+    # ШАГ 8: ДОБАВЛЯЕМ МАРКЕР
+    # ================================================================
+    
     mode_labels = {
         "internet_only": "🌐 [ИНТЕРНЕТ]",
         "hybrid": "🔍 [ГИБРИД: ИНТЕРНЕТ + ЗНАНИЯ]",
-        "knowledge_only": "🧠 [ЗНАНИЯ МОДЕЛИ]"
     }
-    answer = f"{mode_labels.get(mode, '📌 [ИСТОЧНИК НЕИЗВЕСТЕН]')}\n\n{answer}"
+    
+    if not any(label in answer for label in mode_labels.values()):
+        answer = f"{mode_labels.get(mode, '📌 [ИСТОЧНИК НЕИЗВЕСТЕН]')}\n\n{answer}"
+    
+    logger.info("✅ ШАГ 8: Ответ готов!")
     
     return answer
 
+def has_sources_in_answer(text: str) -> bool:
+    """Проверяет, есть ли в ответе перечисление источников"""
+    patterns = [r'Источник \d+', r'источник \d+', r'📊 .*источник', r'http', r'www\.', r'🔗']
+    for pattern in patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    return False
+
 async def generate_knowledge_safe(user_message, history, reason):
+    """Ответ из знаний модели"""
     system_prompt = f"""
 Ты — честный ассистент. Отвечай из своих знаний.
 
@@ -671,12 +624,25 @@ async def generate_knowledge_safe(user_message, history, reason):
     return f"🧠 [ЗНАНИЯ МОДЕЛИ] — {reason}\n\n{answer}"
 
 async def fallback_safe(all_results, reason):
-    simple = f"⚠️ **ФОЛЛБЭК** ({reason})\n\n🔍 **Результаты поиска:**\n\n"
-    for i, r in enumerate(all_results[:10], 1):
-        simple += f"{i}. **{r.get('title', 'Без названия')}**\n"
-        simple += f"   {r.get('snippet', '')[:200]}\n"
-        simple += f"   🔗 {r.get('link', '')}\n\n"
-    simple += f"📅 {get_current_date()}"
+    """Безопасный фоллбэк — показывает сырые результаты"""
+    simple = f"⚠️ **ФОЛЛБЭК** ({reason})\n\n"
+    simple += "🔍 **Результаты поиска:**\n\n"
+    
+    for i, r in enumerate(all_results[:15], 1):
+        title = r.get('title', 'Без названия')
+        snippet = r.get('snippet', '')[:200]
+        link = r.get('link', '')
+        
+        simple += f"{i}. **{title}**\n"
+        if snippet:
+            simple += f"   {snippet}\n"
+        if link and link != '#':
+            simple += f"   🔗 {link}\n"
+        simple += "\n"
+    
+    simple += f"📅 {get_current_date()}\n\n"
+    simple += "⚠️ **Примечание:** Я не смог сформировать аналитический ответ, но вот сырые результаты поиска. Используй их для самостоятельного анализа."
+    
     return simple
 
 # ==================== КНОПКИ ====================
@@ -703,6 +669,7 @@ async def handle_message(update, context):
         if not user_message:
             return
         
+        # Кнопки меню
         if user_message == "🔍 Новый поиск":
             context.user_data.clear()
             await safe_reply(update, "🔍 Задай вопрос для поиска в интернете.")
@@ -711,8 +678,8 @@ async def handle_message(update, context):
         elif user_message == "❓ Помощь":
             await safe_reply(update,
                 "❓ **Помощь**\n\n"
-                "🔍 **Новый поиск** - задай вопрос\n"
-                "🔄 **Сброс** - очистить\n"
+                "🔍 **Новый поиск** - задай вопрос, я найду в интернете\n"
+                "🔄 **Сброс** - очистить диалог\n"
                 "⏹️ **Стоп** - остановить\n\n"
                 "⚠️ **Я всегда ищу в интернете и честно говорю, откуда информация!**"
             )
@@ -731,12 +698,14 @@ async def handle_message(update, context):
         if user_message.startswith('/'):
             return
         
+        # Уточнение
         if context.user_data.get('awaiting_followup'):
             answer = await handle_followup(update, context, user_message)
             if answer:
                 await safe_reply(update, answer)
             return
         
+        # НОВЫЙ ЗАПРОС
         uid = update.effective_user.id
         chat_id = update.effective_chat.id
         history = load_memory(uid)
@@ -756,15 +725,18 @@ async def handle_message(update, context):
         # Выполняем поиск
         answer = await search_and_answer_safe(uid, user_message, history)
         
+        # Сигналим таймеру
         context.user_data['found_answer'] = True
         await timer_task
         
+        # Добавляем время
         elapsed = int(time.time() - context.user_data['start_time'])
         answer = f"⏱️ {elapsed} сек\n\n{answer}"
         
         context.user_data['last_answer'] = answer
         context.user_data['awaiting_followup'] = True
         
+        # Сохраняем в память
         history.append({"role": "assistant", "content": answer[:500]})
         save_memory(uid, history)
         
@@ -811,7 +783,7 @@ async def handle_followup(update, context, user_message):
 
 Уточнение: {user_message}
 
-Ответь на уточнение кратко и по делу. Если нужно - используй информацию из предыдущего ответа.
+Ответь на уточнение кратко и по делу.
 
 ⚠️ **ПРАВИЛА:**
 1. Не используй слова "возможно", "вероятно" без ⚠️ [НЕ 100%]
