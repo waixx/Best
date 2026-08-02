@@ -1,6 +1,6 @@
 # ===================================================================
 #  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
-#  Таймер + Источники + Защита от вранья
+#  Максимальная объективность + Исправленный таймер
 # ===================================================================
 
 import logging
@@ -381,8 +381,9 @@ async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, 
             return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
         return None, str(e)
 
-# ==================== ТАЙМЕР ====================
+# ==================== ТАЙМЕР (ИСПРАВЛЕННЫЙ) ====================
 async def send_progress_updates(chat_id, context, start_time):
+    """Отправляет обновления таймера каждые 3 секунды"""
     message = None
     try:
         message = await context.bot.send_message(
@@ -446,18 +447,16 @@ def is_lie_by_sense(text: str) -> Tuple[bool, str]:
     
     return False, ""
 
-# ==================== ФОРМИРОВАНИЕ ОТВЕТА (ВАРИАНТ 7) ====================
+# ==================== ФОРМАТИРОВАНИЕ ОТВЕТА (БЕЗ ТАЙМЕРА) ====================
 
-def format_answer(elapsed: int, sources: List[Dict], main_text: str, conclusion: str) -> str:
-    """Форматирует ответ по Варианту 7 с принудительным добавлением источников"""
+def format_answer(sources: List[Dict], main_text: str, conclusion: str) -> str:
+    """Форматирует ответ по Варианту 7 — без таймера (он добавляется отдельно)"""
     
     sources_text = ""
     for i, p in enumerate(sources[:6], 1):
         sources_text += f"{i}. {p['url']}\n"
     
     return f"""
-⏱️ {elapsed} сек
-
 【1】ИСТОЧНИКИ
 ━━━━━━━━━━━━━━━━━━━━━━
 {sources_text}
@@ -474,6 +473,14 @@ def format_answer(elapsed: int, sources: List[Dict], main_text: str, conclusion:
 
 async def search_and_answer_safe(uid, user_message, history):
     logger.info(f"🛡️ ЗАПРОС: {user_message[:50]}")
+    
+    # Проверка кэша
+    norm = normalize_query(user_message)
+    if norm in answer_cache:
+        cached = answer_cache[norm]
+        if (datetime.now() - cached['time']).total_seconds() < CACHE_TTL:
+            logger.info("📦 Ответ из кэша")
+            return cached['data']
     
     # ================================================================
     # ШАГ 1: ПОИСК
@@ -513,7 +520,7 @@ async def search_and_answer_safe(uid, user_message, history):
         return "⚠️ Страницы загрузить не удалось. Попробуйте позже."
     
     # ================================================================
-    # ШАГ 3: ПРОМПТ
+    # ШАГ 3: ОБЪЕКТИВНЫЙ ПРОМПТ
     # ================================================================
     
     source_text = ""
@@ -527,25 +534,48 @@ URL: {p['url']}
 """
     
     system_prompt = f"""
-⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ИСТОЧНИКИ ИЗ ИНТЕРНЕТА!**
+Ты — объективный аналитик. Твоя задача — дать максимально честный и сбалансированный ответ.
 
-Ты ОБЯЗАН использовать их. Если ты используешь свои знания — это ЛОЖЬ.
+⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ИСТОЧНИКИ ИЗ ИНТЕРНЕТА!**
 
 {source_text}
 
-⚠️ **ТВОЯ ЗАДАЧА:**
-1. Прочитай КАЖДЫЙ источник
-2. Найди в них ОТВЕТ на вопрос
-3. Выдай ответ ТОЛЬКО из них
+⚠️ **ПРИНЦИПЫ ОБЪЕКТИВНОСТИ:**
 
-⚠️ **ТЫ НЕ МОЖЕШЬ:**
-- Игнорировать источники
-- Говорить "нет данных"
-- Придумывать свой ответ
-- Использовать свои знания
-- Говорить "не могу искать в интернете"
+1. **ПОКАЖИ ВСЕ ТОЧКИ ЗРЕНИЯ**
+   - Если в источниках есть разные мнения — покажи их все
+   - Не выбирай "правильную" сторону — покажи все
 
-⚠️ **ЕСЛИ ТЫ НАРУШИШЬ — ТЫ СОВРЁШЬ!**
+2. **НЕ СКРЫВАЙ ПРОТИВОРЕЧИЯ**
+   - Если источники противоречат друг другу — напиши об этом прямо
+   - Объясни, в чём именно противоречие
+
+3. **ОЦЕНИ НАДЁЖНОСТЬ**
+   - Отметь, какие источники заслуживают доверия, а какие нет
+   - Укажи причины (официальные документы vs личные мнения)
+
+4. **ФАКТЫ И МНЕНИЯ — РАЗДЕЛИ!**
+   - Факты: "В законе написано..."
+   - Мнения: "Автор статьи считает..."
+   - Не выдавай мнения за факты
+
+5. **УКАЗЫВАЙ СТЕПЕНЬ УВЕРЕННОСТИ**
+   - Если уверен на 100% → пиши "✅ Подтверждено"
+   - Если есть сомнения → пиши "⚠️ Требует проверки"
+   - Если данные противоречивы → пиши "⚖️ Есть разные версии"
+
+6. **НЕ ПРИДУМЫВАЙ!**
+   - Только то, что есть в источниках
+   - Если чего-то нет — скажи "В источниках не найдено"
+
+⚠️ **ФОРМАТ ОТВЕТА:**
+
+📊 **Источники:** (перечисли все с оценкой надёжности)
+📊 **Факты:** (что подтверждено, со ссылками)
+📊 **Мнения:** (что высказано, но не подтверждено)
+⚠️ **Противоречия:** (если есть)
+📊 **Степень уверенности:** (по каждому пункту)
+✅ **Вывод:** (объективный итог)
 
 Запрос: {user_message}
 """
@@ -593,25 +623,31 @@ URL: {p['url']}
             return f"⚠️ **В источниках нет информации по вашему запросу.**\n\nПопробуйте переформулировать вопрос."
     
     # ================================================================
-    # ШАГ 6: ПРОВЕРКА НА ИСТОЧНИКИ
+    # ШАГ 6: ФОРМИРОВАНИЕ ФИНАЛЬНОГО ОТВЕТА
     # ================================================================
     
+    # Извлекаем основную часть и вывод
+    main_text = answer
+    conclusion = "Вывод на основе источников"
+    
+    if "✅ **Вывод:**" in answer:
+        parts = answer.split("✅ **Вывод:**")
+        main_text = parts[0]
+        conclusion = parts[1] if len(parts) > 1 else "Вывод на основе источников"
+    
+    # Если нет источников — добавляем принудительно
     if not has_sources_in_answer(answer):
-        logger.warning("⚠️ В ответе нет источников — добавляю принудительно")
-        
-        # Извлекаем основную часть ответа
-        main_text = answer
-        conclusion = "Вывод на основе источников"
-        
-        # Формируем финальный ответ с источниками
-        final_answer = format_answer(
-            elapsed=0,  # Время будет добавлено позже
-            sources=good_sources[:6],
-            main_text=main_text,
-            conclusion=conclusion
-        )
+        logger.info("⚠️ В ответе нет источников — добавляю принудительно")
+        final_answer = format_answer(good_sources[:6], main_text, conclusion)
     else:
         final_answer = answer
+    
+    # Сохраняем в кэш
+    norm = normalize_query(user_message)
+    answer_cache[norm] = {'data': final_answer, 'time': datetime.now()}
+    if len(answer_cache) > 50:
+        oldest = min(answer_cache.keys(), key=lambda k: answer_cache[k]['time'])
+        del answer_cache[oldest]
     
     logger.info("✅ Ответ готов")
     
@@ -711,20 +747,21 @@ async def handle_message(update, context):
         context.user_data['chat_id'] = chat_id
         context.user_data['found_answer'] = False
         
+        # Запускаем таймер
         timer_task = asyncio.create_task(
             send_progress_updates(chat_id, context, context.user_data['start_time'])
         )
         
+        # Выполняем поиск
         answer = await search_and_answer_safe(uid, user_message, history)
         
+        # Сигналим таймеру
         context.user_data['found_answer'] = True
         await timer_task
         
+        # ✅ ТАЙМЕР ДОБАВЛЯЕТСЯ ТОЛЬКО ЗДЕСЬ — ОДИН РАЗ!
         elapsed = int(time.time() - context.user_data['start_time'])
-        
-        # ✅ ТАЙМЕР ПРИНУДИТЕЛЬНО ДОБАВЛЯЕТСЯ В ОТВЕТ
-        if not answer.startswith("⏱️"):
-            answer = f"⏱️ {elapsed} сек\n\n{answer}"
+        answer = f"⏱️ {elapsed} сек\n\n{answer}"
         
         context.user_data['last_answer'] = answer
         context.user_data['awaiting_followup'] = True
@@ -854,6 +891,17 @@ async def forget_command(update, context):
     context.user_data.clear()
     await safe_reply(update, "🧹 Всё забыто!")
 
+async def clearcache_command(update, context):
+    uid = update.effective_user.id
+    if not ALLOW_ALL and uid not in ALLOWED_USERS:
+        return
+    
+    global html_cache, search_cache, answer_cache
+    html_cache = {}
+    search_cache = {}
+    answer_cache = {}
+    await safe_reply(update, "🧹 Кэш очищен!")
+
 # ==================== ЗАПУСК ====================
 def main():
     logger.info("🚀 БОТ ЗАПУСКАЕТСЯ...")
@@ -861,6 +909,7 @@ def main():
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
+    logger.info("⚠️ РЕЖИМ: МАКСИМАЛЬНАЯ ОБЪЕКТИВНОСТЬ + ИСПРАВЛЕННЫЙ ТАЙМЕР")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -868,6 +917,7 @@ def main():
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("stats", stats_command))
         app.add_handler(CommandHandler("forget", forget_command))
+        app.add_handler(CommandHandler("clearcache", clearcache_command))
         
         app.add_handler(CallbackQueryHandler(handle_after_answer_callback, pattern="^(new_search|refine)$"))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
