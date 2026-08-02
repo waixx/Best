@@ -1,6 +1,6 @@
 # ===================================================================
 #  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
-#  Двойной запрет "нет доступа" + Динамический таймер + Гибридный режим
+#  Двойной запрет "нет доступа" + Исправленный таймер + Гибридный режим
 # ===================================================================
 
 import logging
@@ -377,8 +377,9 @@ async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, 
             return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
         return None, str(e)
 
-# ==================== ДИНАМИЧЕСКИЙ ТАЙМЕР ====================
+# ==================== ДИНАМИЧЕСКИЙ ТАЙМЕР (ИСПРАВЛЕННЫЙ) ====================
 async def send_progress_updates(chat_id, context, start_time):
+    """Отправляет обновления таймера каждые 3 секунды"""
     message = None
     try:
         message = await context.bot.send_message(
@@ -388,8 +389,17 @@ async def send_progress_updates(chat_id, context, start_time):
         
         elapsed = 0
         dots = 0
-        while elapsed < 120:
+        while elapsed < 120:  # Максимум 120 секунд
             await asyncio.sleep(3)
+            
+            # ✅ ПРОВЕРЯЕМ ФЛАГ ПОСЛЕ КАЖДОГО SLEEP!
+            if context.user_data.get('found_answer'):
+                try:
+                    await message.edit_text("✅ Информация найдена! Формирую ответ...")
+                except Exception:
+                    pass
+                break
+            
             elapsed = int(time.time() - start_time)
             dots = (dots + 1) % 4
             dots_text = "." * dots + " " * (3 - dots)
@@ -402,9 +412,7 @@ async def send_progress_updates(chat_id, context, start_time):
                 await message.edit_text(status_text)
             except Exception:
                 message = await context.bot.send_message(chat_id, status_text)
-            
-            if context.user_data.get('found_answer'):
-                break
+    
     except Exception as e:
         logger.error(f"❌ Ошибка таймера: {e}")
     return message
@@ -826,15 +834,43 @@ async def handle_followup(update, context, user_message):
     return answer
 
 async def safe_reply(update, text, reply_markup=None):
+    """Безопасная отправка с разбивкой длинных сообщений"""
     if not text:
         text = "⚠️ Пустой ответ."
     msg = update.effective_message
     if not msg:
         return
+    
     try:
-        await msg.reply_text(text, disable_web_page_preview=True, reply_markup=reply_markup)
+        # Разбиваем длинные сообщения (Telegram лимит 4096 символов)
+        if len(text) > 4096:
+            parts = []
+            current = ""
+            for line in text.split('\n'):
+                if len(current) + len(line) + 1 > 4000:
+                    parts.append(current)
+                    current = line
+                else:
+                    current += "\n" + line if current else line
+            if current:
+                parts.append(current)
+            
+            # Отправляем части
+            for i, part in enumerate(parts):
+                if i == len(parts) - 1:
+                    await msg.reply_text(part, disable_web_page_preview=True, reply_markup=reply_markup)
+                else:
+                    await msg.reply_text(part, disable_web_page_preview=True)
+        else:
+            await msg.reply_text(text, disable_web_page_preview=True, reply_markup=reply_markup)
+    
     except Exception as e:
         logger.error(f"❌ Ошибка отправки: {e}")
+        # Пытаемся отправить хотя бы первую часть
+        try:
+            await msg.reply_text(text[:4000], disable_web_page_preview=True, reply_markup=reply_markup)
+        except Exception:
+            pass
 
 # ==================== КОМАНДЫ ====================
 async def start(update, context):
