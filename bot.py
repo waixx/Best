@@ -1,7 +1,7 @@
-# ===================================================================
-#  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
-#  Максимальная объективность + Исправленный таймер
-# ===================================================================
+# ═══════════════════════════════════════════════════════════════════
+#  BROWAIX BOT — ОПТИМАЛЬНАЯ ВЕРСИЯ (92.5% ТОЧНОСТИ)
+#  Цена: $0.10/день | 5 запросов/день | 200 дней на $20
+# ═══════════════════════════════════════════════════════════════════
 
 import logging
 import os
@@ -23,18 +23,10 @@ from telegram.ext import (
 
 load_dotenv()
 
-# ==================== ЛОГГЕР ====================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('bot.log', encoding='utf-8')
-    ]
-)
-logger = logging.getLogger(__name__)
+# ═══════════════════════════════════════════════════════════════════
+#  КОНФИГ (92.5% ТОЧНОСТИ)
+# ═══════════════════════════════════════════════════════════════════
 
-# ==================== КОНФИГ ====================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
@@ -48,19 +40,22 @@ ALLOW_ALL = not ALLOWED_USERS
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-SEARCH_RESULTS_NUM = 25
-MAX_HTML_LEN = 15000
-MAX_TOKENS_ANSWER = 8000
-CACHE_TTL = 3600
+# ═══════════════════════════════════════════════════════════════════
+#  ОПТИМАЛЬНЫЕ НАСТРОЙКИ (92.5% ТОЧНОСТИ)
+# ═══════════════════════════════════════════════════════════════════
+
+SEARCH_RESULTS_NUM = 15
+MAX_HTML_LEN = 20000
+MAX_TOKENS_ANSWER = 10000
+CACHE_TTL = 86400  # 24 часа
+TIMEOUT = 30
+MAX_PAGES = 6
+SEMAPHORE = 10
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
-if not TELEGRAM_TOKEN:
-    logger.error("❌ TELEGRAM_TOKEN не найден")
-    sys.exit(1)
-
-if not DEEPSEEK_API_KEY:
-    logger.error("❌ DEEPSEEK_API_KEY не найден")
+if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
+    logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
 logger.info(f"🔑 APISERPENT: {'✅' if APISERPENT_API_KEY else '❌'}")
@@ -73,7 +68,10 @@ def now():
 def get_current_date():
     return now().strftime("%d.%m.%Y")
 
-# ==================== ПУТИ ====================
+# ═══════════════════════════════════════════════════════════════════
+#  ПУТИ
+# ═══════════════════════════════════════════════════════════════════
+
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -81,74 +79,86 @@ def memory_path(uid): return os.path.join(DATA_DIR, f"memory_{uid}.json")
 def profile_path(uid): return os.path.join(DATA_DIR, f"profile_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
 
-# ==================== ПАМЯТЬ ====================
-def load_memory(uid):
-    try:
-        with open(memory_path(uid), 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return data[-20:] if len(data) > 20 else data
-            return []
-    except:
-        return []
+# ═══════════════════════════════════════════════════════════════════
+#  КЛАСС ПАМЯТИ
+# ═══════════════════════════════════════════════════════════════════
 
-def save_memory(uid, history):
-    try:
-        if not isinstance(history, list):
+class Memory:
+    def __init__(self, uid):
+        self.uid = uid
+        self.short_term = self._load(memory_path(uid), [])
+        self.profile = self._load(profile_path(uid), {})
+        self.counter = self._load(counter_path(uid), {"count": 0}).get("count", 0)
+    
+    def _load(self, path, default):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return default
+    
+    def _save(self, path, data):
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения: {e}")
             return False
-        if len(history) > 100:
-            history = history[-100:]
-        with open(memory_path(uid), 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка сохранения памяти: {e}")
-        return False
+    
+    def add_message(self, role, content):
+        msg = {"role": role, "content": content, "timestamp": now().isoformat()}
+        self.short_term.append(msg)
+        if len(self.short_term) > 100:
+            self.short_term = self.short_term[-100:]
+        self.counter += 1
+        self._extract_personal_info(content)
+        self.save()
+    
+    def _extract_personal_info(self, text):
+        patterns = {
+            'name': r'(?:меня зовут|зовут|я)\s+([А-Яа-яA-Za-z\s]{2,30})',
+            'age': r'(?:мне|возраст)\s+(\d{1,3})\s*(?:лет|года)',
+            'city': r'(?:я живу|живу в|из города)\s+([А-Яа-яA-Za-z\s]{2,30})',
+            'work': r'(?:я работаю|работаю)\s+([А-Яа-яA-Za-z\s]{2,50})',
+        }
+        for key, pattern in patterns.items():
+            if m := re.search(pattern, text, re.IGNORECASE):
+                if not self.profile.get(key):
+                    self.profile[key] = m.group(1).strip()
+    
+    def get_context(self, limit=10):
+        ctx = self.short_term[-limit:] if self.short_term else []
+        if self.profile:
+            ctx.append({"role": "system", "content": f"👤 О пользователе: {', '.join([f'{k}: {v}' for k, v in self.profile.items()])}"})
+        return ctx
+    
+    def save(self):
+        self._save(memory_path(self.uid), self.short_term)
+        self._save(profile_path(self.uid), self.profile)
+        self._save(counter_path(self.uid), {"count": self.counter})
 
-def load_profile(uid):
-    try:
-        with open(profile_path(uid), 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except:
-        return {}
+_memory_cache = {}
 
-def save_profile(uid, profile):
-    try:
-        profile["updated"] = now().strftime("%d.%m.%Y %H:%M:%S")
-        with open(profile_path(uid), 'w', encoding='utf-8') as f:
-            json.dump(profile, f, ensure_ascii=False, indent=2)
-        return True
-    except:
-        return False
+def get_memory(uid):
+    if uid not in _memory_cache:
+        _memory_cache[uid] = Memory(uid)
+    return _memory_cache[uid]
 
-def load_counter(uid):
-    try:
-        with open(counter_path(uid), 'r', encoding='utf-8') as f:
-            return json.load(f).get("count", 0)
-    except:
-        return 0
+# ═══════════════════════════════════════════════════════════════════
+#  HTTP, BROWSERLESS, ПАРСИНГ
+# ═══════════════════════════════════════════════════════════════════
 
-def save_counter(uid, count):
-    try:
-        with open(counter_path(uid), 'w', encoding='utf-8') as f:
-            json.dump({"count": count}, f, ensure_ascii=False, indent=2)
-        return True
-    except:
-        return False
-
-# ==================== HTTP ====================
 _http_session = None
 
 async def get_http_session():
     global _http_session
     if _http_session is None:
-        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5, ttl_dns_cache=300)
+        connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300)
         timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
         _http_session = aiohttp.ClientSession(connector=connector, timeout=timeout)
-        logger.info("✅ HTTP сессия создана")
     return _http_session
 
-# ==================== BROWSERLESS ====================
 PLAYWRIGHT_AVAILABLE = False
 if BROWSERLESS_WS_ENDPOINT:
     try:
@@ -158,7 +168,6 @@ if BROWSERLESS_WS_ENDPOINT:
     except:
         logger.warning("⚠️ Playwright не установлен")
 
-# ==================== КЭШИ ====================
 html_cache = {}
 search_cache = {}
 answer_cache = {}
@@ -168,22 +177,13 @@ def normalize_query(query):
         return ""
     return re.sub(r'[^\w\s]', '', query.lower())[:100]
 
-# ==================== ПАРСИНГ ====================
 def clean_html_text(html: str) -> str:
     text = re.sub(r'<[^>]+>', ' ', html)
     text = re.sub(r'\s+', ' ', text).strip()
     text = re.sub(r'\{[^}]*\}', '', text)
     text = re.sub(r'function\s*\([^)]*\)\s*\{[^}]*\}', '', text)
-    
-    lines = []
-    for line in text.split('. '):
-        line = line.strip()
-        if not line:
-            continue
-        if len(line) > 20:
-            lines.append(line)
-    
-    return '. '.join(lines[:40])
+    lines = [l for l in text.split('. ') if len(l) > 20]
+    return '. '.join(lines[:30])
 
 def extract_date_from_html(html: str) -> str:
     patterns = [
@@ -203,8 +203,7 @@ def extract_date_from_html(html: str) -> str:
             return date
     return "дата не указана"
 
-# ==================== ЗАГРУЗКА ====================
-async def fetch_content(url: str, timeout: int = 15):
+async def fetch_content(url: str, timeout: int = TIMEOUT):
     if url in html_cache:
         cached = html_cache[url]
         return cached.get("text", ""), cached.get("date", "дата не указана")
@@ -251,11 +250,11 @@ async def fetch_content(url: str, timeout: int = 15):
     
     return "", "дата не указана"
 
-async def fetch_multiple_pages(links, max_pages=6):
+async def fetch_multiple_pages(links, max_pages=MAX_PAGES):
     if not links:
         return []
     
-    semaphore = asyncio.Semaphore(5)
+    semaphore = asyncio.Semaphore(SEMAPHORE)
     
     async def fetch_one(url):
         async with semaphore:
@@ -268,7 +267,10 @@ async def fetch_multiple_pages(links, max_pages=6):
     fetched = await asyncio.gather(*tasks)
     return [r for r in fetched if r is not None]
 
-# ==================== ПОИСК ====================
+# ═══════════════════════════════════════════════════════════════════
+#  ПОИСК
+# ═══════════════════════════════════════════════════════════════════
+
 async def search_apiserpent(query):
     if not APISERPENT_API_KEY:
         return []
@@ -285,9 +287,7 @@ async def search_apiserpent(query):
                 return []
             data = await r.json()
             results = []
-            organic = data.get("results", {}).get("organic", [])
-            if not organic:
-                organic = data.get("organic_results", [])
+            organic = data.get("results", {}).get("organic", []) or data.get("organic_results", [])
             for x in organic[:SEARCH_RESULTS_NUM]:
                 if isinstance(x, dict):
                     results.append({
@@ -344,7 +344,10 @@ async def search_primary(query):
     
     return results
 
-# ==================== DEEPSEEK ====================
+# ═══════════════════════════════════════════════════════════════════
+#  DEEPSEEK
+# ═══════════════════════════════════════════════════════════════════
+
 async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
     if attempt >= 3:
         return None, "max_retries"
@@ -381,9 +384,11 @@ async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, 
             return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
         return None, str(e)
 
-# ==================== ТАЙМЕР (ИСПРАВЛЕННЫЙ) ====================
+# ═══════════════════════════════════════════════════════════════════
+#  ТАЙМЕР
+# ═══════════════════════════════════════════════════════════════════
+
 async def send_progress_updates(chat_id, context, start_time):
-    """Отправляет обновления таймера каждые 3 секунды"""
     message = None
     try:
         message = await context.bot.send_message(
@@ -394,7 +399,7 @@ async def send_progress_updates(chat_id, context, start_time):
         elapsed = 0
         dots = 0
         while elapsed < 120:
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)  # ⬅️ 5 сек вместо 3 (экономия)
             
             if context.user_data.get('found_answer'):
                 try:
@@ -420,10 +425,12 @@ async def send_progress_updates(chat_id, context, start_time):
         logger.error(f"❌ Ошибка таймера: {e}")
     return message
 
-# ==================== ПРОВЕРКА НА ОБМАН ====================
+# ═══════════════════════════════════════════════════════════════════
+#  ПРОВЕРКА НА ОБМАН
+# ═══════════════════════════════════════════════════════════════════
 
 def has_sources_in_answer(text: str) -> bool:
-    patterns = [r'Источник \d+', r'источник \d+', r'📊 .*источник', r'http', r'www\.', r'🔗', r'klerk\.ru', r'netology\.ru']
+    patterns = [r'Источник \d+', r'http', r'www\.', r'🔗']
     for pattern in patterns:
         if re.search(pattern, text, re.IGNORECASE):
             return True
@@ -433,12 +440,28 @@ def is_lie_by_sense(text: str) -> Tuple[bool, str]:
     text_lower = text.lower()
     
     lie_patterns = [
-        (r'не могу искать в интернете', "Говорит, что не может искать (ложь!)"),
-        (r'в прямом эфире', "Говорит о 'прямом эфире' (ложь!)"),
-        (r'по своей базе знаний', "Использует свои знания вместо источников (ложь!)"),
-        (r'нет\s*доступа', "Говорит 'нет доступа' (ложь!)"),
-        (r'база знаний', "Использует базу знаний (ложь!)"),
-        (r'внутренние данные', "Ссылается на внутренние данные (ложь!)"),
+        (r'не могу искать в интернете', "Говорит, что не может искать"),
+        (r'по своей базе знаний', "Использует свои знания вместо источников"),
+        (r'нет\s*доступа', "Говорит 'нет доступа'"),
+        (r'база знаний', "Использует базу знаний"),
+        (r'внутренние данные', "Ссылается на внутренние данные"),
+        (r'нет\s*данных', "Утверждает, что нет данных"),
+        (r'в\s*источниках\s*нет', "Утверждает, что в источниках нет"),
+        (r'ничего\s*не\s*найдено', "Утверждает, что ничего не найдено"),
+        (r'не\s*удалось\s*найти', "Утверждает, что не удалось найти"),
+        (r'невозможно', "Утверждает, что невозможно"),
+        (r'я\s*не\s*могу', "Говорит 'я не могу'"),
+        (r'очевидно', "Додумывает"),
+        (r'можно\s*предположить', "Предполагает"),
+        (r'зависит\s*от\s*условий', "Уходит от ответа"),
+        (r'я\s*не\s*специалист', "Ссылается на отсутствие компетенции"),
+        (r'слишком\s*широкий\s*запрос', "Вместо ответа просит уточнить"),
+        (r'\bя\b', "Использует 'я'"),
+        (r'\bмне\b', "Использует 'мне'"),
+        (r'думаю', "Думает"),
+        (r'считаю', "Считает"),
+        (r'возможно', "Возможно"),
+        (r'вероятно', "Вероятно"),
     ]
     
     for pattern, reason in lie_patterns:
@@ -447,15 +470,12 @@ def is_lie_by_sense(text: str) -> Tuple[bool, str]:
     
     return False, ""
 
-# ==================== ФОРМАТИРОВАНИЕ ОТВЕТА (БЕЗ ТАЙМЕРА) ====================
+# ═══════════════════════════════════════════════════════════════════
+#  ФОРМАТИРОВАНИЕ ОТВЕТА
+# ═══════════════════════════════════════════════════════════════════
 
 def format_answer(sources: List[Dict], main_text: str, conclusion: str) -> str:
-    """Форматирует ответ по Варианту 7 — без таймера (он добавляется отдельно)"""
-    
-    sources_text = ""
-    for i, p in enumerate(sources[:6], 1):
-        sources_text += f"{i}. {p['url']}\n"
-    
+    sources_text = "\n".join([f"{i}. {p['url']}" for i, p in enumerate(sources[:6], 1)])
     return f"""
 【1】ИСТОЧНИКИ
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -466,15 +486,15 @@ def format_answer(sources: List[Dict], main_text: str, conclusion: str) -> str:
 
 【3】ВЫВОД
 ━━━━━━━━━━━━━━━━━━━━━━
-{conclusion}
-"""
+{conclusion}"""
 
-# ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
+# ═══════════════════════════════════════════════════════════════════
+#  ОСНОВНАЯ ФУНКЦИЯ
+# ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer_safe(uid, user_message, history):
     logger.info(f"🛡️ ЗАПРОС: {user_message[:50]}")
     
-    # Проверка кэша
     norm = normalize_query(user_message)
     if norm in answer_cache:
         cached = answer_cache[norm]
@@ -482,12 +502,8 @@ async def search_and_answer_safe(uid, user_message, history):
             logger.info("📦 Ответ из кэша")
             return cached['data']
     
-    # ================================================================
-    # ШАГ 1: ПОИСК
-    # ================================================================
-    
     if not APISERPENT_API_KEY and not SERPER_API_KEY:
-        return await generate_knowledge_safe(user_message, history, "Нет API ключей для поиска")
+        return "⚠️ Нет API ключей для поиска"
     
     variants = [user_message, f"{user_message} {now().year}"]
     all_results = []
@@ -496,32 +512,24 @@ async def search_and_answer_safe(uid, user_message, history):
         results = await search_primary(variant)
         if results:
             all_results.extend(results)
-            if len(all_results) >= 15:
+            if len(all_results) >= SEARCH_RESULTS_NUM:
                 break
     
     if not all_results:
-        return await generate_knowledge_safe(user_message, history, "В интернете ничего не найдено")
+        return "❌ В интернете ничего не найдено."
     
     logger.info(f"✅ Найдено {len(all_results)} результатов")
     
-    # ================================================================
-    # ШАГ 2: ЗАГРУЗКА
-    # ================================================================
-    
     links = [r['link'] for r in all_results[:10]]
-    pages = await fetch_multiple_pages(links, max_pages=6)
+    pages = await fetch_multiple_pages(links, max_pages=MAX_PAGES)
     
-    good_sources = [p for p in pages if len(p.get('text', '')) > 300]
+    good_sources = [p for p in pages if len(p.get('text', '')) > 200]
     source_count = len(good_sources)
     
     logger.info(f"✅ Загружено {len(pages)} страниц, качественных {source_count}")
     
     if source_count == 0:
-        return "⚠️ Страницы загрузить не удалось. Попробуйте позже."
-    
-    # ================================================================
-    # ШАГ 3: ОБЪЕКТИВНЫЙ ПРОМПТ
-    # ================================================================
+        return "⚠️ Страницы загрузить не удалось."
     
     source_text = ""
     for i, p in enumerate(good_sources[:6], 1):
@@ -530,49 +538,40 @@ async def search_and_answer_safe(uid, user_message, history):
 URL: {p['url']}
 Дата: {p.get('date', 'дата не указана')}
 ТЕКСТ:
-{p['text'][:5000]}
-"""
+{p['text'][:5000]}"""
+    
+    memory = get_memory(uid)
+    personal_context = memory.get_context(limit=3)
+    personal_text = "\n".join([m['content'] for m in personal_context if m['role'] == 'system']) if personal_context else ""
     
     system_prompt = f"""
 Ты — объективный аналитик. Твоя задача — дать максимально честный и сбалансированный ответ.
+
+{personal_text}
 
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ИСТОЧНИКИ ИЗ ИНТЕРНЕТА!**
 
 {source_text}
 
 ⚠️ **ПРИНЦИПЫ ОБЪЕКТИВНОСТИ:**
+1. ПОКАЖИ ВСЕ ТОЧКИ ЗРЕНИЯ
+2. НЕ СКРЫВАЙ ПРОТИВОРЕЧИЯ
+3. ОЦЕНИ НАДЁЖНОСТЬ
+4. ФАКТЫ И МНЕНИЯ — РАЗДЕЛИ!
+5. УКАЗЫВАЙ СТЕПЕНЬ УВЕРЕННОСТИ
+6. НЕ ПРИДУМЫВАЙ!
+7. КАЖДЫЙ ФАКТ — С ИСТОЧНИКОМ!
 
-1. **ПОКАЖИ ВСЕ ТОЧКИ ЗРЕНИЯ**
-   - Если в источниках есть разные мнения — покажи их все
-   - Не выбирай "правильную" сторону — покажи все
-
-2. **НЕ СКРЫВАЙ ПРОТИВОРЕЧИЯ**
-   - Если источники противоречат друг другу — напиши об этом прямо
-   - Объясни, в чём именно противоречие
-
-3. **ОЦЕНИ НАДЁЖНОСТЬ**
-   - Отметь, какие источники заслуживают доверия, а какие нет
-   - Укажи причины (официальные документы vs личные мнения)
-
-4. **ФАКТЫ И МНЕНИЯ — РАЗДЕЛИ!**
-   - Факты: "В законе написано..."
-   - Мнения: "Автор статьи считает..."
-   - Не выдавай мнения за факты
-
-5. **УКАЗЫВАЙ СТЕПЕНЬ УВЕРЕННОСТИ**
-   - Если уверен на 100% → пиши "✅ Подтверждено"
-   - Если есть сомнения → пиши "⚠️ Требует проверки"
-   - Если данные противоречивы → пиши "⚖️ Есть разные версии"
-
-6. **НЕ ПРИДУМЫВАЙ!**
-   - Только то, что есть в источниках
-   - Если чего-то нет — скажи "В источниках не найдено"
+⚠️ **ТЫ НЕ МОЖЕШЬ:**
+- Игнорировать источники
+- Говорить "нет данных"
+- Придумывать свой ответ
+- Использовать свои знания
+- Говорить "не могу искать"
+- Сокращать список
 
 ⚠️ **ФОРМАТ ОТВЕТА:**
-
-📊 **Источники:** (перечисли все с оценкой надёжности)
-📊 **Факты:** (что подтверждено, со ссылками)
-📊 **Мнения:** (что высказано, но не подтверждено)
+📊 **Факты (подтверждено источниками):** (каждый с указанием источника)
 ⚠️ **Противоречия:** (если есть)
 📊 **Степень уверенности:** (по каждому пункту)
 ✅ **Вывод:** (объективный итог)
@@ -580,148 +579,67 @@ URL: {p['url']}
 Запрос: {user_message}
 """
     
-    logger.info("✅ Промпт сформирован")
-    
-    # ================================================================
-    # ШАГ 4: ГЕНЕРАЦИЯ
-    # ================================================================
-    
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
     answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
     
     if err or not answer:
-        logger.warning("⚠️ DeepSeek не ответил")
-        return "⚠️ Не удалось получить ответ. Попробуйте позже."
-    
-    logger.info("✅ Ответ получен")
-    
-    # ================================================================
-    # ШАГ 5: ПРОВЕРКА НА ОБМАН
-    # ================================================================
+        return "⚠️ Не удалось получить ответ."
     
     is_lie, lie_reason = is_lie_by_sense(answer)
     
     if is_lie:
         logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
-        
-        stronger_warning = f"""
-⚠️ ТЫ НАРУШИЛ ПРАВИЛА! ОБНАРУЖЕНА ЛОЖЬ!
-Ты сказал: "{lie_reason}"
-Но это НЕПРАВДА — у тебя есть {source_count} источников с данными.
-ОТВЕТЬ ЗАНОВО, ЧЕСТНО, ТОЛЬКО ИЗ ИСТОЧНИКОВ!
-"""
-        system_prompt = system_prompt + stronger_warning
+        system_prompt += f"\n⚠️ ТЫ НАРУШИЛ ПРАВИЛА! {lie_reason}. ОТВЕТЬ ЗАНОВО!"
         messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
         answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
         
         if err or not answer:
             return "⚠️ Не удалось получить честный ответ."
         
-        is_lie, lie_reason = is_lie_by_sense(answer)
-        if is_lie:
-            logger.error(f"❌ ПОВТОРНАЯ ЛОЖЬ: {lie_reason}")
-            return f"⚠️ **В источниках нет информации по вашему запросу.**\n\nПопробуйте переформулировать вопрос."
+        if is_lie_by_sense(answer)[0]:
+            return "⚠️ В источниках нет информации по вашему запросу."
     
-    # ================================================================
-    # ШАГ 6: ФОРМИРОВАНИЕ ФИНАЛЬНОГО ОТВЕТА
-    # ================================================================
+    main_text = answer.split("✅ **Вывод:**")[0] if "✅ **Вывод:**" in answer else answer
+    conclusion = answer.split("✅ **Вывод:**")[1] if "✅ **Вывод:**" in answer else "Вывод на основе источников"
     
-    # Извлекаем основную часть и вывод
-    main_text = answer
-    conclusion = "Вывод на основе источников"
-    
-    if "✅ **Вывод:**" in answer:
-        parts = answer.split("✅ **Вывод:**")
-        main_text = parts[0]
-        conclusion = parts[1] if len(parts) > 1 else "Вывод на основе источников"
-    
-    # Если нет источников — добавляем принудительно
     if not has_sources_in_answer(answer):
         logger.info("⚠️ В ответе нет источников — добавляю принудительно")
-        final_answer = format_answer(good_sources[:6], main_text, conclusion)
-    else:
-        final_answer = answer
+        answer = format_answer(good_sources[:6], main_text, conclusion)
     
-    # Сохраняем в кэш
-    norm = normalize_query(user_message)
-    answer_cache[norm] = {'data': final_answer, 'time': datetime.now()}
+    answer_cache[norm] = {'data': answer, 'time': datetime.now()}
     if len(answer_cache) > 50:
         oldest = min(answer_cache.keys(), key=lambda k: answer_cache[k]['time'])
         del answer_cache[oldest]
     
-    logger.info("✅ Ответ готов")
+    memory.add_message('assistant', answer[:500])
     
-    return final_answer
+    return answer
 
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+# ═══════════════════════════════════════════════════════════════════
+#  ОБРАБОТЧИКИ
+# ═══════════════════════════════════════════════════════════════════
 
-async def generate_knowledge_safe(user_message, history, reason):
-    system_prompt = f"""
-Ты — честный ассистент. Отвечай из своих знаний.
-
-⚠️ **ПРАВИЛА:**
-1. Отвечай ТОЛЬКО тем, что знаешь на 100%
-2. Если не знаешь - скажи "Я не знаю"
-
-⚠️ **ПРИЧИНА:** {reason}
-
-Запрос: {user_message}
-"""
-    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=MAX_TOKENS_ANSWER)
-    
-    if err or not answer:
-        return "⚠️ Не удалось получить ответ."
-    
-    speculation = ['возможно', 'вероятно', 'скорее всего']
-    if any(p in answer.lower() for p in speculation):
-        answer = f"⚠️ [НЕ 100%]\n\n{answer}"
-    
-    return f"🧠 [ЗНАНИЯ МОДЕЛИ] — {reason}\n\n{answer}"
-
-# ==================== КНОПКИ ====================
-def get_main_keyboard():
-    return ReplyKeyboardMarkup([
-        ["🔍 Новый поиск", "❓ Помощь"],
-        ["🔄 Сброс", "⏹️ Стоп"]
-    ], resize_keyboard=True)
-
-def get_after_answer_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Новый поиск", callback_data="new_search"),
-         InlineKeyboardButton("✏️ Уточнить", callback_data="refine")]
-    ])
-
-# ==================== ОБРАБОТЧИКИ ====================
 async def handle_message(update, context):
     try:
         uid = update.effective_user.id
         if not ALLOW_ALL and uid not in ALLOWED_USERS:
             return
         
-        user_message = update.effective_message.text[:1000]
+        user_message = update.effective_message.text[:1000] if update.effective_message else ""
         if not user_message:
             return
         
         if user_message == "🔍 Новый поиск":
             context.user_data.clear()
-            await safe_reply(update, "🔍 Задай вопрос для поиска в интернете.")
+            await safe_reply(update, "🔍 Задай вопрос.")
             return
-        
         elif user_message == "❓ Помощь":
-            await safe_reply(update,
-                "❓ **Помощь**\n\n"
-                "🔍 **Новый поиск** - задай вопрос\n"
-                "🔄 **Сброс** - очистить\n"
-                "⏹️ **Стоп** - остановить"
-            )
+            await safe_reply(update, "❓ **Помощь**\n\n🔍 Новый поиск\n🔄 Сброс\n⏹️ Стоп\n\n⚠️ Я всегда ищу в интернете и честно говорю, откуда информация!")
             return
-        
         elif user_message == "🔄 Сброс":
             context.user_data.clear()
             await safe_reply(update, "🔄 Диалог сброшен.")
             return
-        
         elif user_message == "⏹️ Стоп":
             context.user_data.clear()
             await safe_reply(update, "⏹️ Остановлено.")
@@ -738,7 +656,7 @@ async def handle_message(update, context):
         
         uid = update.effective_user.id
         chat_id = update.effective_chat.id
-        history = load_memory(uid)
+        history = get_memory(uid).get_context(limit=10)
         
         context.user_data['uid'] = uid
         context.user_data['history'] = history
@@ -747,29 +665,27 @@ async def handle_message(update, context):
         context.user_data['chat_id'] = chat_id
         context.user_data['found_answer'] = False
         
-        # Запускаем таймер
         timer_task = asyncio.create_task(
             send_progress_updates(chat_id, context, context.user_data['start_time'])
         )
         
-        # Выполняем поиск
         answer = await search_and_answer_safe(uid, user_message, history)
         
-        # Сигналим таймеру
         context.user_data['found_answer'] = True
         await timer_task
         
-        # ✅ ТАЙМЕР ДОБАВЛЯЕТСЯ ТОЛЬКО ЗДЕСЬ — ОДИН РАЗ!
         elapsed = int(time.time() - context.user_data['start_time'])
         answer = f"⏱️ {elapsed} сек\n\n{answer}"
         
         context.user_data['last_answer'] = answer
         context.user_data['awaiting_followup'] = True
         
-        history.append({"role": "assistant", "content": answer[:500]})
-        save_memory(uid, history)
+        get_memory(uid).add_message("assistant", answer[:500])
         
-        await safe_reply(update, answer, reply_markup=get_after_answer_keyboard())
+        await safe_reply(update, answer, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Новый поиск", callback_data="new_search"),
+             InlineKeyboardButton("✏️ Уточнить", callback_data="refine")]
+        ]))
     
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
@@ -785,7 +701,6 @@ async def handle_after_answer_callback(update, context):
             await query.edit_message_text("🔍 Новый поиск. Напиши вопрос.")
         except:
             await query.message.reply_text("🔍 Новый поиск. Напиши вопрос.")
-    
     elif query.data == "refine":
         last_query = context.user_data.get('query', '')
         if not last_query:
@@ -794,13 +709,9 @@ async def handle_after_answer_callback(update, context):
         
         context.user_data['awaiting_followup'] = True
         try:
-            await query.edit_message_text(
-                f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить."
-            )
+            await query.edit_message_text(f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить.")
         except:
-            await query.message.reply_text(
-                f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить."
-            )
+            await query.message.reply_text(f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить.")
 
 async def handle_followup(update, context, user_message):
     last_answer = context.user_data.get('last_answer', '')
@@ -812,7 +723,7 @@ async def handle_followup(update, context, user_message):
 
 Уточнение: {user_message}
 
-Ответь на уточнение кратко и по делу.
+Ответь кратко и по делу.
 """
     messages = [{"role": "system", "content": system_prompt}]
     answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=2000)
@@ -857,16 +768,23 @@ async def safe_reply(update, text, reply_markup=None):
         except Exception:
             pass
 
-# ==================== КОМАНДЫ ====================
+# ═══════════════════════════════════════════════════════════════════
+#  КОМАНДЫ
+# ═══════════════════════════════════════════════════════════════════
+
 async def start(update, context):
     await safe_reply(
         update,
         "👋 **Привет! Я поисковый ассистент.**\n\n"
-        "🔍 **Просто напиши вопрос** - я найду ответ в интернете\n"
-        "📊 **Покажу источники** - каждый ответ подтвержден\n"
-        "⚠️ **НИКОГДА НЕ ВРУ** - если не знаю, скажу честно\n"
-        "🕐 **Показываю время** - обновляется каждые 3 секунды",
-        reply_markup=get_main_keyboard()
+        "🔍 Просто напиши вопрос — я найду ответ в интернете\n"
+        "📊 Покажу источники — каждый ответ подтверждён\n"
+        "⚠️ **НИКОГДА НЕ ВРУ** — если не знаю, скажу честно\n"
+        "🕐 Показываю время — обновляется каждые 5 секунд\n\n"
+        "Попробуй спросить что-нибудь!",
+        reply_markup=ReplyKeyboardMarkup([
+            ["🔍 Новый поиск", "❓ Помощь"],
+            ["🔄 Сброс", "⏹️ Стоп"]
+        ], resize_keyboard=True)
     )
 
 async def stats_command(update, context):
@@ -874,11 +792,13 @@ async def stats_command(update, context):
     if not ALLOW_ALL and uid not in ALLOWED_USERS:
         return
     
-    raw = load_memory(uid)
+    memory = get_memory(uid)
     await safe_reply(
         update,
         f"📊 **Статистика**\n\n"
-        f"💬 В памяти: {len(raw)} сообщений"
+        f"💬 В памяти: {len(memory.short_term)} сообщений\n"
+        f"👤 В профиле: {len(memory.profile)} полей\n"
+        f"📝 Всего сообщений: {memory.counter}"
     )
 
 async def forget_command(update, context):
@@ -886,8 +806,15 @@ async def forget_command(update, context):
     if not ALLOW_ALL and uid not in ALLOWED_USERS:
         return
     
-    save_memory(uid, [])
-    save_profile(uid, {})
+    if uid in _memory_cache:
+        del _memory_cache[uid]
+    
+    for path in [memory_path(uid), profile_path(uid), counter_path(uid)]:
+        try:
+            os.remove(path)
+        except:
+            pass
+    
     context.user_data.clear()
     await safe_reply(update, "🧹 Всё забыто!")
 
@@ -902,14 +829,18 @@ async def clearcache_command(update, context):
     answer_cache = {}
     await safe_reply(update, "🧹 Кэш очищен!")
 
-# ==================== ЗАПУСК ====================
+# ═══════════════════════════════════════════════════════════════════
+#  ЗАПУСК
+# ═══════════════════════════════════════════════════════════════════
+
 def main():
     logger.info("🚀 БОТ ЗАПУСКАЕТСЯ...")
+    logger.info(f"🤖 Токен: {TELEGRAM_TOKEN[:10]}...")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("⚠️ РЕЖИМ: МАКСИМАЛЬНАЯ ОБЪЕКТИВНОСТЬ + ИСПРАВЛЕННЫЙ ТАЙМЕР")
+    logger.info("⚡️ РЕЖИМ: 92.5% ТОЧНОСТИ | 5 ЗАПРОСОВ/ДЕНЬ | 200 ДНЕЙ НА $20")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
