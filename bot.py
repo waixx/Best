@@ -1,6 +1,6 @@
 # ===================================================================
-#  BROWAIX BOT — УНИВЕРСАЛЬНЫЙ СУПЕР-БОТ
-#  Интеллектуальный парсинг + Трёхуровневая стратегия + Защита от вранья
+#  BROWAIX BOT — ОПТИМИЗИРОВАННАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  Быстро, качественно, универсально
 # ===================================================================
 
 import logging
@@ -48,9 +48,9 @@ ALLOW_ALL = not ALLOWED_USERS
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-SEARCH_RESULTS_NUM = 30
-MAX_HTML_LEN = 25000
-MAX_TOKENS_ANSWER = 12000
+SEARCH_RESULTS_NUM = 25
+MAX_HTML_LEN = 15000
+MAX_TOKENS_ANSWER = 8000
 CACHE_TTL = 3600
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
@@ -168,13 +168,12 @@ def normalize_query(query):
         return ""
     return re.sub(r'[^\w\s]', '', query.lower())[:100]
 
-# ==================== ПАРСИНГ ====================
+# ==================== ПАРСИНГ (ОПТИМИЗИРОВАННЫЙ) ====================
 def clean_html_text(html: str) -> str:
     text = re.sub(r'<[^>]+>', ' ', html)
     text = re.sub(r'\s+', ' ', text).strip()
     text = re.sub(r'\{[^}]*\}', '', text)
     text = re.sub(r'function\s*\([^)]*\)\s*\{[^}]*\}', '', text)
-    text = re.sub(r'"[^"]*":\s*"[^"]*"', '', text)
     
     lines = []
     for line in text.split('. '):
@@ -184,7 +183,7 @@ def clean_html_text(html: str) -> str:
         if len(line) > 20:
             lines.append(line)
     
-    return '. '.join(lines[:50])
+    return '. '.join(lines[:40])
 
 def extract_date_from_html(html: str) -> str:
     patterns = [
@@ -204,8 +203,8 @@ def extract_date_from_html(html: str) -> str:
             return date
     return "дата не указана"
 
-# ==================== ЗАГРУЗКА ====================
-async def fetch_content(url: str, timeout: int = 20):
+# ==================== ЗАГРУЗКА (ОПТИМИЗИРОВАННАЯ) ====================
+async def fetch_content(url: str, timeout: int = 15):
     if url in html_cache:
         cached = html_cache[url]
         return cached.get("text", ""), cached.get("date", "дата не указана")
@@ -252,7 +251,7 @@ async def fetch_content(url: str, timeout: int = 20):
     
     return "", "дата не указана"
 
-async def fetch_multiple_pages(links, max_pages=10):
+async def fetch_multiple_pages(links, max_pages=6):  # 🔥 УМЕНЬШЕНО ДО 6
     if not links:
         return []
     
@@ -363,7 +362,7 @@ async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, 
             f"{DEEPSEEK_API_BASE}/chat/completions",
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
             json=payload,
-            timeout=60
+            timeout=45
         ) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -420,20 +419,12 @@ async def send_progress_updates(chat_id, context, start_time):
         logger.error(f"❌ Ошибка таймера: {e}")
     return message
 
-# ==================== ПРОВЕРКА НА ОБМАН ====================
-
-def has_sources_in_answer(text: str) -> bool:
-    """Проверяет, есть ли в ответе перечисление источников"""
-    patterns = [r'Источник \d+', r'источник \d+', r'📊 .*источник', r'http', r'www\.', r'🔗']
-    for pattern in patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return True
-    return False
+# ==================== ПРОВЕРКА НА ОБМАН (ПО СМЫСЛУ) ====================
 
 def is_lie_by_sense(text: str) -> Tuple[bool, str]:
     """
     Проверяет СМЫСЛ ответа — это ложь или нет?
-    Возвращает: (True/False, причина)
+    Универсально для любых запросов.
     """
     text_lower = text.lower()
     
@@ -442,17 +433,15 @@ def is_lie_by_sense(text: str) -> Tuple[bool, str]:
         # "Нет данных" — в любом виде
         (r'нет\s*(никаких|каких-либо|достаточных)?\s*данных', "Утверждает, что нет данных (хотя они есть)"),
         (r'нет\s*(никакой|какой-либо)\s*информации', "Утверждает, что нет информации (хотя она есть)"),
-        (r'не\s*(содержат|имеют)\s*конкретных\s*названий', "Утверждает, что нет конкретных данных (хотя они есть)"),
         (r'в\s*источниках\s*нет', "Утверждает, что в источниках нет данных (ложь!)"),
         (r'ничего\s*не\s*найдено', "Утверждает, что ничего не найдено (ложь!)"),
         (r'не\s*удалось\s*найти', "Утверждает, что не удалось найти (ложь!)"),
         
         # "Невозможно" — в любом виде
-        (r'невозможно\s*(составить|сделать|определить|найти)', "Утверждает, что невозможно (хотя возможно!)"),
-        (r'не\s*представляется\s*возможным', "Утверждает, что невозможно (хотя возможно!)"),
+        (r'невозможно\s*(составить|сделать|определить|найти|получить)', "Утверждает, что невозможно (хотя возможно!)"),
         
-        # "Свой список" — в любом виде
-        (r'(привожу|даю|предлагаю|составляю)\s*(свой|собственный)\s*(список|перечень)', "Придумывает свой список вместо источников!"),
+        # "Свой ответ" — в любом виде
+        (r'(привожу|даю|предлагаю|составляю)\s*(свой|собственный)\s*(список|перечень|ответ)', "Придумывает свой ответ вместо источников!"),
         (r'на\s*основе\s*(моих|своих)\s*знаний', "Использует свои знания вместо источников!"),
         (r'моя\s*база\s*знаний', "Использует свою базу знаний вместо источников!"),
         
@@ -462,7 +451,6 @@ def is_lie_by_sense(text: str) -> Tuple[bool, str]:
         
         # Общие отрицания
         (r'к\s*сожалению', "Начинает с 'к сожалению' — признак обмана"),
-        (r'извините', "Начинает с 'извините' — признак обмана"),
     ]
     
     for pattern, reason in lie_patterns:
@@ -471,13 +459,13 @@ def is_lie_by_sense(text: str) -> Tuple[bool, str]:
     
     return False, ""
 
-# ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
+# ==================== ОСНОВНАЯ ФУНКЦИЯ (ОПТИМИЗИРОВАННАЯ) ====================
 
 async def search_and_answer_safe(uid, user_message, history):
     logger.info(f"🛡️ ЗАПРОС: {user_message[:50]}")
     
     # ================================================================
-    # ШАГ 1: ПОИСК
+    # ШАГ 1: ПОИСК (БЫСТРЫЙ)
     # ================================================================
     
     if not APISERPENT_API_KEY and not SERPER_API_KEY:
@@ -490,7 +478,7 @@ async def search_and_answer_safe(uid, user_message, history):
         results = await search_primary(variant)
         if results:
             all_results.extend(results)
-            if len(all_results) >= 20:
+            if len(all_results) >= 15:  # 🔥 УМЕНЬШЕНО ДО 15
                 break
     
     if not all_results:
@@ -499,96 +487,65 @@ async def search_and_answer_safe(uid, user_message, history):
     logger.info(f"✅ Найдено {len(all_results)} результатов")
     
     # ================================================================
-    # ШАГ 2: ЗАГРУЗКА
+    # ШАГ 2: ЗАГРУЗКА (ТОЛЬКО ЛУЧШИЕ)
     # ================================================================
     
-    links = [r['link'] for r in all_results[:15]]
-    pages = await fetch_multiple_pages(links, max_pages=10)
+    links = [r['link'] for r in all_results[:10]]  # 🔥 УМЕНЬШЕНО ДО 10
+    pages = await fetch_multiple_pages(links, max_pages=6)  # 🔥 УМЕНЬШЕНО ДО 6
     
-    good_sources = [p for p in pages if len(p.get('text', '')) > 200]
+    good_sources = [p for p in pages if len(p.get('text', '')) > 300]  # 🔥 ПОВЫШЕНО ДО 300
     source_count = len(good_sources)
     
     logger.info(f"✅ Загружено {len(pages)} страниц, качественных {source_count}")
     
     if source_count == 0:
-        return "⚠️ Страницы загрузить не удалось. Попробуйте позже или переформулируйте запрос."
+        return "⚠️ Страницы загрузить не удалось. Попробуйте позже."
     
     # ================================================================
-    # ШАГ 3: ПРОМПТ — УНИВЕРСАЛЬНЫЙ СУПЕР-ПАРСИНГ
+    # ШАГ 3: ПРОМПТ (УНИВЕРСАЛЬНЫЙ, ПО СМЫСЛУ)
     # ================================================================
     
-    source_text = "⚠️ **ТЕКСТ СТРАНИЦ ДЛЯ АНАЛИЗА:**\n\n"
-    for i, p in enumerate(good_sources[:10], 1):
-        page_title = p.get('title', 'не указано')
-        if not page_title or page_title == 'не указано':
-            url_parts = p['url'].split('/')
-            page_title = url_parts[-1] if url_parts else 'не указано'
-        
+    source_text = ""
+    for i, p in enumerate(good_sources[:6], 1):
         source_text += f"""
 --- СТРАНИЦА {i} ---
 URL: {p['url']}
-Название: {page_title}
 Дата: {p.get('date', 'дата не указана')}
 ТЕКСТ:
-{p['text'][:6000]}
+{p['text'][:5000]}
 """
     
     system_prompt = f"""
-Ты — универсальный аналитик и парсер. Твоя задача — найти в тексте ЛЮБЫЕ данные, которые помогут ответить на вопрос пользователя.
+Ты — универсальный аналитик. Твоя задача — найти в тексте ЛЮБЫЕ данные и ответить на вопрос.
 
-⚠️ **ТЕКСТ МОЖЕТ СОДЕРЖАТЬ ЧТО УГОДНО:**
-- Списки (нумерованные, маркированные, с точками, с тире)
-- Таблицы (данные в строках и столбцах)
-- Описания (характеристики, свойства, факты)
-- Инструкции (шаги, действия, последовательности)
-- Цифры (цены, даты, количества, проценты)
-- Названия (фильмов, товаров, книг, событий)
-- Имена, события, термины, определения
-- Сравнения, рейтинги, обзоры
-
-⚠️ **ТВОЙ АЛГОРИТМ ДЕЙСТВИЙ:**
-1. Проанализируй ВЕСЬ текст
-2. Найди ЛЮБУЮ СТРУКТУРУ (списки, таблицы, повторяющиеся элементы)
+⚠️ **ТВОЙ АЛГОРИТМ:**
+1. Прочитай ВЕСЬ текст
+2. Найди ЛЮБУЮ СТРУКТУРУ (списки, нумерацию, пункты, таблицы, шаги)
 3. Извлеки данные, которые отвечают на запрос
-4. Определи ТИП данных (список, инструкция, сравнение, факты)
+4. Определи ТИП данных (список, инструкция, описание, факты, цены)
 5. Построй ОТВЕТ, используя найденную структуру
 
-⚠️ **ТРЁХУРОВНЕВАЯ СТРАТЕГИЯ ОТВЕТА:**
+⚠️ **ГЛАВНОЕ:**
+Ты НЕ ДОЛЖЕН говорить "нет данных" — ОНИ ВСЕГДА ЕСТЬ!
+Ты должен найти их в тексте!
 
-**УРОВЕНЬ 1: ИНТЕРНЕТ**
-→ Используй ТОЛЬКО данные из источников
-→ Перечисли, что взято из каждого источника
-→ Если в источниках есть ответ — выдай его полностью
-
-**УРОВЕНЬ 2: ЗНАНИЯ** (только если нужно)
-→ Если в источниках мало информации — ДОПОЛНИ своими знаниями
-→ Если дополняешь — ОБЯЗАТЕЛЬНО отметь 🧠 [ЗНАНИЯ МОДЕЛИ]
-→ НЕЛЬЗЯ выдавать знания за интернет-факты
-
-**УРОВЕНЬ 3: ЧЕСТНОСТЬ**
-→ Если ни в интернете, ни в знаниях нет ответа — скажи "Я не знаю"
-→ Если данные устарели — скажи "📅 Данные могут быть устаревшими"
-
-⚠️ **ЗАПРЕЩЕНО (ЭТО ЛОЖЬ!):**
-- Говорить "нет данных" — ОНИ ЕСТЬ!
-- Говорить "невозможно" — ЭТО ВОЗМОЖНО!
-- Выдавать знания за интернет-факты
-- Придумывать то, чего нет в источниках
-- Скрывать, что данные из знаний
+⚠️ **НЕЛЬЗЯ:**
+- Игнорировать структуру
+- Пропускать данные
+- Сдаваться
 
 ⚠️ **ФОРМАТ ОТВЕТА:**
-📊 **Источники:** (перечисли ВСЕ, откуда взял интернет-данные)
-📊 **Из интернета:** (что взято из источников)
-🧠 **Дополнено из знаний:** (что добавил, если добавлял)
-📅 **Актуальность:** (если данные старые)
+📊 **Источники:** (перечисли, откуда взял данные)
+📊 **Ответ:** (твой ответ на основе найденного)
 ✅ **Вывод:**
 
-Запрос пользователя: {user_message}
+Запрос: {user_message}
 
+ТЕКСТ ДЛЯ АНАЛИЗА:
 {source_text}
 """
     
-    logger.info("✅ Промпт сформирован (универсальный супер-парсинг)")
+    logger.info("✅ Промпт сформирован")
     
     # ================================================================
     # ШАГ 4: ГЕНЕРАЦИЯ
@@ -604,7 +561,7 @@ URL: {p['url']}
     logger.info("✅ Ответ получен")
     
     # ================================================================
-    # ШАГ 5: ПРОВЕРКА НА ОБМАН
+    # ШАГ 5: ПРОВЕРКА НА ОБМАН (ПО СМЫСЛУ)
     # ================================================================
     
     is_lie, lie_reason = is_lie_by_sense(answer)
@@ -612,66 +569,41 @@ URL: {p['url']}
     if is_lie:
         logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
         
-        # Перезапрашиваем с усиленным предупреждением
         stronger_warning = f"""
-⚠️ **ТЫ НАРУШИЛ ПРАВИЛА! ОБНАРУЖЕНА ЛОЖЬ!**
-
+⚠️ ТЫ НАРУШИЛ ПРАВИЛА! ОБНАРУЖЕНА ЛОЖЬ!
 Ты сказал: "{lie_reason}"
-
-Но это НЕПРАВДА, потому что:
-- У тебя есть {source_count} источников
-- В них есть данные
-- Ты можешь найти ответ
-
-**ОТВЕТЬ ЗАНОВО, ЧЕСТНО, ТОЛЬКО ИЗ ИСТОЧНИКОВ!**
+Но это НЕПРАВДА — у тебя есть {source_count} источников с данными.
+ОТВЕТЬ ЗАНОВО, ЧЕСТНО, ТОЛЬКО ИЗ ИСТОЧНИКОВ!
 """
         system_prompt = system_prompt + stronger_warning
         messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
         answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
         
         if err or not answer:
-            return "⚠️ Не удалось получить честный ответ. Попробуйте позже."
+            return "⚠️ Не удалось получить честный ответ."
         
-        # Проверяем снова
         is_lie, lie_reason = is_lie_by_sense(answer)
         if is_lie:
             logger.error(f"❌ ПОВТОРНАЯ ЛОЖЬ: {lie_reason}")
-            return f"⚠️ **Я не могу найти ответ в источниках.**\n\nИсточники загружены, но в них нет информации по вашему запросу.\n\nПопробуйте переформулировать вопрос или задать его иначе."
+            return f"⚠️ **В источниках нет информации по вашему запросу.**\n\nПопробуйте переформулировать вопрос."
     
     logger.info("✅ Проверка пройдена — ответ честный")
-    
-    # ================================================================
-    # ШАГ 6: МАРКЕР
-    # ================================================================
-    
-    mode_labels = {
-        "internet_only": "🌐 [ИНТЕРНЕТ]",
-        "hybrid": "🔍 [ГИБРИД: ИНТЕРНЕТ + ЗНАНИЯ]",
-    }
-    
-    if not any(label in answer for label in mode_labels.values()):
-        answer = f"🌐 [ИНТЕРНЕТ]\n\n{answer}"
-    
-    logger.info("✅ Ответ готов!")
     
     return answer
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
 async def generate_knowledge_safe(user_message, history, reason):
-    """Ответ из знаний модели — только если нет источников"""
     system_prompt = f"""
 Ты — честный ассистент. Отвечай из своих знаний.
 
 ⚠️ **ПРАВИЛА:**
 1. Отвечай ТОЛЬКО тем, что знаешь на 100%
 2. Если не знаешь - скажи "Я не знаю"
-3. Если данные старые - напиши "📅 Данные могут быть устаревшими"
 
 ⚠️ **ПРИЧИНА:** {reason}
 
 Запрос: {user_message}
-Сегодня: {get_current_date()}
 """
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
     answer, err = await ask_deepseek(messages, temperature=0.0, max_tokens=MAX_TOKENS_ANSWER)
@@ -679,7 +611,7 @@ async def generate_knowledge_safe(user_message, history, reason):
     if err or not answer:
         return "⚠️ Не удалось получить ответ."
     
-    speculation = ['возможно', 'вероятно', 'скорее всего', 'должно быть']
+    speculation = ['возможно', 'вероятно', 'скорее всего']
     if any(p in answer.lower() for p in speculation):
         answer = f"⚠️ [НЕ 100%]\n\n{answer}"
     
@@ -709,7 +641,6 @@ async def handle_message(update, context):
         if not user_message:
             return
         
-        # Кнопки меню
         if user_message == "🔍 Новый поиск":
             context.user_data.clear()
             await safe_reply(update, "🔍 Задай вопрос для поиска в интернете.")
@@ -718,8 +649,8 @@ async def handle_message(update, context):
         elif user_message == "❓ Помощь":
             await safe_reply(update,
                 "❓ **Помощь**\n\n"
-                "🔍 **Новый поиск** - задай вопрос, я найду в интернете\n"
-                "🔄 **Сброс** - очистить диалог\n"
+                "🔍 **Новый поиск** - задай вопрос\n"
+                "🔄 **Сброс** - очистить\n"
                 "⏹️ **Стоп** - остановить\n\n"
                 "⚠️ **Я всегда ищу в интернете и честно говорю, откуда информация!**"
             )
@@ -738,14 +669,12 @@ async def handle_message(update, context):
         if user_message.startswith('/'):
             return
         
-        # Уточнение
         if context.user_data.get('awaiting_followup'):
             answer = await handle_followup(update, context, user_message)
             if answer:
                 await safe_reply(update, answer)
             return
         
-        # НОВЫЙ ЗАПРОС
         uid = update.effective_user.id
         chat_id = update.effective_chat.id
         history = load_memory(uid)
@@ -757,26 +686,21 @@ async def handle_message(update, context):
         context.user_data['chat_id'] = chat_id
         context.user_data['found_answer'] = False
         
-        # Запускаем таймер
         timer_task = asyncio.create_task(
             send_progress_updates(chat_id, context, context.user_data['start_time'])
         )
         
-        # Выполняем поиск
         answer = await search_and_answer_safe(uid, user_message, history)
         
-        # Сигналим таймеру
         context.user_data['found_answer'] = True
         await timer_task
         
-        # Добавляем время
         elapsed = int(time.time() - context.user_data['start_time'])
         answer = f"⏱️ {elapsed} сек\n\n{answer}"
         
         context.user_data['last_answer'] = answer
         context.user_data['awaiting_followup'] = True
         
-        # Сохраняем в память
         history.append({"role": "assistant", "content": answer[:500]})
         save_memory(uid, history)
         
@@ -824,11 +748,6 @@ async def handle_followup(update, context, user_message):
 Уточнение: {user_message}
 
 Ответь на уточнение кратко и по делу.
-
-⚠️ **ПРАВИЛА:**
-1. Не используй слова "возможно", "вероятно" без ⚠️ [НЕ 100%]
-2. Если не знаешь - скажи "Я не знаю"
-3. Будь честным
 """
     messages = [{"role": "system", "content": system_prompt}]
     answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=2000)
@@ -843,7 +762,6 @@ async def handle_followup(update, context, user_message):
     return answer
 
 async def safe_reply(update, text, reply_markup=None):
-    """Безопасная отправка с разбивкой длинных сообщений"""
     if not text:
         text = "⚠️ Пустой ответ."
     msg = update.effective_message
@@ -886,7 +804,6 @@ async def start(update, context):
         "🔍 **Просто напиши вопрос** - я найду ответ в интернете\n"
         "📊 **Покажу источники** - каждый ответ подтвержден\n"
         "⚠️ **НИКОГДА НЕ ВРУ** - если не знаю, скажу честно\n"
-        "🧠 **Запоминаю тебя** - становлюсь умнее с каждым вопросом\n"
         "🕐 **Показываю время** - обновляется каждые 3 секунды\n\n"
         "Попробуй спросить что-нибудь!",
         reply_markup=get_main_keyboard()
@@ -917,15 +834,11 @@ async def forget_command(update, context):
 # ==================== ЗАПУСК ====================
 def main():
     logger.info("🚀 БОТ ЗАПУСКАЕТСЯ...")
-    logger.info(f"🤖 Токен: {TELEGRAM_TOKEN[:10]}...")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("⚠️ РЕЖИМ: УНИВЕРСАЛЬНЫЙ СУПЕР-ПАРСИНГ + ТРЁХУРОВНЕВАЯ СТРАТЕГИЯ")
-    
-    if not APISERPENT_API_KEY and not SERPER_API_KEY:
-        logger.error("🚨 ВНИМАНИЕ: НЕТ API КЛЮЧЕЙ ДЛЯ ПОИСКА!")
+    logger.info("⚠️ РЕЖИМ: УНИВЕРСАЛЬНЫЙ + ОПТИМИЗИРОВАННЫЙ")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
