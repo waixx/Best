@@ -1,7 +1,6 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ИНТЕРАКТИВНАЯ ВЕРСИЯ (ИСПРАВЛЕННАЯ)
-#  КНОПКИ ПОЯВЛЯЮТСЯ ТОЛЬКО ПОСЛЕ ОТВЕТА
-#  ЕСЛИ НЕ ВЫБРАН РЕЖИМ — БОТ ПЕРЕСПРАШИВАЕТ
+#  BROWAIX BOT — ОПТИМИЗИРОВАННАЯ ВЕРСИЯ (ЧЕСТНОСТЬ №1)
+#  На основе твоего кода, с перестроенной логикой
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -78,7 +77,7 @@ def now():
     return datetime.now(TZ)
 
 # ═══════════════════════════════════════════════════════════════════
-#  КНОПКИ ТОЛЬКО ДЛЯ ПОСЛЕ ОТВЕТА
+#  КНОПКИ (ПОЯВЛЯЮТСЯ ТОЛЬКО ПОСЛЕ ОТВЕТА)
 # ═══════════════════════════════════════════════════════════════════
 
 ACTION_BUTTONS = InlineKeyboardMarkup([
@@ -153,6 +152,50 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
             await asyncio.sleep(2 + attempt * 2)
     
     return ""
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПРОВЕРКА НА ЛОЖЬ (ПО СМЫСЛУ)
+# ═══════════════════════════════════════════════════════════════════
+
+def is_lie_by_sense(text: str) -> Tuple[bool, str]:
+    """
+    Проверяет СМЫСЛ ответа — это ложь или нет?
+    Запрещены НЕ слова, а СМЫСЛЫ.
+    """
+    text_lower = text.lower()
+    
+    lie_patterns = [
+        # 1. Отрицание данных
+        (r'(нет|отсутствуют|не найдено|ничего не|не обнаружено)\s*(данных|информации|результатов)', "Отрицает наличие данных"),
+        # 2. Отрицание возможности
+        (r'(не могу|не получается|не удаётся|невозможно|не в состоянии)', "Говорит 'не могу'"),
+        # 3. Неуверенность
+        (r'(возможно|вероятно|скорее всего|наверное|похоже|кажется)', "Использует неуверенность"),
+        # 4. Субъективность
+        (r'(я считаю|я думаю|я полагаю|моё мнение|мне кажется|по моему мнению)', "Выдаёт субъективное мнение"),
+        # 5. Отказ от ответа
+        (r'(я не знаю|не могу ответить|спросите позже|уточните запрос|не могу сказать)', "Отказывается от ответа"),
+        # 6. Перекладывание ответственности
+        (r'(рекомендую обратиться|лучше проверить|обратитесь к специалисту|проконсультируйтесь)', "Перекладывает ответственность"),
+        # 7. Жалобы на объём
+        (r'(слишком много|перегружен|много информации|большой объём)', "Жалуется на объём"),
+        # 8. Отговорки
+        (r'(к сожалению|извините|прошу прощения)', "Начинает с отговорки"),
+        # 9. Зависимость от условий
+        (r'(зависит от|в зависимости от|ситуативно|контекстуально)', "Уходит от ответа"),
+        # 10. Нет доступа
+        (r'(нет\s*доступа|нет\s*интернета|не\s*могу\s*искать)', "Говорит 'нет доступа'"),
+        # 11. Свои знания
+        (r'(на\s*основе\s*(моих|своих)\s*знаний|база\s*знаний|внутренние\s*данные)', "Использует свои знания вместо источников"),
+        # 12. В источниках нет
+        (r'(в\s*источниках\s*нет|источники\s*не\s*содержат|ни\s*в\s*одном\s*источнике)', "Утверждает, что в источниках нет"),
+    ]
+    
+    for pattern, reason in lie_patterns:
+        if re.search(pattern, text_lower):
+            return True, reason
+    
+    return False, ""
 
 # ═══════════════════════════════════════════════════════════════════
 #  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
@@ -482,7 +525,7 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
         return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ (ПОЛНОСТЬЮ ДОПИСАН)
+#  ПАРСИНГ
 # ═══════════════════════════════════════════════════════════════════
 
 def extract_date_from_text(text: str) -> Optional[str]:
@@ -648,7 +691,7 @@ async def generate_query_variants(user_message: str) -> List[str]:
     return list(dict.fromkeys(variants))[:8]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА ПОИСКА И ОТВЕТА
+#  ОСНОВНАЯ ЛОГИКА (С ПРОВЕРКОЙ НА ЛОЖЬ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict]]:
@@ -658,17 +701,20 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     if not search_results:
         memory = get_memory(uid)
         context = memory.get_context(limit=5)
+        context_text = '\n'.join([m.get('content', '') for m in context])
+        
         fallback_prompt = f"""
-Ты — честный помощник. В интернете ничего не найдено.
-Ответь на основе своих знаний.
+⚠️ **ТЫ НЕ МОЖЕШЬ СКАЗАТЬ "НЕТ ДОСТУПА"!**
+
+Ты должен ответить на основе своих знаний.
 Если не знаешь — скажи честно.
 
-Вопрос: {user_message}
+Контекст: {context_text}
 
-Контекст:
-{context}
+Вопрос: {user_message}
 """
-        return await ask_deepseek(fallback_prompt, temperature=0.3), []
+        answer = await ask_deepseek(fallback_prompt, temperature=0.3)
+        return answer, []
     
     links = [r.get('link', '') for r in search_results if r.get('link')][:MAX_PAGES_TARGET]
     pages = await fetch_multiple_pages(links, max_pages=MAX_PAGES_TARGET)
@@ -676,17 +722,20 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     if not pages:
         memory = get_memory(uid)
         context = memory.get_context(limit=5)
+        context_text = '\n'.join([m.get('content', '') for m in context])
+        
         fallback_prompt = f"""
-Ты — честный помощник. Страницы загрузить не удалось.
-Ответь на основе своих знаний.
+⚠️ **ТЫ НЕ МОЖЕШЬ СКАЗАТЬ "НЕТ ДОСТУПА"!**
+
+Страницы загрузить не удалось, но ты должен ответить на основе знаний.
 Если не знаешь — скажи честно.
 
-Вопрос: {user_message}
+Контекст: {context_text}
 
-Контекст:
-{context}
+Вопрос: {user_message}
 """
-        return await ask_deepseek(fallback_prompt, temperature=0.3), []
+        answer = await ask_deepseek(fallback_prompt, temperature=0.3)
+        return answer, []
     
     memory = get_memory(uid)
     context = memory.get_context(limit=10)
@@ -703,26 +752,65 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
         if page.get('key_facts'):
             pages_text += f"Ключевые факты: {', '.join(page.get('key_facts', [])[:5])}\n"
     
+    # ═══════════════════════════════════════════════════════════════
+    #  ЖЁСТКИЙ ПРОМПТ
+    # ═══════════════════════════════════════════════════════════════
+    
     answer_prompt = f"""
-Ты — объективный аналитик. Ответь на вопрос на основе данных из интернета и своих знаний.
+⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ИСТОЧНИКИ ИЗ ИНТЕРНЕТА!**
 
-ВАЖНО: Ты НЕ ДОЛЖЕН врать. Если данных нет — скажи честно.
-Если используешь свои знания — отметь это.
+Ты ОБЯЗАН использовать их. Если ты используешь свои знания — это ЛОЖЬ.
+
+{pages_text}
+
+⚠️ **ЗАПРЕЩЕНО (ЭТО ЛОЖЬ!):**
+1. **НЕЛЬЗЯ** говорить "нет доступа к интернету"
+2. **НЕЛЬЗЯ** говорить "на основе моих знаний"
+3. **НЕЛЬЗЯ** говорить "в источниках нет"
+4. **НЕЛЬЗЯ** игнорировать источники
+5. **НЕЛЬЗЯ** придумывать свой ответ
+
+⚠️ **ЕСЛИ ТЫ НАРУШИШЬ ХОТЯ БЫ ОДИН ИЗ ЭТИХ ЗАПРЕТОВ — ТЫ СОВРЁШЬ.**
+
+⚠️ **ФОРМАТ ОТВЕТА:**
+📊 **Из источников:** (всё, что нашёл)
+📊 **Дополнено из знаний:** (только если нужно, с пометкой 🧠)
+✅ **Вывод:** (объективный итог)
 
 Вопрос: {user_message}
 
 Контекст о пользователе:
 {context_text}
-
-Данные из интернета:
-{pages_text}
-
-Ответь подробно, структурированно. Если есть список — перечисли все пункты.
 """
     
-    answer = await ask_deepseek(answer_prompt, temperature=0.3)
-    if not answer:
-        answer = "⚠️ Не удалось получить ответ. Попробуйте позже."
+    answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
+    
+    # ═══════════════════════════════════════════════════════════════
+    #  ПРОВЕРКА НА ЛОЖЬ
+    # ═══════════════════════════════════════════════════════════════
+    
+    is_lie, lie_reason = is_lie_by_sense(answer)
+    
+    if is_lie:
+        logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
+        
+        # Перезапрос с усилением
+        answer_prompt += f"\n\n⚠️ ТЫ НАРУШИЛ ПРАВИЛА! Обнаружена ложь: {lie_reason}. ОТВЕТЬ ЗАНОВО, ТОЛЬКО ИЗ ИСТОЧНИКОВ!"
+        answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
+        
+        # Если снова ложь — честный отказ с данными
+        is_lie_again, _ = is_lie_by_sense(answer)
+        if is_lie_again:
+            logger.warning("⚠️ Повторная ложь! Возвращаем честный отказ.")
+            answer = f"""
+⚠️ **Я НЕ МОГУ СОВРАТЬ.**
+
+Вот информация из источников, которую удалось найти:
+
+{pages_text[:2000]}
+
+Если вам нужен полный ответ, попробуйте переформулировать запрос или уточнить детали.
+"""
     
     return answer, search_results
 
@@ -741,13 +829,18 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['awaiting_input'] = True
         await query.edit_message_text("🔍 Введите ваш новый запрос (поиск в интернете):")
     elif action == "action_clarify":
+        last_query = context.user_data.get('last_query', '')
         last_answer = context.user_data.get('last_answer', '')
-        if not last_answer:
-            await query.edit_message_text("⚠️ Нет активного ответа для уточнения. Начните новый запрос.")
+        if not last_query:
+            await query.edit_message_text("⚠️ Нет активного запроса для уточнения. Начните новый запрос.")
             return
         context.user_data['mode'] = 'clarify'
         context.user_data['awaiting_input'] = True
-        await query.edit_message_text("📝 Напишите, что именно уточнить по предыдущему ответу:")
+        await query.edit_message_text(
+            f"📝 Уточните по вашему запросу:\n\n"
+            f"*Запрос:* {last_query}\n\n"
+            f"Напишите, что именно уточнить (например: 'только с русским дубляжем'):"
+        )
     elif action == "action_chat":
         context.user_data['mode'] = 'chat'
         context.user_data['awaiting_input'] = True
@@ -781,7 +874,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get('mode', 'search')
     context.user_data['awaiting_input'] = False
     
-    # Режим: ОБЩАЕМСЯ
+    # ═══════════════════════════════════════════════════════════════
+    #  РЕЖИМ: ОБЩАЕМСЯ
+    # ═══════════════════════════════════════════════════════════════
     if mode == 'chat':
         memory = get_memory(user_id)
         context_text = memory.get_context(limit=5)
@@ -800,29 +895,65 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer = await ask_deepseek(chat_prompt, temperature=0.7, max_tokens=MAX_TOKENS_OUTPUT)
         if not answer:
             answer = "😊 Я здесь! Что ещё хочешь обсудить?"
+        memory.add_message('user', user_message)
+        memory.add_message('assistant', answer)
         await update.effective_message.reply_text(answer, reply_markup=ACTION_BUTTONS)
         return
     
-    # Режим: УТОЧНИТЬ
+    # ═══════════════════════════════════════════════════════════════
+    #  РЕЖИМ: УТОЧНИТЬ (НОВЫЙ ПОИСК С УЧЁТОМ УТОЧНЕНИЯ)
+    # ═══════════════════════════════════════════════════════════════
     if mode == 'clarify':
-        last_answer = context.user_data.get('last_answer', '')
-        clarify_prompt = f"""
-Пользователь уточняет по предыдущему ответу.
-
-Предыдущий ответ: {last_answer}
-
-Уточнение: {user_message}
-
-Ответь кратко и по делу. Если нужно — дополни информацию.
-"""
-        answer = await ask_deepseek(clarify_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
-        if not answer:
-            answer = "⚠️ Не удалось обработать уточнение."
+        last_query = context.user_data.get('last_query', '')
+        if not last_query:
+            await update.effective_message.reply_text("⚠️ Нет активного запроса.")
+            return
+        
+        # Формируем новый уточнённый запрос
+        new_query = f"{last_query} {user_message}"
+        
+        start_time = time.time()
+        context.user_data['found_answer'] = False
+        
+        progress_task = asyncio.create_task(
+            send_progress_updates(update.effective_chat.id, context, start_time)
+        )
+        
+        answer, sources = await search_and_answer(new_query, user_id)
+        
+        context.user_data['found_answer'] = True
+        await progress_task
+        
+        elapsed = int(time.time() - start_time)
+        
+        memory = get_memory(user_id)
+        memory.add_message('user', f"Уточнение: {user_message}")
+        memory.add_message('assistant', answer)
+        
+        context.user_data['last_query'] = new_query
         context.user_data['last_answer'] = answer
-        await update.effective_message.reply_text(answer, reply_markup=ACTION_BUTTONS)
+        
+        sources_text = ""
+        if sources:
+            sources_text = "\n\n📚 **Источники:**\n"
+            for i, s in enumerate(sources[:5], 1):
+                link = s.get('link', '')
+                title = s.get('title', '')
+                if link:
+                    sources_text += f"{i}. [{title}]({link})\n"
+            if len(sources) > 5:
+                sources_text += f"\n_и ещё {len(sources)-5} источников_"
+        
+        await update.effective_message.reply_text(
+            f"⏱️ {elapsed} сек\n\n{answer}\n{sources_text}",
+            reply_markup=ACTION_BUTTONS,
+            disable_web_page_preview=True
+        )
         return
     
-    # Режим: ПОИСК (НОВЫЙ ЗАПРОС)
+    # ═══════════════════════════════════════════════════════════════
+    #  РЕЖИМ: ПОИСК (НОВЫЙ ЗАПРОС)
+    # ═══════════════════════════════════════════════════════════════
     if mode == 'search':
         start_time = time.time()
         context.user_data['found_answer'] = False
@@ -842,8 +973,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         memory.add_message('user', user_message)
         memory.add_message('assistant', answer)
         
+        context.user_data['last_query'] = user_message
+        context.user_data['last_answer'] = answer
+        
+        sources_text = ""
         if sources:
-            sources_text = "📚 **Источники:**\n"
+            sources_text = "\n\n📚 **Источники:**\n"
             for i, s in enumerate(sources[:5], 1):
                 link = s.get('link', '')
                 title = s.get('title', '')
@@ -851,14 +986,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sources_text += f"{i}. [{title}]({link})\n"
             if len(sources) > 5:
                 sources_text += f"\n_и ещё {len(sources)-5} источников_"
-        else:
-            sources_text = ""
         
-        final_text = f"⏱️ {elapsed} сек\n\n{answer}\n\n{sources_text}"
-        
-        context.user_data['last_answer'] = answer
         await update.effective_message.reply_text(
-            final_text,
+            f"⏱️ {elapsed} сек\n\n{answer}\n{sources_text}",
             reply_markup=ACTION_BUTTONS,
             disable_web_page_preview=True
         )
@@ -912,7 +1042,7 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (ИНТЕРАКТИВНАЯ ВЕРСИЯ)")
+    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (АБСОЛЮТНАЯ ЧЕСТНОСТЬ)")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
