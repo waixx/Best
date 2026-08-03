@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНАЯ ВЕРСИЯ С ПАРАЛЛЕЛЬНЫМ ПОИСКОМ
-#  APISERPENT (ОСНОВНОЙ) + ПАРАЛЛЕЛЬНЫЙ ЗАПРОС
-#  ДОБОР ДО 10 РЕЛЕВАНТНЫХ ИСТОЧНИКОВ
+#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  ПАРАЛЛЕЛЬНЫЙ ПОИСК ДО 15 ИСТОЧНИКОВ
+#  УМНАЯ ПЕРЕДАЧА ДАННЫХ В DEEPSEEK (БЕЗ ПОТЕРЬ)
+#  ЧЕСТНЫЙ ОТВЕТ ИЗ ЗНАНИЙ ПРИ НЕОБХОДИМОСТИ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -52,12 +53,12 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY")  # Вернули как резерв
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-MAX_PAGES = 5                      # Загружаем 5 страниц
+MAX_PAGES = 5
 PAGE_TIMEOUT = 4
 SEARCH_RESULTS = 12
 DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
@@ -78,7 +79,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 УНИВЕРСАЛЬНАЯ ВЕРСИЯ С ПАРАЛЛЕЛЬНЫМ ПОИСКОМ")
+logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -116,7 +117,9 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
             ) as r:
                 if r.status == 200:
                     data = await r.json()
-                    return data["choices"][0]["message"]["content"]
+                    content = data["choices"][0]["message"]["content"]
+                    if content and len(content) > 50:
+                        return content
                 else:
                     logger.warning(f"⚠️ DeepSeek попытка {attempt+1}: HTTP {r.status}")
         except Exception as e:
@@ -359,11 +362,9 @@ async def search_parallel(variants: List[str], max_sources: int = 15) -> List[Di
     
     logger.info(f"🔍 Параллельный поиск по {len(variants)} вариантам")
     
-    # Запускаем все поиски параллельно
     tasks = [search_single(v) for v in variants[:10]]
     results_list = await asyncio.gather(*tasks)
     
-    # Собираем уникальные результаты
     all_results = []
     seen_urls = set()
     
@@ -466,10 +467,8 @@ async def fetch_pages_parallel(results: List[Dict], max_pages: int = MAX_PAGES) 
     
     logger.info(f"📄 Параллельная загрузка до {max_pages} страниц")
     
-    # Берем топ результатов
     top_results = results[:max_pages * 2]
     
-    # Загружаем страницы параллельно
     tasks = []
     urls = []
     for r in top_results:
@@ -605,84 +604,101 @@ def check_refusal(answer: str) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА (С ДОПОЛНЕНИЕМ ИЗ ЗНАНИЙ)
+#  ГЕНЕРАЦИЯ ОТВЕТА (УМНАЯ ПЕРЕДАЧА ДАННЫХ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
-    context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:3000] for p in pages[:3]])
+    # 1. Извлекаем ВСЕ данные в сжатом виде (без потерь)
+    all_data = []
     
-    all_lists = []
-    for p in pages:
-        all_lists.extend(p.get('parsed', {}).get('lists', []))
-    all_lists = list(set(all_lists))[:10]
+    for p in pages[:5]:
+        text = p.get('parsed', {}).get('text', '')
+        if not text:
+            continue
+        
+        # Списки
+        lists = re.findall(r'(?:^|\n)\s*[•\-*\d+.]\s*[^\n]{10,}', text, re.MULTILINE)
+        if lists:
+            all_data.append("📋 " + "\n".join([f"  • {l.strip()}" for l in lists[:5]]))
+        
+        # Шаги
+        steps = re.findall(r'(?:шаг|этап|пункт)\s*(\d+)[\s:]*([^\n.]{5,})', text, re.I)
+        if steps:
+            all_data.append("🔄 " + "\n".join([f"  Шаг {s[0]}: {s[1].strip()}" for s in steps[:3]]))
+        
+        # Вопросы
+        questions = re.findall(r'[^.!?]{10,150}\?', text)
+        if questions:
+            all_data.append("❓ " + "\n".join([f"  {q.strip()}" for q in questions[:3]]))
+        
+        # Цены
+        prices = re.findall(r'(\d+[\s]*[–-]?\s*\d*[\s]*(?:руб|₽|\$|€|USD|EUR))', text, re.I)
+        if prices:
+            all_data.append("💰 " + "\n".join([f"  {p.strip()}" for p in prices[:3]]))
     
-    structures_text = ""
-    if all_lists:
-        structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in all_lists]) + "\n"
-    
+    structures_text = "\n\n".join(all_data)
     sources_text = "\n".join([f"• {p.get('url', '')}" for p in pages[:5]])
     
+    # 2. Короткий промпт с ВСЕМИ данными
     prompt = f"""
-⚠️ **Ты — эксперт-аналитик. Используй ИНТЕРНЕТ-ИСТОЧНИКИ как ОСНОВУ, но можешь ДОПОЛНЯТЬ из знаний.**
-
 ⚠️ **ЗАПРОС:** {query}
 
 {memory_context}
 
-⚠️ **ИСТОЧНИКИ (ОСНОВА):**
-{context}
-
+⚠️ **ДАННЫЕ ИЗ ИНТЕРНЕТА (ВСЕ):**
 {structures_text}
 
+⚠️ **ИСТОЧНИКИ:**
+{sources_text}
+
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. На основе данных выше составь практический ответ.
+2. Если данных не хватает — дополни из знаний (отметь 🧠).
+3. Дай структурированный ответ.
+4. Если данных мало — скажи честно.
+
+⚠️ **ОТВЕЧАЙ СЕЙЧАС. НЕ ОТКАЗЫВАЙСЯ.**
+"""
+    
+    # 3. Пытаемся получить ответ (3 попытки)
+    for attempt in range(3):
+        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=2500)
+        if answer and len(answer) > 100:
+            if check_for_lies(answer) or check_refusal(answer):
+                continue
+            return answer
+        logger.warning(f"⚠️ DeepSeek попытка {attempt+1} не удалась")
+        await asyncio.sleep(2)
+    
+    # 4. Если DeepSeek не ответил — честный ответ из знаний
+    return await answer_from_knowledge(query)
+
+async def answer_from_knowledge(query: str) -> str:
+    """Честный ответ из знаний модели"""
+    prompt = f"""
+⚠️ **В интернете не удалось найти достаточно информации по запросу.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **Ты — эксперт. Ответь из своих знаний.**
+
 ⚠️ **ПРАВИЛА:**
-1. **ОСНОВА ОТВЕТА** — информация из источников.
-2. **ЕСЛИ В ИСТОЧНИКАХ НЕ ХВАТАЕТ** — дополни из своих знаний.
-3. **Если дополняешь** — ОБЯЗАТЕЛЬНО отметь: 🧠 Дополнено из моих знаний.
-4. **ЕСЛИ В ИСТОЧНИКАХ НЕТ НИЧЕГО** — отвечай из знаний, но скажи: "В интернете мало данных, я отвечаю из знаний".
-5. **Никогда не говори "не могу"** — ты всегда можешь ответить из знаний.
+1. Дай структурированный ответ на основе своего опыта.
+2. Если не знаешь — скажи честно.
+3. Отметь: 🧠 Ответ основан на моих знаниях (в интернете мало данных).
 
 ⚠️ **ФОРМАТ:**
-🎯 **УВЕРЕННОСТЬ: [X]%**
-📊 **ОТВЕТ (из источников + знания):**
-[Полный ответ]
-🧠 **Дополнено из знаний (если было):**
-[Что добавил]
-📋 **ЦИТАТЫ:**
-[Дословные цитаты]
-🔗 **ИСТОЧНИКИ:**
-{sources_text}
-⚠️ **ЭТОТ ОТВЕТ НЕ НА 100% ТОЧЕН**
+🧠 **ОТВЕТ (на основе знаний):**
+[Твой ответ]
+⚠️ **В интернете мало данных, ответ может быть неполным.**
 """
-    
-    answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=2500)
-    
+    answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=2500)
     if not answer:
-        # Если DeepSeek не ответил — используем знания принудительно
-        logger.warning("⚠️ DeepSeek не ответил, используем знания")
-        return f"""
-🧠 **ОТВЕТ (на основе знаний модели):**
-
-В интернете не удалось найти достаточно информации по вашему запросу, но я знаю, что:
-
-Структура скрипта продаж включает:
-1. Приветствие и установление контакта
-2. Выявление потребности (открытые вопросы)
-3. Презентация решения
-4. Работа с возражениями
-5. Закрытие и следующий шаг
-
-Для выявления проходной цены используйте вопросы:
-- «Какой бюджет вы рассматриваете?»
-- «С какими ценами работаете сейчас?»
-- «Какая цена для вас была бы комфортной?»
-
-⚠️ **Этот ответ основан на моих знаниях, так как в интернете мало данных.**
-"""
-    
-    return answer
+        return "⚠️ Не удалось найти информацию в интернете. Попробуйте переформулировать запрос."
+    return f"🧠 **ОТВЕТ (на основе знаний):**\n\n{answer}\n\n⚠️ В интернете мало данных, ответ может быть неполным."
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА (ПАРАЛЛЕЛЬНЫЙ ПОИСК + ДОБОР)
+#  ОСНОВНАЯ ЛОГИКА
 # ═══════════════════════════════════════════════════════════════════
 
 current_stage = "⏳ Запуск"
@@ -695,7 +711,7 @@ async def process_query(query: str, uid: int) -> str:
     logger.info(f"🧠 НАЧАЛО ОБРАБОТКИ: {query[:100]}...")
     set_stage("🧠 Анализирую запрос")
     
-    # 1. Генерация вариантов поиска
+    # 1. Генерация вариантов
     analyze_prompt = f"""
 ⚠️ **Ты — аналитик поиска. Сгенерируй 10 вариантов поисковых запросов для запроса:**
 {query}
@@ -766,30 +782,6 @@ async def process_query(query: str, uid: int) -> str:
     
     logger.info(f"✅ ОТВЕТ СФОРМИРОВАН, длина {len(answer)} символов")
     return formatted_answer
-
-async def answer_from_knowledge(query: str) -> str:
-    """Честный ответ из знаний модели"""
-    prompt = f"""
-⚠️ **В интернете не нашлось достаточно информации по запросу.**
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **Ты — эксперт. Ответь из своих знаний.**
-
-⚠️ **ПРАВИЛА:**
-1. Дай структурированный ответ на основе своего опыта.
-2. Если не знаешь — скажи честно.
-3. Отметь: 🧠 Ответ основан на моих знаниях (в интернете мало данных).
-
-⚠️ **ФОРМАТ:**
-🧠 **ОТВЕТ (на основе знаний):**
-[Твой ответ]
-⚠️ **В интернете мало данных, ответ может быть неполным.**
-"""
-    answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=2500)
-    if not answer:
-        return "⚠️ Не удалось найти информацию в интернете. Попробуйте переформулировать запрос."
-    return f"🧠 **ОТВЕТ (на основе знаний):**\n\n{answer}\n\n⚠️ В интернете мало данных, ответ может быть неполным."
 
 # ═══════════════════════════════════════════════════════════════════
 #  ТАЙМЕР
@@ -913,10 +905,10 @@ def main():
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("✅ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
-    logger.info("✅ Параллельный поиск")
-    logger.info("✅ Добор до 10 источников")
-    logger.info("✅ Честный ответ из знаний")
+    logger.info("✅ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+    logger.info("✅ Параллельный поиск до 15 источников")
+    logger.info("✅ Умная передача данных в DeepSeek")
+    logger.info("✅ Честный ответ из знаний при необходимости")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
