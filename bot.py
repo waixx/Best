@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ИСПРАВЛЕННАЯ)
 #  ПАРАЛЛЕЛЬНЫЙ ПОИСК (APISerpent) + ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА (HTTP + Browserless)
 #  ДО 15 ИСТОЧНИКОВ, ЧЕСТНЫЙ ОТВЕТ ИЗ ЗНАНИЙ
 #  НИЧЕГО НЕ ВЫРЕЗАНО
@@ -79,7 +79,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ИСПРАВЛЕННАЯ)")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -439,7 +439,7 @@ async def search_parallel(variants: List[str], max_sources: int = 15) -> List[Di
     return all_results
 
 # ═══════════════════════════════════════════════════════════════════
-#  BROWSERLESS ДЛЯ JS-СТРАНИЦ
+#  BROWSERLESS ДЛЯ JS-СТРАНИЦ (УЛУЧШЕННАЯ ОБРАБОТКА)
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_with_browserless(url: str) -> Optional[str]:
@@ -447,15 +447,23 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
         return None
     try:
         async with async_playwright() as p:
+            # Подключаемся к Browserless
             browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
             page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=10000)
-            html = await page.content()
-            await page.close()
-            return html
-    except:
-        pass
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                html = await page.content()
+                return html
+            except Exception as e:
+                logger.debug(f"Browserless navigation error for {url}: {e}")
+                return None
+            finally:
+                await page.close()
+                # Не закрываем браузер, так как он общий, иначе закроем соединение для всех
+    except Exception as e:
+        logger.debug(f"Browserless connection error: {e}")
+        return None
     return None
 
 # ═══════════════════════════════════════════════════════════════════
@@ -495,7 +503,7 @@ def parse_html(html: str) -> Dict:
     return {'text': ' '.join(sentences[:25])[:4000], 'lists': [], 'headings': []}
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА СТРАНИЦ (HTTP + Browserless)
+#  ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА СТРАНИЦ (HTTP + Browserless) С УЛУЧШЕННОЙ ОБРАБОТКОЙ
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_page_parallel(url: str) -> Optional[Dict]:
@@ -510,8 +518,8 @@ async def fetch_page_parallel(url: str) -> Optional[Dict]:
                     parsed = parse_html(html)
                     if parsed['text'] and len(parsed['text']) > 300:
                         return parsed
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"HTTP error for {url}: {e}")
         return None
     
     async def fetch_browserless():
@@ -523,8 +531,8 @@ async def fetch_page_parallel(url: str) -> Optional[Dict]:
                 parsed = parse_html(html)
                 if parsed['text'] and len(parsed['text']) > 100:
                     return parsed
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Browserless error for {url}: {e}")
         return None
     
     # Запускаем параллельно
@@ -542,16 +550,18 @@ async def fetch_page_parallel(url: str) -> Optional[Dict]:
     for task in pending:
         task.cancel()
     
-    # Берём результат
+    # Берём результат из завершённых
     for task in done:
         try:
             result = task.result()
             if result and result.get('text'):
                 return result
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Task exception: {e}")
+            continue
     
-    # Если ничего не получили — ждём оба до конца
+    # Если ничего не получили — ждём оба до конца (но уже не дожидаемся, т.к. они отменены или завершены)
+    # Попробуем получить результат от HTTP, если он ещё не завершён, но уже не ждём
     try:
         http_result = await http_task
         if http_result and http_result.get('text'):
@@ -584,10 +594,13 @@ async def fetch_pages_parallel(results: List[Dict], max_pages: int = MAX_PAGES) 
             tasks.append(fetch_page_parallel(url))
             urls.append(url)
     
-    pages_data = await asyncio.gather(*tasks)
+    pages_data = await asyncio.gather(*tasks, return_exceptions=True)
     
     pages = []
     for i, parsed in enumerate(pages_data):
+        if isinstance(parsed, Exception):
+            logger.debug(f"Page fetch error for {urls[i] if i < len(urls) else ''}: {parsed}")
+            continue
         if parsed and parsed.get('text'):
             pages.append({
                 'url': urls[i] if i < len(urls) else '',
@@ -892,7 +905,7 @@ async def show_progress(chat_id, context, start_time):
         pass
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОБРАБОТЧИК TELEGRAM
+#  ОБРАБОТЧИК TELEGRAM (С РАЗБИВКОЙ ДЛИННЫХ СООБЩЕНИЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def handle(update: Update, context):
@@ -955,11 +968,40 @@ async def handle(update: Update, context):
         memory.add_message("assistant", answer[:500])
         
         elapsed = int(time.time() - start_time)
-        await update.message.reply_text(f"⏱️ {elapsed} сек\n\n{answer}", reply_markup=MAIN_KEYBOARD)
+        full_text = f"⏱️ {elapsed} сек\n\n{answer}"
+        
+        # --- РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ ---
+        if len(full_text) <= 4096:
+            await update.message.reply_text(full_text, reply_markup=MAIN_KEYBOARD)
+        else:
+            # Разбиваем на части по строкам
+            parts = []
+            current_part = ""
+            for line in full_text.split("\n"):
+                if len(current_part) + len(line) + 1 > 4000:
+                    parts.append(current_part)
+                    current_part = line
+                else:
+                    current_part += "\n" + line if current_part else line
+            if current_part:
+                parts.append(current_part)
+            
+            # Отправляем первую часть с клавиатурой
+            await update.message.reply_text(parts[0], reply_markup=MAIN_KEYBOARD)
+            for part in parts[1:]:
+                await update.message.reply_text(part)  # без клавиатуры, чтобы не дублировать
         
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
-        await update.message.reply_text("⚠️ Ошибка. Попробуйте еще раз.", reply_markup=MAIN_KEYBOARD)
+        error_msg = str(e)
+        if "Message is too long" in error_msg:
+            # Отправляем обрезанную версию, если разбивка не сработала
+            await update.message.reply_text(
+                "⚠️ Ответ слишком длинный. Вот сокращённая версия:\n\n" + full_text[:3000] + "...",
+                reply_markup=MAIN_KEYBOARD
+            )
+        else:
+            await update.message.reply_text("⚠️ Ошибка. Попробуйте еще раз.", reply_markup=MAIN_KEYBOARD)
 
 # ═══════════════════════════════════════════════════════════════════
 #  СТАРТ
@@ -980,17 +1022,18 @@ async def start(update: Update, context):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ...")
+    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (ИСПРАВЛЕННАЯ ВЕРСИЯ)...")
     logger.info(f"🤖 Токен: {TELEGRAM_TOKEN[:10]}...")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("✅ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+    logger.info("✅ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ИСПРАВЛЕННАЯ)")
     logger.info("✅ APISerpent с deep=true")
     logger.info("✅ Параллельный поиск до 15 источников")
-    logger.info("✅ Параллельная загрузка (HTTP + Browserless)")
+    logger.info("✅ Параллельная загрузка (HTTP + Browserless) с улучшенной обработкой")
     logger.info("✅ Честный ответ из знаний при необходимости")
+    logger.info("✅ Разбивка длинных сообщений")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
