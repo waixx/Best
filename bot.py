@@ -1,8 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — АБСОЛЮТНО УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  Без хардкода, без жёстких классов, без доменов
-#  Динамический поиск до 90% уверенности
-#  Всё на месте: память, граф знаний, таймер, кнопки, защита
+#  BROWAIX BOT — УЛУЧШЕННЫЙ ПАРСИНГ (ВСЁ НА МЕСТЕ)
+#  Больше источников, больше фильмов, больше рейтингов
+#  Без хардкода, универсально
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -64,11 +63,11 @@ ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",
 ALLOW_ALL = not ALLOWED_USERS
 
 # ═══════════════════════════════════════════════════════════════════
-#  НАСТРОЙКИ (ОПТИМИЗИРОВАННЫЕ, БЕЗ ХАРДКОДА)
+#  НАСТРОЙКИ (УВЕЛИЧЕННЫЕ ДЛЯ БОЛЬШЕГО ПАРСИНГА)
 # ═══════════════════════════════════════════════════════════════════
 
-PAGE_TIMEOUT = 10
-SEARCH_RESULTS = 30
+PAGE_TIMEOUT = 12
+SEARCH_RESULTS = 40
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 CACHE_TTL = 3600
 ANSWER_CACHE_TTL = 3600
@@ -77,6 +76,7 @@ MAX_TOKENS_OUTPUT = 6000
 MAX_TOKENS_VARIANTS = 500
 MAX_ITERATIONS = 5
 TARGET_CONFIDENCE = 90
+MAX_PAGES_PER_ITERATION = 12  # ⬅️ Увеличил до 12
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -161,12 +161,11 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
     return ""
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА НА ЛОЖЬ (ПО СМЫСЛУ)
+#  ПРОВЕРКА НА ЛОЖЬ
 # ═══════════════════════════════════════════════════════════════════
 
 def is_lie_by_sense(text: str) -> Tuple[bool, str]:
     text_lower = text.lower()
-    
     lie_patterns = [
         (r'(нет|отсутствуют|не найдено|ничего не|не обнаружено)\s*(данных|информации|результатов)', "Отрицает наличие данных"),
         (r'(не могу|не получается|не удаётся|невозможно|не в состоянии)', "Говорит 'не могу'"),
@@ -181,11 +180,9 @@ def is_lie_by_sense(text: str) -> Tuple[bool, str]:
         (r'(на\s*основе\s*(моих|своих)\s*знаний|база\s*знаний|внутренние\s*данные)', "Использует свои знания вместо источников"),
         (r'(в\s*источниках\s*нет|источники\s*не\s*содержат|ни\s*в\s*одном\s*источнике)', "Утверждает, что в источниках нет"),
     ]
-    
     for pattern, reason in lie_patterns:
         if re.search(pattern, text_lower):
             return True, reason
-    
     return False, ""
 
 # ═══════════════════════════════════════════════════════════════════
@@ -349,7 +346,7 @@ def get_memory(uid):
 #  ТАЙМЕР
 # ═══════════════════════════════════════════════════════════════════
 
-async def send_progress_updates(chat_id, context, start_time, total_iterations: int = 0):
+async def send_progress_updates(chat_id, context, start_time):
     message = None
     try:
         message = await context.bot.send_message(
@@ -357,8 +354,7 @@ async def send_progress_updates(chat_id, context, start_time, total_iterations: 
             "🌐 Ищу информацию в интернете...\n\n⏱️ 0 сек"
         )
         elapsed = 0
-        iteration = 0
-        while elapsed < 180:  # Увеличил до 180 секунд (3 минуты)
+        while elapsed < 180:
             await asyncio.sleep(2)
             if context.user_data.get('found_answer'):
                 try:
@@ -367,12 +363,10 @@ async def send_progress_updates(chat_id, context, start_time, total_iterations: 
                     pass
                 break
             elapsed = int(time.time() - start_time)
-            iteration = context.user_data.get('iteration', 0)
-            status = f"🌐 Ищу информацию...\n\n⏱️ {elapsed} сек\n🔄 Итерация: {iteration}/{MAX_ITERATIONS}"
             try:
-                await message.edit_text(status)
+                await message.edit_text(f"🌐 Ищу информацию...\n\n⏱️ {elapsed} сек")
             except Exception:
-                message = await context.bot.send_message(chat_id, status)
+                message = await context.bot.send_message(chat_id, f"🌐 Ищу информацию... ⏱️ {elapsed} сек")
     except Exception as e:
         logger.error(f"❌ Ошибка таймера: {e}")
     return message
@@ -452,7 +446,7 @@ async def search_with_cache(query: str) -> List[Dict]:
         return results
     return []
 
-async def search_parallel(variants: List[str], max_sources: int = 20) -> List[Dict]:
+async def search_parallel(variants: List[str], max_sources: int = 30) -> List[Dict]:
     if not variants:
         return []
     logger.info(f"🔍 Поиск по {len(variants)} вариантам")
@@ -498,24 +492,38 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
         return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ (БЕЗ ХАРДКОДА)
-# ═══════════════════════════════════════════════════════════════════
-
-def extract_date_from_text(text: str) -> Optional[str]:
-    patterns = [
-        r'\b\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}\b',
-        r'\b\d{1,2}\s+(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{2,4}\b',
-        r'\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group()
-    return None
+#  ═══════════════════════════════════════════════════════════════════
+#  УЛУЧШЕННЫЙ ПАРСИНГ (БОЛЬШЕ ИСТОЧНИКОВ, БОЛЬШЕ ДАННЫХ)
+#  ═══════════════════════════════════════════════════════════════════
 
 def extract_year_from_text(text: str) -> Optional[str]:
+    """Извлекает год из текста"""
     match = re.search(r'\b(19[0-9]{2}|20[0-9]{2})\b', text)
     return match.group(1) if match else None
+
+def extract_rating_from_text(text: str) -> Optional[str]:
+    """Извлекает рейтинг из текста (универсально)"""
+    # 1. Ищем "6.1", "8.5", "9.0"
+    rating_match = re.search(r'\b(\d+\.\d{1,2})\b', text)
+    if rating_match:
+        return rating_match.group(1)
+    
+    # 2. Ищем "IMDb: 8.0", "Рейтинг: 7.5"
+    rating_match = re.search(r'(?:IMDb|Рейтинг|Rating|Score|Оценка)\s*[:]?\s*(\d+\.\d{1,2})', text, re.I)
+    if rating_match:
+        return rating_match.group(1)
+    
+    # 3. Ищем "★ 6.1", "⭐ 8.5"
+    rating_match = re.search(r'[★⭐]\s*(\d+\.\d{1,2})', text)
+    if rating_match:
+        return rating_match.group(1)
+    
+    # 4. Ищем "6.1/10", "8.5/10"
+    rating_match = re.search(r'(\d+\.\d{1,2})\s*[/]\s*10', text)
+    if rating_match:
+        return rating_match.group(1)
+    
+    return None
 
 def extract_structured_items(html: str) -> List[Dict]:
     """Универсальное извлечение данных без хардкода"""
@@ -545,23 +553,22 @@ def extract_structured_items(html: str) -> List[Dict]:
         # 3. Находим повторяющиеся структуры
         structure_groups = {}
         for block in all_blocks:
-            # Простая сигнатура: длина текста и количество детей
             signature = f"{len(block['text'])}_{block['children']}"
             if signature not in structure_groups:
                 structure_groups[signature] = []
             structure_groups[signature].append(block)
         
-        # 4. Выбираем группы с повторяющимися блоками (≥3)
+        # 4. Выбираем группы с повторяющимися блоками (≥2)
         candidate_blocks = []
         for signature, blocks in structure_groups.items():
-            if len(blocks) >= 3:
+            if len(blocks) >= 2:
                 candidate_blocks.extend(blocks)
         
         if not candidate_blocks:
-            candidate_blocks = all_blocks[:30]
+            candidate_blocks = all_blocks[:40]
         
         # 5. Извлекаем данные из каждого блока
-        for block in candidate_blocks[:30]:
+        for block in candidate_blocks[:40]:
             text = block['text']
             text = re.sub(r'\s+', ' ', text).strip()
             
@@ -572,10 +579,19 @@ def extract_structured_items(html: str) -> List[Dict]:
             lines = text.split('. ')
             title = lines[0][:150] if lines else text[:100]
             
+            # Проверяем, не является ли заголовок датой или цифрой
+            if re.match(r'^[\d\s]+$', title):
+                continue
+            
+            # Если заголовок слишком длинный — ищем в тегах
             if len(title) > 100:
                 heading = block['tag'].find(['h1', 'h2', 'h3', 'h4', 'strong', 'b'])
                 if heading:
                     title = heading.get_text().strip()[:150]
+            
+            # Пропускаем явный мусор
+            if re.search(r'(реклама|промокод|скидка|подпишись|купить|заказать|рассылка|политика конфиденциальности)', title, re.I):
+                continue
             
             # Извлекаем описание
             desc = ""
@@ -590,38 +606,19 @@ def extract_structured_items(html: str) -> List[Dict]:
                 year = extract_year_from_text(desc)
             
             # Извлекаем рейтинг (универсально)
-            rating = None
+            rating = extract_rating_from_text(text)
+            if not rating and desc:
+                rating = extract_rating_from_text(desc)
             
-            # Любое число с точкой
-            rating_match = re.search(r'\b(\d+\.\d{1,2})\b', text)
-            if rating_match:
-                rating = rating_match.group(1)
-            
-            # IMDb, Рейтинг, Score
-            if not rating:
-                rating_match = re.search(r'(?:IMDb|Рейтинг|Rating|Score|Оценка)\s*[:]?\s*(\d+\.\d{1,2})', text, re.I)
-                if rating_match:
-                    rating = rating_match.group(1)
-            
-            # Звёзды
-            if not rating:
-                rating_match = re.search(r'[★⭐]\s*(\d+\.\d{1,2})', text)
-                if rating_match:
-                    rating = rating_match.group(1)
-            
-            # Проверяем, что это не мусор
+            # Пропускаем слишком короткие заголовки
             if len(title) < 3:
-                continue
-            
-            if re.search(r'(реклама|промокод|скидка|подпишись|купить|заказать)', text, re.I):
                 continue
             
             items.append({
                 'title': title[:200],
                 'description': desc[:500],
                 'year': year,
-                'rating': rating,
-                'source_text': text[:300]
+                'rating': rating
             })
         
         # Убираем дубликаты по названию
@@ -633,36 +630,12 @@ def extract_structured_items(html: str) -> List[Dict]:
                 seen.add(title_lower)
                 unique_items.append(item)
         
-        return unique_items[:30]
+        return unique_items[:40]
         
     except Exception as e:
         logger.warning(f"⚠️ Ошибка парсинга: {e}")
     
     return items
-
-def extract_key_facts(text: str) -> List[str]:
-    facts = []
-    matches = re.findall(
-        r'\b(\d+[\s,]*\d*[\s]*(?:%|руб|\$|€|USD|EUR|тыс|млн|млрд|лет|месяц|день|час|метров|кг|тонн|шт|ед|GB|TB|MHz|GHz|dB|Вт|кВт))\b',
-        text, re.IGNORECASE
-    )
-    facts.extend(matches[:5])
-    dates = re.findall(r'\b\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}\b', text)
-    facts.extend(dates[:3])
-    definitions = re.findall(
-        r'([А-Яа-яA-Za-z][^.!?]{5,50})\s+(?:—|–|-|это|является|представляет собой)\s+([^.!?]{5,80})',
-        text, re.IGNORECASE
-    )
-    for d in definitions:
-        facts.append(f"{d[0].strip()} — {d[1].strip()}")
-    percents = re.findall(r'\b\d+[\s]*%', text)
-    facts.extend(percents[:3])
-    key_phrases = re.findall(
-        r'(?:совет|рекомендация|шаг|этап|важно|главное|ключевой|основной|лучший|эффективный|проверенный)[^.!?]{10,80}[.!?]',
-        text, re.IGNORECASE
-    )
-    facts.extend(key_phrases[:3])
-    return list(set(facts))[:20]
 
 def parse_html(html: str) -> Dict:
     result = {
@@ -726,10 +699,9 @@ def parse_html(html: str) -> Dict:
                 if meta_date and meta_date.get('content'):
                     result['date'] = meta_date['content']
             if not result['date']:
-                result['date'] = extract_date_from_text(text)
-            
-            if text:
-                result['key_facts'] = extract_key_facts(text)
+                date_match = re.search(r'\b\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}\b', text)
+                if date_match:
+                    result['date'] = date_match.group()
             
             return result
         except Exception as e:
@@ -739,8 +711,9 @@ def parse_html(html: str) -> Dict:
         text = re.sub(r'<[^>]+>', ' ', html)
         text = re.sub(r'\s+', ' ', text).strip()
         result['text'] = text[:8000]
-        result['date'] = extract_date_from_text(text)
-        result['key_facts'] = extract_key_facts(text)
+        date_match = re.search(r'\b\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}\b', text)
+        if date_match:
+            result['date'] = date_match.group()
     
     return result
 
@@ -759,7 +732,7 @@ async def fetch_page_with_fallback(url: str) -> Dict:
         logger.warning(f"⚠️ HTTP ошибка para {url}: {e}")
     return {'text': '', 'lists': [], 'headings': [], 'date': None, 'tables': [], 'definitions': [], 'key_facts': [], 'items': []}
 
-async def fetch_multiple_pages(links: List[str], max_pages: int = 10) -> List[Dict]:
+async def fetch_multiple_pages(links: List[str], max_pages: int = MAX_PAGES_PER_ITERATION) -> List[Dict]:
     if not links:
         return []
     tasks = [fetch_page_with_fallback(link) for link in links[:max_pages]]
@@ -793,10 +766,8 @@ async def generate_query_variants(user_message: str) -> List[str]:
     return list(dict.fromkeys(variants))[:5]
 
 async def generate_refined_variants(user_message: str, items: List[Dict]) -> List[str]:
-    """Генерирует новые запросы на основе найденных данных"""
     variants = [user_message]
     
-    # Извлекаем ключевые слова из найденных элементов
     keywords = set()
     for item in items[:10]:
         title = item.get('title', '')
@@ -810,7 +781,6 @@ async def generate_refined_variants(user_message: str, items: List[Dict]) -> Lis
         variants.append(f"лучшие {keyword_str}")
         variants.append(f"рейтинг {keyword_str}")
     
-    # Добавляем поиск по годам
     current_year = now().year
     for year in range(current_year - 5, current_year + 1):
         variants.append(f"{user_message} {year}")
@@ -822,37 +792,28 @@ async def generate_refined_variants(user_message: str, items: List[Dict]) -> Lis
 # ═══════════════════════════════════════════════════════════════════
 
 def calculate_confidence(items: List[Dict], target_years: int = 5) -> float:
-    """Рассчитывает уверенность в данных (0-100%)"""
     if not items:
         return 0.0
     
-    # 1. Количество уникальных элементов (30%)
     unique_count = len(set([item.get('title', '') for item in items]))
-    unique_score = min(100, unique_count * 5)  # 20 элементов = 100%
+    unique_score = min(100, unique_count * 4)  # 25 элементов = 100%
     
-    # 2. Наличие рейтингов (25%)
     rating_count = sum(1 for item in items if item.get('rating'))
     rating_score = min(100, rating_count * 10)  # 10 рейтингов = 100%
     
-    # 3. Наличие описаний (20%)
     desc_count = sum(1 for item in items if item.get('description') and len(item['description']) > 20)
-    desc_score = min(100, desc_count * 5)       # 20 описаний = 100%
+    desc_score = min(100, desc_count * 4)       # 25 описаний = 100%
     
-    # 4. Актуальность (15%)
     current_year = now().year
     recent_count = sum(1 for item in items if item.get('year') and current_year - int(item['year']) <= target_years)
     recent_score = min(100, recent_count * 5)   # 20 актуальных = 100%
-    
-    # 5. Источники (10%)
-    source_count = len(set([item.get('source', 'unknown') for item in items]))
-    source_score = min(100, source_count * 20)  # 5 источников = 100%
     
     total_score = (
         unique_score * 0.30 +
         rating_score * 0.25 +
         desc_score * 0.20 +
         recent_score * 0.15 +
-        source_score * 0.10
+        min(100, len(items) * 2) * 0.10
     )
     
     return min(100, total_score)
@@ -867,7 +828,6 @@ async def search_until_confidence(
     target_confidence: float = TARGET_CONFIDENCE,
     max_iterations: int = MAX_ITERATIONS
 ) -> Tuple[List[Dict], List[Dict], float]:
-    """Ищет до достижения целевой уверенности"""
     
     all_items = []
     all_sources = []
@@ -875,7 +835,6 @@ async def search_until_confidence(
     iteration = 0
     confidence = 0.0
     
-    # Генерируем начальные варианты
     variants = await generate_query_variants(user_message)
     search_variants = variants[:3]
     
@@ -883,34 +842,28 @@ async def search_until_confidence(
         iteration += 1
         logger.info(f"🔍 Итерация {iteration}: поиск по {len(search_variants)} вариантам")
         
-        # Поиск
-        results = await search_parallel(search_variants, max_sources=25)
+        results = await search_parallel(search_variants, max_sources=30)
         if not results:
             logger.warning("⚠️ Поиск не дал результатов")
             break
         
         all_results.extend(results)
         
-        # Загружаем страницы
         links = [r.get('link', '') for r in results if r.get('link')]
-        pages = await fetch_multiple_pages(links, max_pages=8)
+        pages = await fetch_multiple_pages(links, max_pages=MAX_PAGES_PER_ITERATION)
         all_sources.extend(pages)
         
-        # Извлекаем элементы
         items = []
         for page in pages:
             if page.get('items'):
                 for item in page['items']:
-                    item['source'] = page.get('url', 'unknown')
                     items.append(item)
         
         all_items.extend(items)
         
-        # Пересчитываем уверенность
         confidence = calculate_confidence(all_items)
         logger.info(f"📊 Уверенность: {confidence:.1f}% ({len(all_items)} элементов)")
         
-        # Если уверенность < 90% — генерируем новые запросы
         if confidence < target_confidence:
             new_variants = await generate_refined_variants(user_message, all_items)
             search_variants = new_variants[:3]
@@ -924,14 +877,12 @@ async def search_until_confidence(
 async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict]]:
     logger.info(f"🛡️ ЗАПРОС: {user_message[:50]}")
     
-    # Ищем до 90% уверенности
     items, search_results, confidence = await search_until_confidence(user_message, uid)
     
     if not items:
         memory = get_memory(uid)
         context = memory.get_context(limit=5)
         context_text = '\n'.join([m.get('content', '') for m in context])
-        
         fallback_prompt = f"""
 ⚠️ **ТЫ НЕ МОЖЕШЬ СКАЗАТЬ "НЕТ ДОСТУПА"!**
 
@@ -949,9 +900,20 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     context = memory.get_context(limit=10)
     context_text = '\n'.join([m.get('content', '') for m in context])
     
-    # Формируем текст из найденных элементов
+    # Сортируем и фильтруем элементы
+    # 1. Сначала по наличию рейтинга
+    # 2. Затем по актуальности (году)
+    current_year = now().year
+    sorted_items = sorted(
+        items,
+        key=lambda x: (
+            1 if x.get('rating') else 2,
+            abs(current_year - int(x.get('year', current_year))) if x.get('year') else 999
+        )
+    )[:30]
+    
     items_text = ""
-    for idx, item in enumerate(items[:25], 1):
+    for idx, item in enumerate(sorted_items[:30], 1):
         year = f" ({item.get('year')})" if item.get('year') else ""
         rating = f" ★ {item.get('rating')}" if item.get('rating') else ""
         desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
@@ -965,14 +927,10 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     else:
         confidence_text += " ✅ Достаточно данных для точного ответа"
     
-    # ═══════════════════════════════════════════════════════════════
-    #  ЖЁСТКИЙ ПРОМПТ
-    # ═══════════════════════════════════════════════════════════════
-    
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
-Найдено {len(items)} элементов. Уверенность: {confidence:.1f}%
+Найдено {len(sorted_items)} элементов. Уверенность: {confidence:.1f}%
 
 {items_text}
 
@@ -999,12 +957,10 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     
     answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
     
-    # Проверка на ложь
     is_lie, lie_reason = is_lie_by_sense(answer)
     
     if is_lie:
         logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
-        
         answer_prompt += f"\n\n⚠️ ТЫ НАРУШИЛ ПРАВИЛА! {lie_reason}. ОТВЕТЬ ЗАНОВО, ТОЛЬКО ИЗ ДАННЫХ!"
         answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
         
@@ -1013,7 +969,7 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
             answer = f"""
 ⚠️ **Я НЕ МОГУ СОВРАТЬ.**
 
-Найдено {len(items)} элементов в интернете:
+Найдено {len(sorted_items)} элементов в интернете:
 
 {items_text[:2000]}
 
@@ -1025,7 +981,7 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     return answer, search_results
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОБРАБОТЧИКИ (БЕЗ ИЗМЕНЕНИЙ)
+#  ОБРАБОТЧИКИ
 # ═══════════════════════════════════════════════════════════════════
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1148,9 +1104,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_time = time.time()
         context.user_data['found_answer'] = False
         
-        # Запоминаем итерацию
-        context.user_data['iteration'] = 0
-        
         progress_task = asyncio.create_task(
             send_progress_updates(update.effective_chat.id, context, start_time)
         )
@@ -1237,8 +1190,9 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (УНИВЕРСАЛЬНАЯ ВЕРСИЯ)")
+    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (УЛУЧШЕННЫЙ ПАРСИНГ)")
     logger.info("🎯 Целевая уверенность: 90%")
+    logger.info("📄 Максимум страниц за итерацию: 12")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
