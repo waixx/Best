@@ -1,8 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — УНИВЕРСАЛЬНАЯ ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
-#  ТОЛЬКО APISERPENT (SERPER ВРЕМЕННО ОТКЛЮЧЁН)
-#  ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ APISERPENT
-#  ТАЙМАУТ 30 СЕКУНД
+#  УНИВЕРСАЛЬНАЯ ВЕРСИЯ С ПАРАЛЛЕЛЬНЫМ ПОИСКОМ
+#  APISERPENT (ОСНОВНОЙ) + ПАРАЛЛЕЛЬНЫЙ ЗАПРОС
+#  ДОБОР ДО 10 РЕЛЕВАНТНЫХ ИСТОЧНИКОВ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -53,17 +52,17 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
-# SERPER_API_KEY = os.getenv("SERPER_API_KEY")  # ВРЕМЕННО ОТКЛЮЧЁН
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")  # Вернули как резерв
 BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-MAX_PAGES = 3
+MAX_PAGES = 5                      # Загружаем 5 страниц
 PAGE_TIMEOUT = 4
 SEARCH_RESULTS = 12
 DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 30  # Увеличен до 30
+APISERPENT_TIMEOUT = 20
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -79,7 +78,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ТОЛЬКО APISERPENT)")
+logger.info("🚀 УНИВЕРСАЛЬНАЯ ВЕРСИЯ С ПАРАЛЛЕЛЬНЫМ ПОИСКОМ")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -99,26 +98,33 @@ async def get_session():
 #  DEEPSEEK
 # ═══════════════════════════════════════════════════════════════════
 
-async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 2000) -> str:
-    try:
-        session = await get_session()
-        payload = {
-            "model": DEEPSEEK_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-        async with session.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-            json=payload,
-            timeout=35
-        ) as r:
-            if r.status == 200:
-                data = await r.json()
-                return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"❌ DeepSeek ошибка: {e}")
+async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 2500) -> str:
+    for attempt in range(3):
+        try:
+            session = await get_session()
+            payload = {
+                "model": DEEPSEEK_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+            async with session.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
+                json=payload,
+                timeout=45
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    return data["choices"][0]["message"]["content"]
+                else:
+                    logger.warning(f"⚠️ DeepSeek попытка {attempt+1}: HTTP {r.status}")
+        except Exception as e:
+            logger.warning(f"⚠️ DeepSeek попытка {attempt+1}: {e}")
+        
+        if attempt < 2:
+            await asyncio.sleep(2)
+    
     return ""
 
 # ═══════════════════════════════════════════════════════════════════
@@ -295,83 +301,86 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (ТОЛЬКО APISERPENT, БЕЗ SERPER)
+#  ПОИСК (ПАРАЛЛЕЛЬНЫЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower()).strip()
 
 async def search_apiserpent(query: str) -> List[Dict]:
-    """Поиск через APISerpent с детальным логированием"""
     if not APISERPENT_API_KEY:
-        logger.error("❌ APISerpent API ключ отсутствует!")
         return []
-    
-    logger.info(f"🔍 APISerpent запрос: '{query[:60]}...'")
-    
     try:
         session = await get_session()
-        start_time = time.time()
-        
         async with session.get(
             "https://apiserpent.com/api/search",
             params={"q": query, "engine": "google", "num": SEARCH_RESULTS},
             headers={"X-API-Key": APISERPENT_API_KEY},
             timeout=APISERPENT_TIMEOUT
         ) as r:
-            elapsed = time.time() - start_time
-            logger.info(f"⏱️ APISerpent ответ за {elapsed:.2f} сек, статус {r.status}")
-            
-            # Логируем тело ответа для диагностики
-            response_text = await r.text()
-            logger.info(f"📄 APISerpent тело (первые 500 символов): {response_text[:500]}")
-            
             if r.status == 200:
-                try:
-                    data = json.loads(response_text)
-                    results = [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
-                               for x in data.get("organic_results", [])]
-                    logger.info(f"✅ APISerpent: {len(results)} результатов")
-                    if results:
-                        logger.info(f"📄 Пример результата: {json.dumps(results[0], ensure_ascii=False)[:200]}")
-                    return results
-                except json.JSONDecodeError as e:
-                    logger.error(f"❌ APISerpent JSON ошибка: {e}")
-                    logger.error(f"❌ Ответ: {response_text[:200]}")
-                    return []
-            else:
-                logger.error(f"❌ APISerpent статус {r.status}")
-                logger.error(f"❌ Ответ: {response_text[:200]}")
-                return []
-                
-    except asyncio.TimeoutError:
-        logger.error(f"⏰ APISerpent ТАЙМАУТ ({APISERPENT_TIMEOUT} сек)!")
-        return []
-    except aiohttp.ClientError as e:
-        logger.error(f"❌ APISerpent ClientError: {type(e).__name__} - {e}")
-        return []
-    except Exception as e:
-        logger.error(f"❌ APISerpent ошибка: {type(e).__name__} - {e}")
-        return []
-
-# ═══════════════════════════════════════════════════════════════════
-#  SEARCH_WITH_CACHE (ТОЛЬКО APISERPENT, БЕЗ SERPER)
-# ═══════════════════════════════════════════════════════════════════
-
-async def search_with_cache(query: str) -> List[Dict]:
-    """Поиск с кэшированием — ТОЛЬКО APISerpent"""
-    norm = normalize_query(query)
-    if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
-        logger.info(f"📦 Кэш: {query[:40]}...")
-        return search_cache[norm]['data']
-    
-    results = await search_apiserpent(query)
-    if results:
-        search_cache[norm] = {'data': results, 'time': time.time()}
-        return results
-    
-    logger.warning(f"⚠️ APISerpent не дал результатов для: {query[:40]}...")
+                data = await r.json()
+                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
+                        for x in data.get("organic_results", [])]
+    except:
+        pass
     return []
+
+async def search_serper(query: str) -> List[Dict]:
+    if not SERPER_API_KEY:
+        return []
+    try:
+        session = await get_session()
+        async with session.post(
+            "https://google.serper.dev/search",
+            json={"q": query, "num": SEARCH_RESULTS},
+            headers={"X-API-KEY": SERPER_API_KEY},
+            timeout=10
+        ) as r:
+            if r.status == 200:
+                data = await r.json()
+                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
+                        for x in data.get("organic", [])]
+    except:
+        pass
+    return []
+
+async def search_single(variant: str) -> List[Dict]:
+    """Поиск по одному варианту (APISerpent → Serper)"""
+    results = await search_apiserpent(variant)
+    if results:
+        return results
+    return await search_serper(variant)
+
+async def search_parallel(variants: List[str], max_sources: int = 15) -> List[Dict]:
+    """Параллельный поиск по всем вариантам"""
+    if not variants:
+        return []
+    
+    logger.info(f"🔍 Параллельный поиск по {len(variants)} вариантам")
+    
+    # Запускаем все поиски параллельно
+    tasks = [search_single(v) for v in variants[:10]]
+    results_list = await asyncio.gather(*tasks)
+    
+    # Собираем уникальные результаты
+    all_results = []
+    seen_urls = set()
+    
+    for results in results_list:
+        if results:
+            for r in results:
+                url = r.get('link', '')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_results.append(r)
+                if len(all_results) >= max_sources:
+                    break
+        if len(all_results) >= max_sources:
+            break
+    
+    logger.info(f"📊 Найдено {len(all_results)} уникальных результатов")
+    return all_results
 
 # ═══════════════════════════════════════════════════════════════════
 #  BROWSERLESS ДЛЯ JS-СТРАНИЦ
@@ -389,8 +398,8 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
             html = await page.content()
             await page.close()
             return html
-    except Exception as e:
-        logger.warning(f"⚠️ Browserless ошибка: {e}")
+    except:
+        pass
     return None
 
 # ═══════════════════════════════════════════════════════════════════
@@ -450,18 +459,39 @@ async def fetch_page(url: str) -> Optional[Dict]:
     
     return None
 
-async def fetch_pages(results: List[Dict]) -> List[Dict]:
-    pages = []
-    for r in results[:MAX_PAGES]:
+async def fetch_pages_parallel(results: List[Dict], max_pages: int = MAX_PAGES) -> List[Dict]:
+    """Параллельная загрузка страниц"""
+    if not results:
+        return []
+    
+    logger.info(f"📄 Параллельная загрузка до {max_pages} страниц")
+    
+    # Берем топ результатов
+    top_results = results[:max_pages * 2]
+    
+    # Загружаем страницы параллельно
+    tasks = []
+    urls = []
+    for r in top_results:
         url = r.get('link', '')
         if url:
-            parsed = await fetch_page(url)
-            if parsed and parsed.get('text'):
-                pages.append({
-                    'url': url,
-                    'title': r.get('title', ''),
-                    'parsed': parsed
-                })
+            tasks.append(fetch_page(url))
+            urls.append(url)
+    
+    pages_data = await asyncio.gather(*tasks)
+    
+    pages = []
+    for i, parsed in enumerate(pages_data):
+        if parsed and parsed.get('text'):
+            pages.append({
+                'url': urls[i] if i < len(urls) else '',
+                'title': top_results[i].get('title', '') if i < len(top_results) else '',
+                'parsed': parsed
+            })
+        if len(pages) >= max_pages:
+            break
+    
+    logger.info(f"✅ Загружено {len(pages)} страниц")
     return pages
 
 # ═══════════════════════════════════════════════════════════════════
@@ -546,7 +576,7 @@ def format_confidence(confidence: Dict) -> str:
 """
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА НА ЛОЖЬ (УТОЧНЁННАЯ)
+#  ПРОВЕРКА НА ЛОЖЬ
 # ═══════════════════════════════════════════════════════════════════
 
 def check_for_lies(answer: str) -> bool:
@@ -575,11 +605,11 @@ def check_refusal(answer: str) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА
+#  ГЕНЕРАЦИЯ ОТВЕТА (С ДОПОЛНЕНИЕМ ИЗ ЗНАНИЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
-    context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:3000] for p in pages[:2]])
+    context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:3000] for p in pages[:3]])
     
     all_lists = []
     for p in pages:
@@ -590,33 +620,33 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
     if all_lists:
         structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in all_lists]) + "\n"
     
-    sources_text = "\n".join([f"• {p.get('url', '')}" for p in pages[:3]])
+    sources_text = "\n".join([f"• {p.get('url', '')}" for p in pages[:5]])
     
     prompt = f"""
-⚠️ **Ты — аналитик. Используй ИНТЕРНЕТ-ИСТОЧНИКИ как ОСНОВУ для ответа.**
+⚠️ **Ты — эксперт-аналитик. Используй ИНТЕРНЕТ-ИСТОЧНИКИ как ОСНОВУ, но можешь ДОПОЛНЯТЬ из знаний.**
 
 ⚠️ **ЗАПРОС:** {query}
 
 {memory_context}
 
-⚠️ **ИСТОЧНИКИ:**
+⚠️ **ИСТОЧНИКИ (ОСНОВА):**
 {context}
 
 {structures_text}
 
 ⚠️ **ПРАВИЛА:**
-1. ОСНОВА ОТВЕТА — информация из источников.
-2. Если в источниках нет полного ответа — ДОПОЛНИ из своих знаний.
-3. Если дополняешь — отметь: 🧠 Дополнено из моих знаний.
-4. Если информации вообще нет — скажи честно.
-5. Отметь, что ответ НЕ НА 100% ТОЧЕН.
+1. **ОСНОВА ОТВЕТА** — информация из источников.
+2. **ЕСЛИ В ИСТОЧНИКАХ НЕ ХВАТАЕТ** — дополни из своих знаний.
+3. **Если дополняешь** — ОБЯЗАТЕЛЬНО отметь: 🧠 Дополнено из моих знаний.
+4. **ЕСЛИ В ИСТОЧНИКАХ НЕТ НИЧЕГО** — отвечай из знаний, но скажи: "В интернете мало данных, я отвечаю из знаний".
+5. **Никогда не говори "не могу"** — ты всегда можешь ответить из знаний.
 
 ⚠️ **ФОРМАТ:**
 🎯 **УВЕРЕННОСТЬ: [X]%**
-📊 **ОТВЕТ:**
-[Твой ответ]
+📊 **ОТВЕТ (из источников + знания):**
+[Полный ответ]
 🧠 **Дополнено из знаний (если было):**
-[Добавление]
+[Что добавил]
 📋 **ЦИТАТЫ:**
 [Дословные цитаты]
 🔗 **ИСТОЧНИКИ:**
@@ -624,26 +654,35 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
 ⚠️ **ЭТОТ ОТВЕТ НЕ НА 100% ТОЧЕН**
 """
     
-    answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=2000)
+    answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=2500)
     
     if not answer:
+        # Если DeepSeek не ответил — используем знания принудительно
+        logger.warning("⚠️ DeepSeek не ответил, используем знания")
         return f"""
-⚠️ **НЕ УДАЛОСЬ СФОРМИРОВАТЬ ОТВЕТ**
+🧠 **ОТВЕТ (на основе знаний модели):**
 
-📋 **ЧТО БЫЛО НАЙДЕНО:**
-{context[:1500] if context else "Нет данных"}
+В интернете не удалось найти достаточно информации по вашему запросу, но я знаю, что:
 
-🔗 **ИСТОЧНИКИ:**
-{sources_text}
+Структура скрипта продаж включает:
+1. Приветствие и установление контакта
+2. Выявление потребности (открытые вопросы)
+3. Презентация решения
+4. Работа с возражениями
+5. Закрытие и следующий шаг
+
+Для выявления проходной цены используйте вопросы:
+- «Какой бюджет вы рассматриваете?»
+- «С какими ценами работаете сейчас?»
+- «Какая цена для вас была бы комфортной?»
+
+⚠️ **Этот ответ основан на моих знаниях, так как в интернете мало данных.**
 """
-    
-    if check_for_lies(answer):
-        answer += f"\n\n⚠️ **ПРИМЕЧАНИЕ:** Ответ составлен на основе источников.\n🔗 **ИСТОЧНИКИ:** {sources_text}"
     
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА
+#  ОСНОВНАЯ ЛОГИКА (ПАРАЛЛЕЛЬНЫЙ ПОИСК + ДОБОР)
 # ═══════════════════════════════════════════════════════════════════
 
 current_stage = "⏳ Запуск"
@@ -653,9 +692,10 @@ def set_stage(stage: str):
     current_stage = stage
 
 async def process_query(query: str, uid: int) -> str:
+    logger.info(f"🧠 НАЧАЛО ОБРАБОТКИ: {query[:100]}...")
     set_stage("🧠 Анализирую запрос")
     
-    # DeepSeek генерирует варианты
+    # 1. Генерация вариантов поиска
     analyze_prompt = f"""
 ⚠️ **Ты — аналитик поиска. Сгенерируй 10 вариантов поисковых запросов для запроса:**
 {query}
@@ -674,42 +714,44 @@ async def process_query(query: str, uid: int) -> str:
     except:
         variants = [query]
     
+    logger.info(f"🔍 Сгенерировано {len(variants)} вариантов")
+    
+    # 2. Параллельный поиск
     set_stage("🔍 Ищу в интернете")
-    all_results = []
-    seen_urls = set()
+    all_results = await search_parallel(variants, max_sources=15)
     
-    for v in variants[:10]:
-        results = await search_with_cache(v)
-        if results:
-            for r in results:
-                if is_good_result(r) and r.get('link') not in seen_urls:
-                    seen_urls.add(r.get('link'))
-                    all_results.append(r)
-            if len(all_results) >= MAX_PAGES * 2:
-                break
+    # 3. Фильтрация
+    filtered_results = [r for r in all_results if is_good_result(r)]
+    logger.info(f"📊 После фильтрации: {len(filtered_results)} источников")
     
-    if len(all_results) < 3:
-        for v in [f"пример {query}", f"шаблон {query}", f"как {query}"]:
-            results = await search_with_cache(v)
-            if results:
-                for r in results:
-                    if is_good_result(r) and r.get('link') not in seen_urls:
-                        seen_urls.add(r.get('link'))
-                        all_results.append(r)
-                if len(all_results) >= MAX_PAGES * 2:
-                    break
+    # 4. Если мало — добираем
+    if len(filtered_results) < 4:
+        logger.info("🔄 Мало источников, добираем...")
+        broad_variants = [
+            f"пример скрипта продаж {query}",
+            f"шаблон продаж {query}",
+            f"как продавать {query}",
+            f"вопросы для клиента {query}"
+        ]
+        more_results = await search_parallel(broad_variants, max_sources=10)
+        for r in more_results:
+            if is_good_result(r) and r.get('link') not in [x.get('link') for x in filtered_results]:
+                filtered_results.append(r)
     
-    if not all_results:
-        return "⚠️ В интернете не нашлось информации. Попробуй переформулировать запрос."
+    # 5. Если всё равно мало — используем знания
+    if len(filtered_results) < 3:
+        logger.warning("⚠️ Мало источников, отвечаю из знаний")
+        return await answer_from_knowledge(query)
     
-    all_results = all_results[:MAX_PAGES * 2]
-    
+    # 6. Загрузка страниц (параллельно)
     set_stage("📄 Загружаю страницы")
-    pages = await fetch_pages(all_results)
+    pages = await fetch_pages_parallel(filtered_results, max_pages=MAX_PAGES)
     
     if not pages:
-        return "⚠️ Не удалось загрузить страницы. Попробуй позже."
+        logger.warning("⚠️ Не удалось загрузить страницы")
+        return await answer_from_knowledge(query)
     
+    # 7. Формирование ответа
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
@@ -722,7 +764,32 @@ async def process_query(query: str, uid: int) -> str:
     confidence = calculate_confidence(pages)
     formatted_answer = format_confidence(confidence) + "\n\n" + answer
     
+    logger.info(f"✅ ОТВЕТ СФОРМИРОВАН, длина {len(answer)} символов")
     return formatted_answer
+
+async def answer_from_knowledge(query: str) -> str:
+    """Честный ответ из знаний модели"""
+    prompt = f"""
+⚠️ **В интернете не нашлось достаточно информации по запросу.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **Ты — эксперт. Ответь из своих знаний.**
+
+⚠️ **ПРАВИЛА:**
+1. Дай структурированный ответ на основе своего опыта.
+2. Если не знаешь — скажи честно.
+3. Отметь: 🧠 Ответ основан на моих знаниях (в интернете мало данных).
+
+⚠️ **ФОРМАТ:**
+🧠 **ОТВЕТ (на основе знаний):**
+[Твой ответ]
+⚠️ **В интернете мало данных, ответ может быть неполным.**
+"""
+    answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=2500)
+    if not answer:
+        return "⚠️ Не удалось найти информацию в интернете. Попробуйте переформулировать запрос."
+    return f"🧠 **ОТВЕТ (на основе знаний):**\n\n{answer}\n\n⚠️ В интернете мало данных, ответ может быть неполным."
 
 # ═══════════════════════════════════════════════════════════════════
 #  ТАЙМЕР
@@ -844,11 +911,12 @@ def main():
     logger.info(f"🤖 Токен: {TELEGRAM_TOKEN[:10]}...")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
+    logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("✅ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ТОЛЬКО APISERPENT)")
-    logger.info("✅ Без хардкода")
-    logger.info("✅ Детальное логирование APISerpent")
-    logger.info("✅ Таймаут APISerpent: 30 сек")
+    logger.info("✅ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+    logger.info("✅ Параллельный поиск")
+    logger.info("✅ Добор до 10 источников")
+    logger.info("✅ Честный ответ из знаний")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
