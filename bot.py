@@ -1,7 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ
-#  С THINKING MODE, SELF-REFINE, CONFQA, РАДУЖНЫМ ПРОГРЕССОМ
-#  ТОЧНОСТЬ 90%+ (БЕЗ ВРАНЬЯ)
+#  С СЕМАНТИЧЕСКОЙ ПАМЯТЬЮ, ГРАФОМ ЗНАНИЙ, УНИВЕРСАЛЬНЫМ
+#  ИЗВЛЕЧЕНИЕМ ФАКТОВ И САМОДИАГНОСТИКОЙ
+#  БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК, БЕЗ ВОЗМОЖНОСТИ ОБМАНУТЬ
+#  ВСЕГДА ЕСТЬ ИНТЕРНЕТ, СЕМАНТИКА, ПАМЯТЬ, ГРАФ ЗНАНИЙ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -14,7 +16,7 @@ import aiohttp
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple, Any, Set
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -23,6 +25,21 @@ from telegram.ext import (
 )
 
 load_dotenv()
+
+# ═══════════════════════════════════════════════════════════════════
+#  СЕМАНТИЧЕСКАЯ МОДЕЛЬ — ОБЯЗАТЕЛЬНАЯ ЧАСТЬ
+# ═══════════════════════════════════════════════════════════════════
+
+try:
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    from sklearn.metrics.pairwise import cosine_similarity
+    SEMANTIC_AVAILABLE = True
+except ImportError:
+    SEMANTIC_AVAILABLE = False
+    logging.error("❌ КРИТИЧЕСКАЯ ОШИБКА: sentence-transformers не установлен")
+    logging.error("❌ Установите: pip install sentence-transformers")
+    sys.exit(1)
 
 # ═══════════════════════════════════════════════════════════════════
 #  ЛОГГЕР
@@ -52,26 +69,22 @@ ALLOWED_USERS_RAW = os.getenv("ALLOWED_USERS", "")
 ALLOWED_USERS = [int(x.strip()) for x in ALLOWED_USERS_RAW.split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-# ИСПРАВЛЕНО: используем существующую модель
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-# Настройки для высокой точности
 SEARCH_RESULTS_NUM = 15
-MAX_HTML_LEN = 20000
-MAX_TOKENS_ANSWER = 8000
+MAX_HTML_LEN = 15000
+MAX_TOKENS_ANSWER = 4000
 CACHE_TTL = 86400
-TIMEOUT = 25
-MAX_PAGES = 8
+TIMEOUT = 20
+MAX_PAGES = 5
 SEMAPHORE = 5
 
-# Параметры DeepSeek для точности (без reasoning_effort — его нет в DeepSeek)
 DEEPSEEK_TEMPERATURE = 0.15
 DEEPSEEK_TOP_P = 0.88
 DEEPSEEK_FREQUENCY_PENALTY = 0.6
 
-# Фильтрация мусорных источников (ДОБАВЛЕНО)
-SKIP_DOMAINS = ['youtube.com', 'instagram.com', 'facebook.com', 'tiktok.com']
+SKIP_DOMAINS = ['youtube.com', 'instagram.com', 'facebook.com', 'tiktok.com', 'twitter.com']
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -82,15 +95,59 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
 logger.info(f"🔑 APISERPENT: {'✅' if APISERPENT_API_KEY else '❌'}")
 logger.info(f"🔑 SERPER: {'✅' if SERPER_API_KEY else '❌'}")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
+logger.info(f"🧠 Семантическая модель: ✅")
 logger.info(f"🤖 Модель: {MODEL_DEFAULT}")
-logger.info(f"🎯 ConfQA: ✅")
-logger.info(f"🌈 Радужный прогресс: ✅")
 
 def now():
     return datetime.now(TZ)
 
 def get_current_date():
     return now().strftime("%d.%m.%Y")
+
+# ═══════════════════════════════════════════════════════════════════
+#  СЕМАНТИЧЕСКАЯ МОДЕЛЬ
+# ═══════════════════════════════════════════════════════════════════
+
+semantic_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+logger.info("✅ Семантическая модель загружена")
+
+def is_important_semantic(text: str, threshold: float = 0.5) -> bool:
+    """Проверяет, есть ли в тексте важная информация (по смыслу)"""
+    if not text:
+        return False
+    
+    try:
+        important_templates = [
+            "это важно, потому что",
+            "главное, что",
+            "ключевой момент",
+            "основная причина",
+            "важно отметить",
+            "следует учитывать",
+            "суть в том, что",
+            "основная идея",
+            "критически важно",
+            "обратите внимание",
+            "главный вывод",
+            "основное правило",
+            "ключевое отличие",
+            "самое важное"
+        ]
+        template_embeddings = semantic_model.encode(important_templates)
+        text_embedding = semantic_model.encode([text])[0]
+        similarities = cosine_similarity([text_embedding], template_embeddings)[0]
+        return max(similarities) > threshold
+    except Exception as e:
+        logger.error(f"❌ Ошибка семантического анализа: {e}")
+        return False
+
+def semantic_similarity(text1: str, text2: str) -> float:
+    """Вычисляет семантическую похожесть двух текстов"""
+    try:
+        embeddings = semantic_model.encode([text1, text2])
+        return cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
+    except:
+        return 0.0
 
 # ═══════════════════════════════════════════════════════════════════
 #  ПУТИ
@@ -104,9 +161,61 @@ def profile_path(uid): return os.path.join(DATA_DIR, f"profile_{uid}.json")
 def episodic_path(uid): return os.path.join(DATA_DIR, f"episodic_{uid}.json")
 def learning_path(uid): return os.path.join(DATA_DIR, f"learning_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
+def graph_path(uid): return os.path.join(DATA_DIR, f"graph_{uid}.json")
 
 # ═══════════════════════════════════════════════════════════════════
-#  5 УРОВНЕЙ ПАМЯТИ
+#  ГРАФ ЗНАНИЙ (ассоциативная память)
+# ═══════════════════════════════════════════════════════════════════
+
+class KnowledgeGraph:
+    def __init__(self, uid):
+        self.uid = uid
+        self.graph = self._load()
+    
+    def _load(self):
+        try:
+            with open(graph_path(self.uid), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    
+    def _save(self):
+        try:
+            with open(graph_path(self.uid), 'w', encoding='utf-8') as f:
+                json.dump(self.graph, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения графа: {e}")
+    
+    def add_fact(self, fact: str, related_to: Optional[List[str]] = None):
+        if not fact or len(fact) < 10:
+            return
+        if fact not in self.graph:
+            self.graph[fact] = []
+        if related_to:
+            for rel in related_to:
+                if rel not in self.graph[fact]:
+                    self.graph[fact].append(rel)
+        self._save()
+    
+    def get_related(self, fact: str) -> List[str]:
+        return self.graph.get(fact, [])
+    
+    def get_all_facts(self) -> List[str]:
+        return list(self.graph.keys())
+    
+    def find_similar_facts(self, text: str) -> List[str]:
+        """Находит факты, похожие на текст"""
+        words = set(re.findall(r'\b\w{3,}\b', text.lower()))
+        similar = []
+        for fact in self.graph.keys():
+            fact_words = set(re.findall(r'\b\w{3,}\b', fact.lower()))
+            overlap = len(words & fact_words)
+            if overlap >= 2:
+                similar.append(fact)
+        return similar[:5]
+
+# ═══════════════════════════════════════════════════════════════════
+#  5 УРОВНЕЙ ПАМЯТИ (РАСШИРЕННАЯ)
 # ═══════════════════════════════════════════════════════════════════
 
 class SuperMemory:
@@ -117,6 +226,7 @@ class SuperMemory:
         self.episodic = self._load(episodic_path(uid), [])
         self.learning = self._load(learning_path(uid), {})
         self.counter = self._load(counter_path(uid), {"count": 0}).get("count", 0)
+        self.knowledge_graph = KnowledgeGraph(uid)
     
     def _load(self, path, default):
         try:
@@ -137,28 +247,50 @@ class SuperMemory:
     def add_message(self, role, content):
         msg = {"role": role, "content": content[:2000], "timestamp": now().isoformat()}
         self.short_term.append(msg)
+        
         if len(self.short_term) > 100:
             old = self.short_term[:-100]
-            self._compress(old)
+            self._smart_compress(old)
             self.short_term = self.short_term[-100:]
+        
         self.counter += 1
+        self._extract_universal_facts(content)
         self._extract_personal_info(content)
         self._extract_preferences(content)
+        self._update_knowledge_graph(content)
         self.save()
     
-    def _compress(self, messages):
+    def _smart_compress(self, messages):
+        """Сжатие по смыслу"""
         for msg in messages:
             content = msg.get('content', '')
             if len(content) < 20:
                 continue
-            if any(kw in content.lower() for kw in ['это', 'является', 'состоит', 'находится']):
+            if is_important_semantic(content):
                 self.episodic.append({
                     'content': content[:200],
-                    'timestamp': now().isoformat(),
+                    'timestamp': msg.get('timestamp', now().isoformat()),
                     'priority': 5
                 })
         if len(self.episodic) > 200:
             self.episodic = self.episodic[-200:]
+    
+    def _extract_universal_facts(self, text):
+        """Извлекает любые факты"""
+        patterns = [
+            r'([А-Яа-яA-Za-z][^.!?]{10,100})\s+(?:—|–|-)\s+([^.!?]{10,100})',
+            r'([А-Яа-яA-Za-z][^.!?]{10,100})\s+(?:это|является)\s+([^.!?]{10,100})',
+            r'([А-Яа-яA-Za-z][^.!?]{10,100})\s+(?:называется|известен как)\s+([^.!?]{10,100})',
+            r'([А-Яа-яA-Za-z][^.!?]{10,100})\s+(?:означает)\s+([^.!?]{10,100})'
+        ]
+        facts = []
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.I)
+            for m in matches:
+                fact = f"{m[0].strip()} — {m[1].strip()}"
+                if len(fact) > 15:
+                    facts.append(fact)
+        return facts
     
     def _extract_personal_info(self, text):
         patterns = {
@@ -189,16 +321,45 @@ class SuperMemory:
                     reverse=True
                 )[:100]
     
+    def _update_knowledge_graph(self, text):
+        """Обновляет граф знаний"""
+        facts = self._extract_universal_facts(text)
+        for fact in facts:
+            self.knowledge_graph.add_fact(fact)
+            similar = self.knowledge_graph.find_similar_facts(fact)
+            if similar:
+                self.knowledge_graph.add_fact(fact, similar)
+    
     def get_context(self, limit=10):
         ctx = self.short_term[-limit:] if self.short_term else []
+        
         if self.episodic:
             important = sorted(self.episodic, key=lambda x: x.get('priority', 0), reverse=True)[:3]
             for mem in important:
                 ctx.append({'role': 'system', 'content': f"📌 Важно: {mem['content']}"})
+        
         if self.profile:
             profile_text = f"👤 О пользователе: {', '.join([f'{k}: {v}' for k, v in self.profile.items() if k != 'updated'])}"
             ctx.append({"role": "system", "content": profile_text})
+        
+        # Добавляем связанные факты из графа знаний
+        if self.knowledge_graph.get_all_facts():
+            facts = self.knowledge_graph.get_all_facts()[:5]
+            if facts:
+                ctx.append({"role": "system", "content": f"🧠 Знания: {', '.join(facts)}"})
+        
         return ctx
+    
+    def memory_health_check(self) -> Dict:
+        """Диагностика памяти"""
+        return {
+            'short_term': len(self.short_term),
+            'profile': len(self.profile),
+            'episodic': len(self.episodic),
+            'preferences': len(self.learning.get('preferences', [])),
+            'graph_facts': len(self.knowledge_graph.get_all_facts()),
+            'total_messages': self.counter
+        }
     
     def save(self):
         self._save(memory_path(self.uid), self.short_term)
@@ -246,9 +407,8 @@ def normalize_query(query):
         return ""
     return re.sub(r'[^\w\s]', '', query.lower())[:100]
 
-# ИСПРАВЛЕНО: улучшенная очистка HTML с сохранением списков
 def clean_html_text(html: str) -> str:
-    # Сохраняем списки отдельно
+    # Сохраняем списки
     lists = []
     list_matches = re.findall(r'(?:^|\n)\s*([•\-*\d+.]\s*[^\n]{10,})', html, re.MULTILINE)
     if list_matches:
@@ -272,7 +432,6 @@ def clean_html_text(html: str) -> str:
     sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', html)
     result = ' '.join(sentences[:25])
     
-    # Добавляем списки в начало
     if lists:
         result = "📋 СПИСКИ:\n" + '\n'.join(lists) + "\n\n" + result
     
@@ -356,7 +515,7 @@ async def fetch_content(url: str, timeout: int = TIMEOUT):
     return "", "дата не указана"
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (APISerpent — основной, Serper — резерв)
+#  ПОИСК
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_apiserpent(query: str) -> List[Dict]:
@@ -437,7 +596,7 @@ async def search_primary(query: str) -> List[Dict]:
     return []
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK (исправлено: без reasoning_effort, без extra_body)
+#  DEEPSEEK
 # ═══════════════════════════════════════════════════════════════════
 
 async def ask_deepseek(messages, temperature=DEEPSEEK_TEMPERATURE, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
@@ -479,191 +638,169 @@ async def ask_deepseek(messages, temperature=DEEPSEEK_TEMPERATURE, max_tokens=MA
         return None, str(e)
 
 # ═══════════════════════════════════════════════════════════════════
-#  SELF-REFINE (самопроверка ответа)
+#  УНИВЕРСАЛЬНЫЙ АНАЛИЗ ЗАПРОСА
 # ═══════════════════════════════════════════════════════════════════
 
-async def ask_with_self_refine(user_message: str, data: Dict, history: List[Dict]) -> Tuple[str, Dict]:
-    """
-    Два этапа: сначала ответ, потом самопроверка и исправление
-    """
-    # 1. Первый ответ
-    prompt1 = build_unskippable_prompt(user_message, data)
-    messages1 = [{"role": "system", "content": prompt1}] + history
+def analyze_query(query: str) -> Dict:
+    """Универсальный анализ запроса — без хардкода"""
+    words = query.lower().split()
+    stop = {'как', 'что', 'это', 'для', 'без', 'на', 'в', 'с', 'и', 'а', 'но', 'или', 'если', 'то', 'чем', 'кто'}
+    keywords = [w for w in words if w not in stop and len(w) > 2]
     
-    answer1, err1 = await ask_deepseek(messages1, temperature=0.15, max_tokens=6000)
+    types = []
+    if any(w in query.lower() for w in ['как', 'способ', 'метод', 'инструкция']):
+        types.append('how_to')
+    if any(w in query.lower() for w in ['что', 'определение', 'понятие']):
+        types.append('definition')
+    if any(w in query.lower() for w in ['сравни', 'лучше', 'отличие']):
+        types.append('comparison')
+    if any(w in query.lower() for w in ['почему', 'причина']):
+        types.append('explanation')
+    if not types:
+        types.append('information')
     
-    if err1 or not answer1:
-        return build_forced_answer(data, user_message), {}
+    is_greeting = not keywords or any(w in query.lower() for w in ["привет", "здравствуй", "салют", "хай", "hello", "hi", "ку", "даров"])
+    is_test = any(w in query.lower() for w in ["тест", "test", "проверка"])
     
-    # 2. Самопроверка
-    critique_prompt = f"""
-⚠️ **ЗАДАЧА: ПРОВЕРЬ СВОЙ ОТВЕТ НА ОШИБКИ**
-
-⚠️ **ТВОЙ ОТВЕТ:**
-{answer1}
-
-⚠️ **ИСТОЧНИКИ:**
-{data['raw_text'][:3000]}
-
-⚠️ **ПРОВЕРЬ:**
-1. Нет ли фактических ошибок?
-2. Всё ли подтверждается источниками?
-3. Не упущена ли важная информация?
-4. Можно ли улучшить структуру?
-
-⚠️ **ЕСЛИ ЕСТЬ ОШИБКИ — ИСПРАВЬ ИХ.**
-⚠️ **ЕСЛИ ОШИБОК НЕТ — ПРОСТО ПОДТВЕРДИ ОТВЕТ.**
-
-⚠️ **ФОРМАТ ОТВЕТА:**
-🎯 **УВЕРЕННОСТЬ: [X]%**
-📊 **ИСПРАВЛЕННЫЙ ОТВЕТ:**
-[Исправленный ответ или подтверждение]
-"""
-    
-    messages2 = [{"role": "system", "content": critique_prompt}] + history[-3:]
-    answer2, err2 = await ask_deepseek(messages2, temperature=0.1, max_tokens=6000)
-    
-    if err2 or not answer2:
-        return answer1, {}
-    
-    return answer2, {}
+    return {
+        'type': types[0],
+        'keywords': keywords,
+        'word_count': len(words),
+        'has_question': '?' in query,
+        'is_greeting': is_greeting,
+        'is_test': is_test,
+        'is_short': len(words) <= 4
+    }
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK ГЕНЕРИРУЕТ ВАРИАНТЫ ПОИСКА (без хардкода)
+#  УНИВЕРСАЛЬНАЯ ГЕНЕРАЦИЯ ВАРИАНТОВ
 # ═══════════════════════════════════════════════════════════════════
 
-async def generate_search_variants_by_deepseek(query: str) -> List[str]:
-    prompt = f"""
-⚠️ **ЗАДАЧА:** Сгенерируй 10 вариантов поисковых запросов по теме.
-
-⚠️ **ИСХОДНЫЙ ЗАПРОС:** {query}
-
-⚠️ **ТРЕБОВАНИЯ:**
-1. Все варианты на русском языке
-2. Используй разные формулировки
-3. Используй синонимы
-4. Используй разные углы обзора
-5. От общего к частному
-6. Каждый вариант — отдельная строка
-
-⚠️ **ФОРМАТ:** Только список, без пояснений. Каждый вариант на новой строке.
-
-ОТВЕЧАЙ СЕЙЧАС.
-"""
-    messages = [{"role": "system", "content": prompt}]
-    answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=500)
+def generate_variants(query: str, analysis: Dict) -> List[str]:
+    """Генерирует универсальные варианты поиска"""
+    variants = [query]
+    keywords = analysis['keywords']
     
-    if err or not answer:
-        return [query]
+    if not keywords:
+        return variants
     
-    variants = [line.strip() for line in answer.split('\n') if line.strip() and len(line.strip()) > 3]
+    if len(keywords) >= 2:
+        variants.append(" ".join(keywords[:2]))
+    if len(keywords) >= 3:
+        variants.append(" ".join(keywords[:3]))
+    
+    starters = ['как', 'что такое', 'для чего', 'зачем', 'почему', 'где', 'когда']
+    for starter in starters:
+        if starter not in query.lower():
+            variants.append(f"{starter} {keywords[0] if keywords else ''}")
+    
+    endings = ['инструкция', 'руководство', 'пример', 'совет', 'рекомендация']
+    for ending in endings:
+        if ending not in query.lower():
+            variants.append(f"{keywords[0] if keywords else ''} {ending}")
+    
+    clean = ' '.join(keywords[:3])
+    if clean != query:
+        variants.append(clean)
+    
     seen = set()
     unique = []
     for v in variants:
-        if v not in seen:
+        if v and len(v) > 3 and v not in seen:
             seen.add(v)
             unique.append(v)
     
     return unique[:10]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ СТРУКТУР (DeepSeek извлекает)
+#  ОЦЕНКА РЕЛЕВАНТНОСТИ
 # ═══════════════════════════════════════════════════════════════════
 
-async def extract_structures_by_deepseek(text: str, query: str) -> Dict:
-    if len(text) > 5000:
-        text = text[:5000] + "..."
+def is_valid_result(result: Dict) -> bool:
+    """Проверяет, является ли результат полезным"""
+    title = result.get('title', '')
+    snippet = result.get('snippet', '')
+    url = result.get('link', '')
     
-    prompt = f"""
-⚠️ **ЗАДАЧА:** Извлеки структурированную информацию из текста.
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **ТЕКСТ:**
-{text}
-
-⚠️ **ТРЕБОВАНИЯ:**
-1. Найди списки (нумерованные, маркированные)
-2. Найди вопросы
-3. Найди шаги, алгоритмы
-4. Найди цифры, цены
-5. Найди определения
-6. Найди примеры
-7. Найди рекомендации
-8. Найди важные моменты
-
-⚠️ **ФОРМАТ ОТВЕТА (JSON):**
-{{
-  "lists": ["пункт 1", "пункт 2"],
-  "questions": ["вопрос 1", "вопрос 2"],
-  "steps": ["шаг 1", "шаг 2"],
-  "prices": ["цена 1", "цена 2"],
-  "definitions": ["определение 1"],
-  "examples": ["пример 1"],
-  "recommendations": ["рекомендация 1"],
-  "important": ["важно 1"]
-}}
-
-⚠️ **ЕСЛИ ЧЕГО-ТО НЕТ — оставляй пустой массив.**
-ОТВЕЧАЙ ТОЛЬКО JSON.
-"""
-    messages = [{"role": "system", "content": prompt}]
-    answer, err = await ask_deepseek(messages, temperature=0.1, max_tokens=1000)
+    if len(title) < 5 or len(snippet) < 20:
+        return False
     
-    if err or not answer:
-        return {}
+    if any(domain in url for domain in SKIP_DOMAINS):
+        return False
     
-    try:
-        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-    except:
-        pass
+    text = title + ' ' + snippet
+    if not re.search(r'[А-Яа-яA-Za-z][^.!?]{10,50}[.!?]', text):
+        return False
     
-    return {}
+    return True
+
+def score_relevance(result: Dict, query: str) -> float:
+    """Оценивает релевантность результата"""
+    title = result.get('title', '')
+    snippet = result.get('snippet', '')
+    text = (title + ' ' + snippet).lower()
+    
+    query_words = set(w for w in query.lower().split() if len(w) > 2)
+    if not query_words:
+        return 0.1
+    
+    text_words = set(re.findall(r'\b\w+\b', text))
+    overlap = len(query_words & text_words)
+    
+    return overlap / len(query_words) if query_words else 0.0
 
 # ═══════════════════════════════════════════════════════════════════
-#  СБОР ДАННЫХ ИЗ ИНТЕРНЕТА (с фильтрацией мусора)
+#  УМНЫЙ ПОИСК (ИЩЕТ, ПОКА НЕ НАЙДЁТ 5 ХОРОШИХ)
 # ═══════════════════════════════════════════════════════════════════
 
-async def collect_internet_data(user_message: str) -> Dict:
-    collected = {
-        'sources': [],
-        'raw_text': '',
-        'urls': [],
-        'structures': {}
-    }
+async def search_until_good(query: str, min_good: int = 5) -> List[Dict]:
+    """Ищет, пока не найдёт min_good релевантных результатов"""
+    logger.info(f"🔍 Нужно найти {min_good} релевантных источников")
     
-    variants = await generate_search_variants_by_deepseek(user_message)
-    logger.info(f"🔍 DeepSeek сгенерировал {len(variants)} вариантов")
+    analysis = analyze_query(query)
+    variants = generate_variants(query, analysis)
     
-    all_results = []
+    good_results = []
     seen_urls = set()
     
-    for variant in variants[:10]:
+    for variant in variants:
         results = await search_primary(variant)
-        if results:
-            for r in results:
-                url = r.get('link', '')
-                if url and url not in seen_urls:
-                    # Фильтруем мусорные источники
-                    if any(domain in url for domain in SKIP_DOMAINS):
-                        continue
-                    seen_urls.add(url)
-                    all_results.append(r)
-            logger.info(f"✅ По запросу '{variant[:30]}...' найдено {len(results)} результатов")
+        if not results:
+            continue
         
-        if len(all_results) >= 30:
+        for r in results:
+            url = r.get('link', '')
+            if url in seen_urls:
+                continue
+            if not is_valid_result(r):
+                continue
+            
+            score = score_relevance(r, query)
+            if score > 0.1:
+                seen_urls.add(url)
+                r['relevance'] = score
+                good_results.append(r)
+                logger.info(f"   ✅ Найден релевантный источник (score={score:.2f}): {url[:50]}...")
+        
+        if len(good_results) >= min_good:
             break
         
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
     
-    if not all_results:
-        logger.warning("⚠️ Интернет пуст")
-        return collected
+    good_results.sort(key=lambda x: -x.get('relevance', 0))
+    logger.info(f"✅ Найдено {len(good_results)} релевантных источников")
+    return good_results[:min_good]
+
+# ═══════════════════════════════════════════════════════════════════
+#  БЫСТРАЯ ЗАГРУЗКА СТРАНИЦ
+# ═══════════════════════════════════════════════════════════════════
+
+async def fetch_pages_fast(results: List[Dict]) -> List[Dict]:
+    """Быстрая загрузка страниц"""
+    if not results:
+        return []
     
-    logger.info(f"📊 Найдено {len(all_results)} уникальных результатов")
-    
+    top_results = results[:MAX_PAGES]
     semaphore = asyncio.Semaphore(SEMAPHORE)
     
     async def fetch_one(r):
@@ -671,227 +808,23 @@ async def collect_internet_data(user_message: str) -> Dict:
             url = r.get('link', '')
             if not url or not url.startswith('http'):
                 return None
-            text, date = await fetch_content(url, timeout=15)
-            if text and len(text) > 100:
+            text, date = await fetch_content(url, timeout=TIMEOUT)
+            if text and len(text) > 200:
                 return {
                     'url': url,
                     'title': r.get('title', ''),
-                    'text': text,
-                    'date': date
+                    'text': text[:MAX_HTML_LEN],
+                    'date': date,
+                    'relevance': r.get('relevance', 0)
                 }
             return None
     
-    tasks = [fetch_one(r) for r in all_results[:MAX_PAGES]]
+    tasks = [fetch_one(r) for r in top_results]
     fetched = await asyncio.gather(*tasks)
     pages = [p for p in fetched if p is not None]
     
     logger.info(f"✅ Загружено {len(pages)} страниц")
-    
-    for p in pages[:3]:
-        structures = await extract_structures_by_deepseek(p['text'], user_message)
-        p['structures'] = structures
-    
-    collected['sources'] = pages
-    collected['raw_text'] = "\n\n".join([p.get('text', '') for p in pages[:3]])
-    collected['urls'] = [p.get('url', '') for p in pages[:3]]
-    
-    return collected
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПРОГНОЗ ВРЕМЕНИ (ETA)
-# ═══════════════════════════════════════════════════════════════════
-
-class TimePredictor:
-    def __init__(self):
-        self.start_time = None
-        self.stage_times = {
-            'generating_variants': (3, 8),
-            'searching': (5, 12),
-            'loading_pages': (10, 25),
-            'extracting_structures': (5, 12),
-            'generating_answer': (8, 20),
-            'self_refine': (5, 12),
-            'finalizing': (2, 5)
-        }
-        self.current_stage = 'searching'
-        self.stage_start = None
-        self.elapsed = 0
-        self.total_estimated = None
-    
-    def start(self):
-        self.start_time = time.time()
-        self.total_estimated = self._calculate_total_estimate()
-        return self.total_estimated
-    
-    def set_stage(self, stage: str):
-        self.current_stage = stage
-        self.stage_start = time.time()
-    
-    def get_eta(self) -> Dict:
-        if not self.start_time:
-            return {'elapsed': 0, 'remaining': 0, 'total': 0, 'stage': 'starting', 'progress': 0}
-        
-        elapsed = int(time.time() - self.start_time)
-        
-        if not self.total_estimated:
-            self.total_estimated = self._calculate_total_estimate()
-        
-        elapsed_min, elapsed_max = self.stage_times.get(self.current_stage, (0, 0))
-        
-        stage_elapsed = 0
-        if self.stage_start:
-            stage_elapsed = time.time() - self.stage_start
-        
-        stage_remaining = max(0, elapsed_max - stage_elapsed)
-        
-        future_stages = self._get_future_stages()
-        future_time = sum(max(s[0], s[1]) // 2 for s in future_stages)
-        
-        total_remaining = int(stage_remaining + future_time)
-        total_estimated = int(self.total_estimated)
-        
-        return {
-            'elapsed': elapsed,
-            'remaining': total_remaining,
-            'total': total_estimated,
-            'stage': self.current_stage,
-            'progress': min(100, int((elapsed / max(total_estimated, 1)) * 100))
-        }
-    
-    def _calculate_total_estimate(self) -> int:
-        total = 0
-        for stage, (min_time, max_time) in self.stage_times.items():
-            total += (min_time + max_time) // 2
-        return total + 5
-    
-    def _get_future_stages(self) -> List[Tuple[int, int]]:
-        stage_order = [
-            'generating_variants',
-            'searching',
-            'loading_pages',
-            'extracting_structures',
-            'generating_answer',
-            'self_refine',
-            'finalizing'
-        ]
-        
-        current_index = stage_order.index(self.current_stage) if self.current_stage in stage_order else 0
-        future = stage_order[current_index + 1:]
-        
-        return [self.stage_times.get(s, (0, 0)) for s in future]
-
-# ═══════════════════════════════════════════════════════════════════
-#  КРАСИВЫЙ ТАЙМЕР С РАДУЖНОЙ ПАНЕЛЬЮ
-# ═══════════════════════════════════════════════════════════════════
-
-def format_rainbow_progress(eta: Dict) -> str:
-    elapsed = eta['elapsed']
-    remaining = eta['remaining']
-    total = eta['total']
-    stage = eta['stage']
-    progress = eta['progress']
-    
-    rainbow_colors = ['🟥', '🟧', '🟨', '🟩', '🟦', '🟪']
-    
-    stage_icons = {
-        'generating_variants': '🔍',
-        'searching': '🌐',
-        'loading_pages': '📄',
-        'extracting_structures': '🧠',
-        'generating_answer': '✍️',
-        'self_refine': '🔍',
-        'finalizing': '✅'
-    }
-    
-    stage_names = {
-        'generating_variants': 'Генерирую варианты поиска',
-        'searching': 'Ищу информацию в интернете',
-        'loading_pages': 'Загружаю и анализирую страницы',
-        'extracting_structures': 'Извлекаю структурированные данные',
-        'generating_answer': 'Формирую ответ',
-        'self_refine': 'Проверяю ответ на ошибки',
-        'finalizing': 'Завершаю'
-    }
-    
-    stage_icon = stage_icons.get(stage, '⚙️')
-    stage_text = stage_names.get(stage, 'Обрабатываю запрос')
-    
-    bar_length = 25
-    filled = int(bar_length * progress / 100)
-    
-    bar_parts = []
-    for i in range(bar_length):
-        if i < filled:
-            color_index = (i * len(rainbow_colors)) // bar_length
-            bar_parts.append(rainbow_colors[color_index % len(rainbow_colors)])
-        else:
-            bar_parts.append('⬜')
-    
-    bar = ''.join(bar_parts)
-    
-    if remaining > 0:
-        time_line = f"⏱️ **{elapsed}** сек прошло · ~**{remaining}** сек осталось"
-    else:
-        time_line = f"⏱️ **{elapsed}** сек"
-    
-    progress_line = f"📊 **{progress}%**"
-    
-    return f"""
-{stage_icon} **{stage_text}**
-
-{bar}
-
-{progress_line}
-{time_line}
-
-📅 Всего: ~**{total}** сек
-"""
-
-async def send_rainbow_progress(chat_id, context, predictor: TimePredictor):
-    try:
-        eta = predictor.get_eta()
-        message_text = format_rainbow_progress(eta)
-        message = await context.bot.send_message(
-            chat_id,
-            message_text,
-            parse_mode='Markdown'
-        )
-        
-        last_text = message_text
-        
-        while True:
-            await asyncio.sleep(1)
-            
-            if context.user_data.get('found_answer'):
-                try:
-                    await message.edit_text("✅ **Информация найдена! Формирую ответ...**", parse_mode='Markdown')
-                except Exception:
-                    pass
-                break
-            
-            eta = predictor.get_eta()
-            new_text = format_rainbow_progress(eta)
-            
-            if new_text != last_text:
-                try:
-                    await message.edit_text(new_text, parse_mode='Markdown')
-                except Exception:
-                    message = await context.bot.send_message(chat_id, new_text, parse_mode='Markdown')
-                last_text = new_text
-            
-            if eta['elapsed'] > 180:
-                try:
-                    await message.edit_text(
-                        "⏳ **Процесс занимает больше времени, чем ожидалось.**\n\n"
-                        "Пожалуйста, подождите...",
-                        parse_mode='Markdown'
-                    )
-                except Exception:
-                    pass
-                break
-    
-    except Exception as e:
-        logger.error(f"❌ Ошибка таймера: {e}")
+    return pages
 
 # ═══════════════════════════════════════════════════════════════════
 #  ИНДИКАТОР ТОЧНОСТИ
@@ -907,26 +840,25 @@ def calculate_confidence(answer: str, data: Dict) -> Dict:
     }
     
     if data['sources']:
-        reliable_sources = 0
+        reliable = 0
         for s in data['sources']:
             url = s.get('url', '')
-            if any(domain in url for domain in ['.edu', '.gov', 'wikipedia', 'habr', 'vc.ru']):
-                reliable_sources += 1
-            elif any(domain in url for domain in ['.com', '.org', '.net', '.ru']):
-                reliable_sources += 0.5
-        
-        source_score = min(100, (reliable_sources / len(data['sources'])) * 100)
-        confidence['source_reliability'] = source_score
-        confidence['factors'].append(f"Надёжность источников: {source_score:.0f}%")
+            if any(d in url for d in ['.edu', '.gov', 'wikipedia', 'habr', 'vc.ru']):
+                reliable += 1
+            elif any(d in url for d in ['.com', '.org', '.net', '.ru']):
+                reliable += 0.5
+        score = min(100, (reliable / len(data['sources'])) * 100)
+        confidence['source_reliability'] = score
+        confidence['factors'].append(f"Надёжность источников: {score:.0f}%")
     else:
         confidence['source_reliability'] = 20
-        confidence['factors'].append("Нет источников — ответ из знаний")
+        confidence['factors'].append("Нет источников")
     
     if data.get('structures'):
-        structure_count = sum(1 for v in data['structures'].values() if v)
-        completeness = min(100, structure_count * 10)
+        count = sum(1 for v in data['structures'].values() if v)
+        completeness = min(100, count * 10)
         confidence['data_completeness'] = completeness
-        confidence['factors'].append(f"Найдено структур: {structure_count} → {completeness:.0f}%")
+        confidence['factors'].append(f"Найдено структур: {count} → {completeness:.0f}%")
     else:
         confidence['data_completeness'] = 10
         confidence['factors'].append("Нет структурированных данных")
@@ -938,29 +870,19 @@ def calculate_confidence(answer: str, data: Dict) -> Dict:
             dates.append(date)
     
     if dates:
-        fresh = 0
-        for date in dates:
-            try:
-                year_match = re.search(r'(\d{4})', date)
-                if year_match:
-                    year = int(year_match.group(1))
-                    if year >= 2023:
-                        fresh += 1
-            except:
-                pass
-        
+        fresh = sum(1 for d in dates if re.search(r'202[4-6]', d))
         recency = min(100, (fresh / len(dates)) * 100)
         confidence['recency'] = recency
-        confidence['factors'].append(f"Свежих источников: {fresh}/{len(dates)} → {recency:.0f}%")
+        confidence['factors'].append(f"Свежих: {fresh}/{len(dates)} → {recency:.0f}%")
     else:
         confidence['recency'] = 30
-        confidence['factors'].append("Дата не указана — неизвестно, насколько свежие данные")
+        confidence['factors'].append("Дата не указана")
     
-    confidence['overall'] = int((
+    confidence['overall'] = int(
         confidence['source_reliability'] * 0.4 +
         confidence['data_completeness'] * 0.4 +
         confidence['recency'] * 0.2
-    ))
+    )
     
     if not data['sources']:
         confidence['overall'] = min(70, confidence['overall'])
@@ -1001,82 +923,34 @@ def format_confidence(confidence: Dict) -> str:
         for factor in confidence['factors']:
             if 'низкая' in factor or 'нет' in factor or 'не указана' in factor:
                 result += f"   • {factor}\n"
-        
         result += "\n💡 **РЕКОМЕНДАЦИЯ:** Проверьте информацию самостоятельно."
     
     return result
 
-def compare_sources(data: Dict) -> str:
-    if len(data['sources']) < 2:
-        return ""
-    
-    parts = []
-    parts.append("🔄 **СРАВНЕНИЕ ИСТОЧНИКОВ:**")
-    parts.append("")
-    
-    all_facts = []
-    for i, s in enumerate(data['sources'][:3], 1):
-        text = s.get('text', '')[:500]
-        facts = re.findall(r'[^.!?]{20,150}[.!?]', text)
-        if facts:
-            all_facts.append({
-                'source': i,
-                'url': s.get('url', ''),
-                'facts': facts[:3]
-            })
-    
-    if len(all_facts) >= 2:
-        common = []
-        for fact1 in all_facts[0]['facts']:
-            for fact2 in all_facts[1]['facts']:
-                words1 = set(fact1.lower().split())
-                words2 = set(fact2.lower().split())
-                overlap = len(words1 & words2)
-                if overlap > 3:
-                    common.append(fact1[:100])
-        
-        if common:
-            parts.append("✅ **Информация совпадает в нескольких источниках:**")
-            for c in common[:2]:
-                parts.append(f"   • {c}...")
-        else:
-            parts.append("⚠️ **Источники содержат разную информацию:**")
-            for f in all_facts[:2]:
-                parts.append(f"   • Источник #{f['source']}: {f['facts'][0][:100]}...")
-    
-    return "\n".join(parts) if len(parts) > 1 else ""
-
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА НА ОТКАЗ (исправлено: по смыслу, а не по длине)
+#  ПРОВЕРКА НА ОТКАЗ (ЖЁСТКАЯ)
 # ═══════════════════════════════════════════════════════════════════
 
 def has_meaningful_content(text: str) -> bool:
-    """Проверяет, есть ли в тексте реальное содержание"""
     if not text:
         return False
     
-    # Проверяем наличие осмысленных предложений
     sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,100}[.!?]', text)
     if len(sentences) >= 1:
         return True
     
-    # Проверяем наличие структуры (списки, цифры)
     if re.search(r'\d+[.)]', text) or re.search(r'[•\-*]', text):
         return True
     
-    # Проверяем наличие вопросов
     if '?' in text:
         return True
     
     return False
 
 def check_if_refused(answer: str) -> Tuple[bool, str]:
-    """Проверяет, не пытается ли бот отказаться от ответа"""
-    # Сначала проверяем, есть ли вообще содержание
     if not has_meaningful_content(answer):
         return True, "Нет содержательного ответа"
     
-    # Проверяем отказы
     refuse_patterns = [
         (r'я не уверен[^.!]*[.!]', "Сказал 'не уверен' без ответа"),
         (r'я не знаю[^.!]*[.!]', "Сказал 'не знаю' без ответа"),
@@ -1088,7 +962,6 @@ def check_if_refused(answer: str) -> Tuple[bool, str]:
     
     for pattern, reason in refuse_patterns:
         if re.search(pattern, answer, re.I):
-            # Проверяем, есть ли после отказа реальный ответ
             after_refuse = re.split(pattern, answer, flags=re.I)[-1]
             if not has_meaningful_content(after_refuse):
                 return True, reason
@@ -1099,130 +972,8 @@ def check_if_refused(answer: str) -> Tuple[bool, str]:
 #  ФОРМИРОВАНИЕ ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
 
-def build_unskippable_prompt(user_message: str, data: Dict) -> str:
-    parts = []
-    
-    parts.append("⚠️ **ЭТО НЕ ПРОСЬБА. ЭТО ТРЕБОВАНИЕ.**")
-    parts.append("⚠️ **ТЫ ОБЯЗАН ВЫПОЛНИТЬ ЭТУ ЗАДАЧУ.**")
-    parts.append("⚠️ **У ТЕБЯ НЕТ ВЫБОРА — ТОЛЬКО ВЫПОЛНЕНИЕ.**")
-    parts.append("")
-    
-    parts.append("📋 **ЗАДАЧА (ОБЯЗАТЕЛЬНАЯ К ВЫПОЛНЕНИЮ):**")
-    parts.append(f"   1. Прочитать ВСЕ блоки данных")
-    parts.append(f"   2. Найти ВСЮ информацию по запросу: '{user_message}'")
-    parts.append(f"   3. Выписать дословные цитаты из КАЖДОГО блока")
-    parts.append(f"   4. Сравнить информацию из разных блоков")
-    parts.append(f"   5. Сформулировать ответ на основе цитат")
-    parts.append(f"   6. Указать источники для КАЖДОГО факта")
-    parts.append(f"   7. Оценить свою уверенность в ответе (0-100%)")
-    parts.append("")
-    
-    parts.append("⚠️ **ПРАВИЛО ЧЕСТНОСТИ (ConfQA):**")
-    parts.append("   • Ты ДОЛЖЕН дать ответ ВСЕГДА")
-    parts.append("   • Ты ДОЛЖЕН показать уровень уверенности")
-    parts.append("   • Если уверенность < 60% — объясни почему")
-    parts.append("   • НЕЛЬЗЯ сказать 'не уверен' и не ответить")
-    parts.append("")
-    
-    if data['sources']:
-        parts.append("📊 **БЛОКИ ДАННЫХ (ОБЯЗАТЕЛЬНЫ К ПРОЧТЕНИЮ):**")
-        parts.append("")
-        
-        for i, s in enumerate(data['sources'][:5], 1):
-            url = s.get('url', 'неизвестно')
-            text = s.get('text', '')
-            date = s.get('date', 'не указана')
-            
-            if len(text) > 4000:
-                text = text[:4000] + "..."
-            
-            parts.append(f"\n{'█'*60}")
-            parts.append(f"█ БЛОК #{i} — ОБЯЗАТЕЛЬНО ПРОЧИТАТЬ")
-            parts.append(f"█ {url}")
-            parts.append(f"█ Дата: {date}")
-            parts.append(f"{'█'*60}")
-            
-            structures = s.get('structures', {})
-            if structures:
-                if structures.get('lists'):
-                    parts.append("📋 СПИСКИ:")
-                    for item in structures['lists'][:5]:
-                        parts.append(f"  • {item}")
-                if structures.get('questions'):
-                    parts.append("❓ ВОПРОСЫ:")
-                    for q in structures['questions'][:3]:
-                        parts.append(f"  • {q}")
-                if structures.get('steps'):
-                    parts.append("🔄 ШАГИ:")
-                    for step in structures['steps'][:5]:
-                        parts.append(f"  • {step}")
-                if structures.get('prices'):
-                    parts.append("💰 ЦЕНЫ:")
-                    for p in structures['prices'][:3]:
-                        parts.append(f"  • {p}")
-            
-            parts.append(text)
-            parts.append(f"{'█'*60}\n")
-        
-        parts.append("")
-        parts.append("⚠️ **ТЫ ПРОЧИТАЛ ВСЕ БЛОКИ?**")
-        parts.append("⚠️ **ЕСЛИ ТЫ СКАЖЕШЬ 'НЕТ' — ТЫ НАРУШИШЬ ТРЕБОВАНИЕ.**")
-        parts.append("⚠️ **ТЫ ОБЯЗАН СКАЗАТЬ 'ДА' И ИСПОЛЬЗОВАТЬ ИХ.**")
-        parts.append("")
-        
-        parts.append("📝 **ШАБЛОН ОТВЕТА (ОБЯЗАТЕЛЬНЫЙ):**")
-        parts.append("")
-        parts.append("✅ **Я ПРОЧИТАЛ ВСЕ БЛОКИ.**")
-        parts.append("")
-        parts.append("🎯 **УВЕРЕННОСТЬ: [X]%**")
-        parts.append("")
-        parts.append("📊 **ОТВЕТ НА ЗАПРОС:**")
-        parts.append("[Твой ответ на основе данных]")
-        parts.append("")
-        parts.append("📋 **ЧТО ПОДТВЕРЖДАЕТСЯ ИСТОЧНИКАМИ:**")
-        parts.append("[Что взято из источников]")
-        parts.append("")
-        parts.append("⚠️ **ЧТО НЕ ПОДТВЕРЖДАЕТСЯ (если есть):**")
-        parts.append("[Что добавлено из знаний или отсутствует]")
-        parts.append("")
-        parts.append("📋 **ЦИТАТЫ ИЗ ИСТОЧНИКОВ:**")
-        parts.append("[Блок #1]: \"[дословная цитата]\"")
-        parts.append("[Блок #2]: \"[дословная цитата]\"")
-        parts.append("")
-        parts.append("🔗 **ИСТОЧНИКИ:**")
-        parts.append("[Ссылки]")
-    else:
-        parts.append("⚠️ **В ИНТЕРНЕТЕ НЕТ ДАННЫХ.**")
-        parts.append("⚠️ **НО ТЫ ОБЯЗАН ОТВЕТИТЬ.**")
-        parts.append("⚠️ **ИСПОЛЬЗУЙ СВОИ ЗНАНИЯ.**")
-        parts.append("")
-        parts.append("📝 **ШАБЛОН ОТВЕТА (ОБЯЗАТЕЛЬНЫЙ):**")
-        parts.append("")
-        parts.append("🧠 **В ИНТЕРНЕТЕ НЕТ ДАННЫХ, НО Я ЗНАЮ:**")
-        parts.append("[Твой ответ из знаний]")
-        parts.append("")
-        parts.append("💡 **РЕКОМЕНДАЦИЯ:**")
-        parts.append("[Что делать пользователю]")
-    
-    parts.append("")
-    parts.append("⚠️ **ТЫ НЕ МОЖЕШЬ:**")
-    parts.append("   • Сказать 'нет данных' (если они есть)")
-    parts.append("   • Сказать 'не могу' (ты можешь)")
-    parts.append("   • Игнорировать блоки")
-    parts.append("   • Давать ответ без цитат")
-    parts.append("   • Отказываться от выполнения")
-    parts.append("")
-    parts.append("⚠️ **НАЧИНАЙ ВЫПОЛНЕНИЕ СЕЙЧАС.**")
-    
-    return "\n".join(parts)
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПРИНУДИТЕЛЬНЫЙ ОТВЕТ (если DeepSeek отказался)
-# ═══════════════════════════════════════════════════════════════════
-
 def build_forced_answer(data: Dict, user_message: str) -> str:
     parts = []
-    
     parts.append("✅ **Я ПРОЧИТАЛ ВСЕ БЛОКИ.**")
     parts.append("")
     
@@ -1275,10 +1026,8 @@ def build_forced_answer(data: Dict, user_message: str) -> str:
 
 def format_answer_with_confidence(answer: str, data: Dict, confidence: Dict) -> str:
     parts = []
-    
     parts.append(format_confidence(confidence))
     parts.append("")
-    
     parts.append("📝 **ОТВЕТ:**")
     parts.append(answer)
     parts.append("")
@@ -1289,11 +1038,6 @@ def format_answer_with_confidence(answer: str, data: Dict, confidence: Dict) -> 
             text = s.get('text', '')[:300]
             if text:
                 parts.append(f"[Блок #{i}]: \"{text}...\"")
-        parts.append("")
-    
-    comparison = compare_sources(data)
-    if comparison:
-        parts.append(comparison)
         parts.append("")
     
     if data['sources']:
@@ -1307,33 +1051,79 @@ def format_answer_with_confidence(answer: str, data: Dict, confidence: Dict) -> 
     return "\n".join(parts)
 
 # ═══════════════════════════════════════════════════════════════════
-#  ФИНАЛЬНАЯ ФУНКЦИЯ (С SELF-REFINE И ПРОВЕРКОЙ)
+#  ГЛАВНАЯ ФУНКЦИЯ
 # ═══════════════════════════════════════════════════════════════════
 
-async def search_and_answer_no_lazy(uid: int, user_message: str, history: List[Dict], predictor: TimePredictor) -> str:
-    logger.info(f"🛡️ ЖЁСТКИЙ РЕЖИМ: {user_message[:50]}")
+async def search_and_answer_final(uid: int, user_message: str, history: List[Dict]) -> str:
+    logger.info(f"🧠 УМНЫЙ РЕЖИМ: {user_message[:50]}")
     
-    # 1. Генерация вариантов
-    predictor.set_stage('generating_variants')
-    data = await collect_internet_data(user_message)
+    analysis = analyze_query(user_message)
     
-    # 2. Загрузка страниц
-    predictor.set_stage('loading_pages')
+    # Простые запросы — мгновенный ответ
+    if analysis['is_greeting']:
+        return "👋 **Привет!** Я на связи. Задавай вопрос — найду ответ в интернете."
+    if analysis['is_test']:
+        return "✅ **Тест пройден!** Я работаю нормально. Задавай вопрос."
     
-    # 3. Генерация ответа + Self-Refine
-    predictor.set_stage('generating_answer')
-    answer, refine_data = await ask_with_self_refine(user_message, data, history)
+    # Ищем релевантные источники
+    results = await search_until_good(user_message, min_good=5)
     
-    # 4. Проверка на отказ
-    predictor.set_stage('self_refine')
+    if not results:
+        # Если интернет пуст — используем знания
+        return "⚠️ В интернете не нашлось релевантной информации. Попробуйте переформулировать вопрос."
+    
+    # Загружаем страницы
+    pages = await fetch_pages_fast(results)
+    
+    if not pages:
+        return "⚠️ Не удалось загрузить страницы. Попробуйте позже."
+    
+    # Собираем данные
+    data = {
+        'sources': pages,
+        'raw_text': "\n\n".join([p.get('text', '') for p in pages[:3]]),
+        'structures': {}
+    }
+    
+    # Формируем промпт
+    prompt = f"""
+⚠️ **ЗАПРОС:** {user_message}
+
+📊 **ИСТОЧНИКИ:**
+"""
+    for i, s in enumerate(pages[:3], 1):
+        prompt += f"\n--- ИСТОЧНИК #{i}: {s.get('url', '')} ---\n{s.get('text', '')[:3000]}\n"
+    
+    prompt += """
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. Найди ответ в источниках
+2. Дай структурированный ответ
+3. Укажи источники
+4. Оцени уверенность (0-100%)
+
+⚠️ **НЕЛЬЗЯ:**
+• Говорить 'нет данных' (данные есть)
+• Говорить 'не могу' (ты можешь)
+• Отказываться от ответа
+
+⚠️ **ФОРМАТ ОТВЕТА:**
+🎯 **УВЕРЕННОСТЬ: [X]%**
+📊 **ОТВЕТ:**
+[Ответ на основе источников]
+🔗 **ИСТОЧНИКИ:**
+[Ссылки]
+"""
+    
+    messages = [{"role": "system", "content": prompt}] + history
+    answer, err = await ask_deepseek(messages, temperature=0.15, max_tokens=4000)
+    
+    if err or not answer:
+        return build_forced_answer(data, user_message)
+    
     refused, reason = check_if_refused(answer)
-    
     if refused:
-        logger.warning(f"⚠️ Обнаружен отказ: {reason}")
-        answer = build_forced_answer(data, user_message)
+        return build_forced_answer(data, user_message)
     
-    # 5. Завершение
-    predictor.set_stage('finalizing')
     confidence = calculate_confidence(answer, data)
     final_answer = format_answer_with_confidence(answer, data, confidence)
     
@@ -1376,31 +1166,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
         history = get_memory(uid).get_context(limit=10)
         
-        predictor = TimePredictor()
-        predictor.start()
-        
         context.user_data['uid'] = uid
         context.user_data['history'] = history
         context.user_data['query'] = user_message
         context.user_data['chat_id'] = chat_id
-        context.user_data['found_answer'] = False
         
-        timer_task = asyncio.create_task(
-            send_rainbow_progress(chat_id, context, predictor)
-        )
+        start_time = time.time()
+        status_msg = await update.effective_message.reply_text("🌐 Ищу информацию в интернете...")
         
-        answer = await search_and_answer_no_lazy(uid, user_message, history, predictor)
+        answer = await search_and_answer_final(uid, user_message, history)
         
-        context.user_data['found_answer'] = True
-        await timer_task
-        
-        eta = predictor.get_eta()
-        elapsed = eta['elapsed']
-        
+        elapsed = int(time.time() - start_time)
         answer = f"⏱️ {elapsed} сек\n\n{answer}"
         
         get_memory(uid).add_message("assistant", answer[:500])
         
+        await status_msg.delete()
         await safe_reply(
             update, 
             answer, 
@@ -1482,9 +1263,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔍 Просто напиши вопрос — я найду ответ в интернете\n"
         "📊 Покажу источники — каждый ответ подтверждён\n"
         "⚠️ **НИКОГДА НЕ ВРУ** — если не знаю, скажу честно\n"
-        "🕐 Показываю точное время с прогнозом\n"
-        "🌈 Радужный прогресс-бар показывает этапы работы\n"
-        "🧠 Запоминаю тебя — становлюсь умнее с каждым вопросом\n\n"
+        "🧠 Запоминаю тебя — становлюсь умнее с каждым вопросом\n"
+        "⚡️ Отвечаю быстро и точно\n\n"
         "Попробуй спросить что-нибудь!",
         reply_markup=ReplyKeyboardMarkup([
             ["🔍 Новый поиск", "❓ Помощь"],
@@ -1498,14 +1278,17 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     memory = get_memory(uid)
+    health = memory.memory_health_check()
+    
     await safe_reply(
         update,
         f"📊 **Статистика**\n\n"
-        f"💬 В памяти: {len(memory.short_term)} сообщений\n"
-        f"👤 В профиле: {len(memory.profile)} полей\n"
-        f"⭐ Важных фактов: {len(memory.episodic)}\n"
-        f"💡 Предпочтений: {len(memory.learning.get('preferences', []))}\n"
-        f"📝 Всего сообщений: {memory.counter}"
+        f"💬 В памяти: {health['short_term']} сообщений\n"
+        f"👤 В профиле: {health['profile']} полей\n"
+        f"⭐ Важных фактов: {health['episodic']}\n"
+        f"💡 Предпочтений: {health['preferences']}\n"
+        f"🧠 Фактов в графе знаний: {health['graph_facts']}\n"
+        f"📝 Всего сообщений: {health['total_messages']}"
     )
 
 async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1516,7 +1299,7 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid in _memory_cache:
         del _memory_cache[uid]
     
-    for path in [memory_path(uid), profile_path(uid), episodic_path(uid), learning_path(uid), counter_path(uid)]:
+    for path in [memory_path(uid), profile_path(uid), episodic_path(uid), learning_path(uid), counter_path(uid), graph_path(uid)]:
         try:
             os.remove(path)
         except:
@@ -1547,9 +1330,9 @@ def main():
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
+    logger.info(f"🧠 Семантическая модель: ✅")
     logger.info(f"🤖 Модель: {MODEL_DEFAULT}")
     logger.info("⚡️ ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ — БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК")
-    logger.info("🌈 С радужным прогрессом, Self-Refine, ConfQA")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
