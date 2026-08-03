@@ -1,9 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  APISERPENT С ПАРАМЕТРОМ deep=true (ПОЛНЫЕ ДАННЫЕ)
-#  ПАРАЛЛЕЛЬНЫЙ ПОИСК ДО 15 ИСТОЧНИКОВ
-#  УМНАЯ ПЕРЕДАЧА ДАННЫХ В DEEPSEEK
-#  ЧЕСТНЫЙ ОТВЕТ ИЗ ЗНАНИЙ ПРИ НЕОБХОДИМОСТИ
+#  ПАРАЛЛЕЛЬНЫЙ ПОИСК (APISerpent) + ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА (HTTP + Browserless)
+#  ДО 15 ИСТОЧНИКОВ, ЧЕСТНЫЙ ОТВЕТ ИЗ ЗНАНИЙ
 #  НИЧЕГО НЕ ВЫРЕЗАНО
 # ═══════════════════════════════════════════════════════════════════
 
@@ -81,7 +79,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (deep=true)")
+logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -306,7 +304,7 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (APISerpent С deep=true → Serper)
+#  ПОИСК (APISerpent с deep=true → Serper)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -496,24 +494,77 @@ def parse_html(html: str) -> Dict:
     sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', text)
     return {'text': ' '.join(sentences[:25])[:4000], 'lists': [], 'headings': []}
 
-async def fetch_page(url: str) -> Optional[Dict]:
-    try:
-        session = await get_session()
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=PAGE_TIMEOUT) as r:
-            if r.status == 200:
-                html = await r.text()
+# ═══════════════════════════════════════════════════════════════════
+#  ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА СТРАНИЦ (HTTP + Browserless)
+# ═══════════════════════════════════════════════════════════════════
+
+async def fetch_page_parallel(url: str) -> Optional[Dict]:
+    """Параллельная загрузка: HTTP и Browserless одновременно"""
+    
+    async def fetch_http():
+        try:
+            session = await get_session()
+            async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=PAGE_TIMEOUT) as r:
+                if r.status == 200:
+                    html = await r.text()
+                    parsed = parse_html(html)
+                    if parsed['text'] and len(parsed['text']) > 300:
+                        return parsed
+        except:
+            pass
+        return None
+    
+    async def fetch_browserless():
+        if not PLAYWRIGHT_AVAILABLE or not BROWSERLESS_WS_ENDPOINT:
+            return None
+        try:
+            html = await fetch_with_browserless(url)
+            if html:
                 parsed = parse_html(html)
-                if parsed['text'] and len(parsed['text']) > 300:
+                if parsed['text'] and len(parsed['text']) > 100:
                     return parsed
+        except:
+            pass
+        return None
+    
+    # Запускаем параллельно
+    http_task = asyncio.create_task(fetch_http())
+    browserless_task = asyncio.create_task(fetch_browserless())
+    
+    # Ждём первый успешный результат
+    done, pending = await asyncio.wait(
+        [http_task, browserless_task],
+        return_when=asyncio.FIRST_COMPLETED,
+        timeout=PAGE_TIMEOUT + 2
+    )
+    
+    # Отменяем оставшиеся
+    for task in pending:
+        task.cancel()
+    
+    # Берём результат
+    for task in done:
+        try:
+            result = task.result()
+            if result and result.get('text'):
+                return result
+        except:
+            pass
+    
+    # Если ничего не получили — ждём оба до конца
+    try:
+        http_result = await http_task
+        if http_result and http_result.get('text'):
+            return http_result
     except:
         pass
     
-    if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
-        html = await fetch_with_browserless(url)
-        if html:
-            parsed = parse_html(html)
-            if parsed['text'] and len(parsed['text']) > 100:
-                return parsed
+    try:
+        browserless_result = await browserless_task
+        if browserless_result and browserless_result.get('text'):
+            return browserless_result
+    except:
+        pass
     
     return None
 
@@ -521,7 +572,7 @@ async def fetch_pages_parallel(results: List[Dict], max_pages: int = MAX_PAGES) 
     if not results:
         return []
     
-    logger.info(f"📄 Параллельная загрузка до {max_pages} страниц")
+    logger.info(f"📄 Параллельная загрузка до {max_pages} страниц (HTTP + Browserless)")
     
     top_results = results[:max_pages * 2]
     
@@ -530,7 +581,7 @@ async def fetch_pages_parallel(results: List[Dict], max_pages: int = MAX_PAGES) 
     for r in top_results:
         url = r.get('link', '')
         if url:
-            tasks.append(fetch_page(url))
+            tasks.append(fetch_page_parallel(url))
             urls.append(url)
     
     pages_data = await asyncio.gather(*tasks)
@@ -546,7 +597,7 @@ async def fetch_pages_parallel(results: List[Dict], max_pages: int = MAX_PAGES) 
         if len(pages) >= max_pages:
             break
     
-    logger.info(f"✅ Загружено {len(pages)} страниц")
+    logger.info(f"✅ Загружено {len(pages)} страниц (параллельно)")
     return pages
 
 # ═══════════════════════════════════════════════════════════════════
@@ -664,7 +715,6 @@ def check_refusal(answer: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
-    # Извлекаем ВСЕ данные из страниц
     all_data = []
     
     for p in pages[:5]:
@@ -672,22 +722,18 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
         if not text:
             continue
         
-        # Списки
         lists = re.findall(r'(?:^|\n)\s*[•\-*\d+.]\s*[^\n]{10,}', text, re.MULTILINE)
         if lists:
             all_data.append("📋 " + "\n".join([f"  • {l.strip()}" for l in lists[:5]]))
         
-        # Шаги
         steps = re.findall(r'(?:шаг|этап|пункт)\s*(\d+)[\s:]*([^\n.]{5,})', text, re.I)
         if steps:
             all_data.append("🔄 " + "\n".join([f"  Шаг {s[0]}: {s[1].strip()}" for s in steps[:3]]))
         
-        # Вопросы
         questions = re.findall(r'[^.!?]{10,150}\?', text)
         if questions:
             all_data.append("❓ " + "\n".join([f"  {q.strip()}" for q in questions[:3]]))
         
-        # Цены
         prices = re.findall(r'(\d+[\s]*[–-]?\s*\d*[\s]*(?:руб|₽|\$|€|USD|EUR))', text, re.I)
         if prices:
             all_data.append("💰 " + "\n".join([f"  {p.strip()}" for p in prices[:3]]))
@@ -943,6 +989,7 @@ def main():
     logger.info("✅ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
     logger.info("✅ APISerpent с deep=true")
     logger.info("✅ Параллельный поиск до 15 источников")
+    logger.info("✅ Параллельная загрузка (HTTP + Browserless)")
     logger.info("✅ Честный ответ из знаний при необходимости")
     
     try:
