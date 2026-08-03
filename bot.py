@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — АБСОЛЮТНАЯ ЗАЩИТА ОТ ВРАНЬЯ
+#  BROWAIX BOT — УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  Абсолютная защита от вранья + Универсальный парсинг
 #  Интернет — основа, знания — отдельным блоком
-#  Никаких лазеек, никаких отговорок
+#  Никакого хардкода, только смысл
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -397,7 +398,7 @@ async def send_progress_updates(chat_id, context, start_time):
     try:
         message = await context.bot.send_message(
             chat_id,
-            "🌐 Ищу информацию в интернете...\n\n⏱️ 0 сек"
+            "🌐 Ищу информацию...\n\n⏱️ 0 сек"
         )
         elapsed = 0
         while elapsed < 180:
@@ -538,138 +539,161 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
         return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНЫЙ ПРИНУДИТЕЛЬНЫЙ ПАРСИНГ (БЕЗ ОШИБОК)
+#  УНИВЕРСАЛЬНЫЙ СМЫСЛОВОЙ ПАРСИНГ (БЕЗ ХАРДКОДА)
 # ═══════════════════════════════════════════════════════════════════
 
-def extract_structured_items(html: str) -> List[Dict]:
+def is_good_text(text: str) -> bool:
+    """Универсальная проверка: похоже ли на полезный текст?"""
+    if len(text) < 20:
+        return False
+    if re.match(r'^[\d\s.,;:!?()\-]+$', text):
+        return False
+    garbage = re.findall(r'[\.\/\\\:\#\@\$\%\^\&\*\(\)\=\+\{\}\[\]]', text)
+    if len(garbage) / max(1, len(text)) > 0.15:
+        return False
+    return True
+
+def extract_meaning(text: str) -> Dict:
     """
-    Универсальный принудительный парсинг — без ошибок, без хардкода.
+    Извлекает СМЫСЛОВЫЕ единицы из любого текста.
+    Не важно, фильм это, товар, новость или закон.
     """
-    items = []
+    result = {
+        'title': None,
+        'date': None,
+        'number': None,
+        'desc': None,
+        'type': None
+    }
     
+    # Главная сущность
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    lines = [l for l in lines if is_good_text(l)]
+    if lines:
+        result['title'] = max(lines, key=len)[:150]
+        if len(result['title']) < 10 and lines:
+            result['title'] = lines[0][:150]
+    
+    # Дата (4 цифры)
+    date_candidates = re.findall(r'\b(\d{4})\b', text)
+    for d in date_candidates:
+        context = text[max(0, text.find(d)-40):text.find(d)+40]
+        if re.search(r'(год|вышел|релиз|создан|опубликован|цена|курс|закон|принят|основан)', context, re.I):
+            result['date'] = d
+            break
+    
+    # Число (цена, рейтинг, количество)
+    number_patterns = [
+        r'\b(\d+\.\d{1,2})\b',
+        r'\b(\d+)\s*(?:%|руб|\$|€|USD|EUR|млн|тыс)\b',
+        r'\b(\d+)\s*(?:года|лет|месяц|день|час)\b',
+    ]
+    for pattern in number_patterns:
+        matches = re.findall(pattern, text, re.I)
+        if matches:
+            result['number'] = matches[0]
+            break
+    
+    # Описание
+    if result['title'] and result['title'] in text:
+        parts = text.split(result['title'], 1)
+        if len(parts) > 1:
+            desc_text = parts[1].strip()
+            sentences = re.split(r'[.!?]', desc_text)
+            for s in sentences:
+                s = s.strip()
+                if is_good_text(s) and len(s) > 20:
+                    result['desc'] = s[:300]
+                    break
+    
+    # Тип данных (определяется автоматически)
+    if not result['title']:
+        result['type'] = 'unknown'
+    elif re.search(r'(фильм|сериал|кино|актер|режиссер|сценарий)', text, re.I):
+        result['type'] = 'movie'
+    elif re.search(r'(цена|стоимость|руб|\$|€|скидка|акция)', text, re.I):
+        result['type'] = 'price'
+    elif re.search(r'(закон|правило|постановление|статья|кодекс)', text, re.I):
+        result['type'] = 'law'
+    elif re.search(r'(новость|сегодня|вчера|завтра|опубликован)', text, re.I):
+        result['type'] = 'news'
+    elif re.search(r'(технология|наука|исследование|ученый|открытие)', text, re.I):
+        result['type'] = 'science'
+    elif re.search(r'(игра|геймплей|прохождение|игрок|уровень)', text, re.I):
+        result['type'] = 'game'
+    else:
+        result['type'] = 'general'
+    
+    return result
+
+def extract_structured_items(html: str) -> List[Dict]:
+    """Универсальный парсинг по СМЫСЛУ, без хардкода"""
     if not BEAUTIFULSOUP_AVAILABLE:
-        return items
+        return []
     
     try:
         soup = BeautifulSoup(html, 'html.parser')
         
-        # 1. Удаляем мусор
         for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'noscript']):
             tag.decompose()
         
-        # 2. Берём ВСЕ блоки с текстом
-        all_blocks = []
+        all_texts = []
         for tag in soup.find_all(['div', 'li', 'article', 'section', 'p', 'span', 'h1', 'h2', 'h3', 'h4', 'strong', 'b', 'td']):
             text = tag.get_text(separator=' ').strip()
             if len(text) > 20:
-                all_blocks.append({
-                    'tag': tag,
-                    'text': text,
-                    'html': str(tag)[:500]
-                })
+                all_texts.append(text)
         
-        # 3. ✅ Исправлено: дедупликация без set()
-        combined_dict = {}
-        for block in all_blocks[:80]:
-            key = block['text'][:80]
-            if key not in combined_dict:
-                combined_dict[key] = block
-        all_blocks = list(combined_dict.values())
+        text_groups = {}
+        for text in all_texts:
+            key = text[:50]
+            if key not in text_groups:
+                text_groups[key] = []
+            text_groups[key].append(text)
         
-        # 4. Паттерны для поиска
-        rating_pattern = re.compile(r'\b(\d+\.\d{1,2})\b')
-        year_pattern = re.compile(r'\b(19[0-9]{2}|20[0-9]{2})\b')
-        title_pattern = re.compile(r'[«"]([^«"»]{3,50})[»"]|[А-Я][а-я]+\s+[А-Я][а-я]+|[A-Z][a-z]+\s+[A-Z][a-z]+')
+        structured_texts = []
+        for key, texts in text_groups.items():
+            if len(texts) >= 2:
+                structured_texts.extend(texts)
         
-        # 5. Извлекаем данные из КАЖДОГО блока
-        for block in all_blocks[:60]:
-            text = block['text']
-            text = re.sub(r'\s+', ' ', text).strip()
-            
-            if len(text) < 20:
-                continue
-            
-            # Извлекаем рейтинг
-            rating = None
-            rating_match = rating_pattern.search(text)
-            if rating_match:
-                rating = rating_match.group(1)
-            
-            # Извлекаем год
-            year = None
-            year_match = year_pattern.search(text)
-            if year_match:
-                year = year_match.group(1)
-            
-            # Извлекаем название
-            title = None
-            title_match = title_pattern.search(text)
-            if title_match:
-                title = title_match.group(1) or title_match.group(2) or title_match.group(3)
-                if title:
-                    title = title.strip()
-            
-            if not title:
-                lines = text.split('. ')
-                title = lines[0][:100] if lines else text[:100]
-                title = re.sub(r'^[\d\s.)-]+', '', title).strip()
-            
-            # Пропускаем мусор
-            if re.search(r'(реклама|промокод|скидка|подпишись|купить|заказать|рассылка|политика|cookie|регистрация|войти|пароль|email|телефон)', title, re.I):
-                continue
-            
-            if len(title) < 3:
-                continue
-            
-            # Извлекаем описание
-            desc = ""
-            if title and title in text:
-                parts = text.split(title, 1)
-                if len(parts) > 1:
-                    desc = parts[1][:300]
-            
-            items.append({
-                'title': title[:200],
-                'description': desc[:500],
-                'year': year,
-                'rating': rating,
-                'source_text': text[:300]
-            })
+        if not structured_texts:
+            structured_texts = all_texts[:30]
         
-        # 6. Убираем дубликаты по названию
+        items = []
+        for text in structured_texts[:40]:
+            if is_good_text(text):
+                meaning = extract_meaning(text)
+                if meaning['title'] and len(meaning['title']) > 3:
+                    items.append({
+                        'title': meaning['title'][:200],
+                        'description': meaning.get('desc', '')[:500],
+                        'date': meaning.get('date'),
+                        'number': meaning.get('number'),
+                        'type': meaning.get('type', 'general'),
+                        'source_text': text[:300]
+                    })
+        
         seen = set()
         unique_items = []
         for item in items:
-            title_lower = item['title'].lower()
-            if title_lower not in seen and len(title_lower) > 3:
-                seen.add(title_lower)
+            key = item['title'].lower().strip()
+            if key not in seen and len(key) > 3:
+                seen.add(key)
                 unique_items.append(item)
         
-        # 7. Сортировка: сначала с рейтингом, потом с годом
-        unique_items.sort(key=lambda x: (0 if x.get('rating') else 1, 0 if x.get('year') else 2))
+        unique_items.sort(
+            key=lambda x: (
+                - (1 if x.get('number') else 0) * 10
+                - (1 if x.get('date') else 0) * 5
+                - len(x.get('description', '')) / 100
+            )
+        )
         
         return unique_items[:50]
         
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка принудительного парсинга: {e}")
-        # Fallback: парсим сырой текст
-        try:
-            text = re.sub(r'<[^>]+>', ' ', html)
-            text = re.sub(r'\s+', ' ', text).strip()
-            titles = re.findall(r'[«"]([^«"»]{3,50})[»"]', text)
-            for title in titles:
-                if len(title) > 3:
-                    items.append({
-                        'title': title[:200],
-                        'description': '',
-                        'year': None,
-                        'rating': None,
-                        'source_text': ''
-                    })
-        except:
-            pass
+        logger.warning(f"⚠️ Ошибка парсинга: {e}")
     
-    return items
+    return []
 
 def parse_html(html: str) -> Dict:
     result = {
@@ -683,7 +707,6 @@ def parse_html(html: str) -> Dict:
         'items': []
     }
     
-    # Извлекаем структурированные элементы
     structured_items = extract_structured_items(html)
     if structured_items:
         result['items'] = structured_items
@@ -832,19 +855,19 @@ def calculate_confidence(items: List[Dict], target_years: int = 5) -> float:
     unique_count = len(set([item.get('title', '') for item in items]))
     unique_score = min(100, unique_count * 4)
     
-    rating_count = sum(1 for item in items if item.get('rating'))
-    rating_score = min(100, rating_count * 10)
+    number_count = sum(1 for item in items if item.get('number'))
+    number_score = min(100, number_count * 10)
     
     desc_count = sum(1 for item in items if item.get('description') and len(item['description']) > 20)
     desc_score = min(100, desc_count * 4)
     
     current_year = now().year
-    recent_count = sum(1 for item in items if item.get('year') and current_year - int(item['year']) <= target_years)
+    recent_count = sum(1 for item in items if item.get('date') and current_year - int(item['date']) <= target_years)
     recent_score = min(100, recent_count * 5)
     
     total_score = (
         unique_score * 0.30 +
-        rating_score * 0.25 +
+        number_score * 0.25 +
         desc_score * 0.20 +
         recent_score * 0.15 +
         min(100, len(items) * 2) * 0.10
@@ -913,7 +936,6 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     
     items, search_results, confidence = await search_until_confidence(user_message, uid)
     
-    # Если интернет-данных нет — честно говорим
     if not items:
         memory = get_memory(uid)
         context = memory.get_context(limit=5)
@@ -937,22 +959,23 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     context = memory.get_context(limit=10)
     context_text = '\n'.join([m.get('content', '') for m in context])
     
-    # Сортируем: сначала с рейтингом, потом по актуальности
-    current_year = now().year
+    # Сортировка по качеству
     sorted_items = sorted(
         items,
         key=lambda x: (
-            0 if x.get('rating') else 1,
-            abs(current_year - int(x.get('year', current_year))) if x.get('year') else 999
+            0 if x.get('number') else 1,
+            0 if x.get('date') else 2,
+            0 if x.get('type') != 'general' else 3
         )
     )[:30]
     
     items_text = ""
     for idx, item in enumerate(sorted_items[:30], 1):
-        year = f" ({item.get('year')})" if item.get('year') else ""
-        rating = f" ★ {item.get('rating')}" if item.get('rating') else ""
+        date = f" ({item.get('date')})" if item.get('date') else ""
+        number = f" ★ {item.get('number')}" if item.get('number') else ""
         desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
-        items_text += f"{idx}. {item.get('title')}{year}{rating}{desc}\n"
+        type_label = f" [{item.get('type', 'general')}]" if item.get('type') else ""
+        items_text += f"{idx}. {item.get('title')}{date}{number}{desc}{type_label}\n"
     
     confidence_text = f"Уверенность: {confidence:.1f}%"
     if confidence < 70:
@@ -962,14 +985,10 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     else:
         confidence_text += " ✅ Достаточно данных для точного ответа"
     
-    # ═══════════════════════════════════════════════════════════════
-    #  ПРОМПТ: ЗНАНИЯ — ОТДЕЛЬНЫМ БЛОКОМ
-    # ═══════════════════════════════════════════════════════════════
-    
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
-Найдено {len(sorted_items)} элементов в интернете. Уверенность: {confidence:.1f}%
+Найдено {len(sorted_items)} элементов. Уверенность: {confidence:.1f}%
 
 {items_text}
 
@@ -983,12 +1002,12 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
 
 ⚠️ **ФОРМАТ ОТВЕТА (СТРОГО):**
 
-📊 **Из интернета:** (перечисли найденные элементы с источниками)
-   1. Название (год) ★ рейтинг — описание
+📊 **Из интернета:** (перечисли найденные элементы)
+   1. Название (дата) ★ число — описание [тип]
    2. ...
 
 🧠 **Дополнено из знаний:** (только если нужно, отдельный блок)
-   1. Название (год) ★ рейтинг — описание
+   1. Название (дата) ★ число — описание
 
 ✅ **Вывод:** (объективный итог)
 
@@ -1000,18 +1019,16 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     
     answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
     
-    # Проверка на ложь
     is_lie, lie_reason = is_lie_by_sense(answer)
     
     if is_lie:
         logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
         
-        # Принудительно исправляем ответ
         corrected_answer = f"""
 ⚠️ **ОБНАРУЖЕНА ПОПЫТКА ОБМАНА!**
 
 📊 **Из интернета:**
-{items_text[:1000]}
+{items_text[:2000]}
 
 🧠 **Дополнено из знаний (честно):**
 Я не могу использовать свои знания вместо интернета.
@@ -1194,7 +1211,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "👋 Привет! Я поисковый ассистент.\n\n"
         "🔍 Ищу в интернете до 90% уверенности\n"
-        "📊 Интернет — основа, знания — отдельным блоком\n"
+        "📊 Универсальный парсинг — любые данные\n"
         "⚠️ **НИКОГДА НЕ ВРУ**\n\n"
         "Выбери действие:",
         reply_markup=ACTION_BUTTONS
@@ -1234,9 +1251,9 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (АБСОЛЮТНАЯ ЗАЩИТА)")
-    logger.info("🎯 Интернет — основа, знания — отдельным блоком")
-    logger.info("🔒 Никаких лазеек для вранья")
+    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (УНИВЕРСАЛЬНАЯ ВЕРСИЯ)")
+    logger.info("🎯 Универсальный смысловой парсинг")
+    logger.info("🔒 Никакого хардкода, только смысл")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
