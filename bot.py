@@ -1,9 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  ВСЁ РЕШАЕТ DEEPSEEK (ГЕНЕРАЦИЯ ЗАПРОСОВ, ОЦЕНКА, ФИЛЬТРАЦИЯ)
-#  БЕЗ ХАРДКОДА
-#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
-#  ИНДИКАТОР ТОЧНОСТИ + ПРОВЕРКА НА ЛОЖЬ
+#  DEEPSEEK ГЕНЕРИРУЕТ ЗАПРОСЫ С УТОЧНЕНИЕМ "СТАТЬЯ/ТЕКСТ"
+#  ДОБИРАЕТ ДО 5 РЕЛЕВАНТНЫХ ИСТОЧНИКОВ
+#  ВСЁ ОСТАЛЬНОЕ СОХРАНЕНО
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -63,7 +62,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ВСЁ ЧЕРЕЗ DEEPSEEK)")
+logger.info("🚀 УНИВЕРСАЛЬНАЯ ВЕРСИЯ (С ДОБОРОМ ДО 5 ИСТОЧНИКОВ)")
 
 # ═══════════════════════════════════════════════════════════════════
 #  HTTP
@@ -547,7 +546,7 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА (БЕЗ ХАРДКОДА)
+#  ОСНОВНАЯ ЛОГИКА (С ДОБОРОМ ДО 5 ИСТОЧНИКОВ)
 # ═══════════════════════════════════════════════════════════════════
 
 current_stage = "⏳ Запуск"
@@ -559,17 +558,17 @@ def set_stage(stage: str):
 async def process_query(query: str, uid: int) -> str:
     set_stage("🧠 Анализирую запрос")
     
-    # 1. DeepSeek генерирует варианты поиска
+    # 1. DeepSeek генерирует варианты с уточнением "статья/текст"
     analyze_prompt = f"""
-⚠️ **Ты — аналитик поиска. Проанализируй запрос пользователя.**
+⚠️ **Ты — аналитик поиска. Сгенерируй поисковые запросы, которые найдут ТЕКСТОВЫЕ статьи, блоги, форумы, а не видео или соцсети.**
 
-⚠️ **ЗАПРОС:** {query}
+⚠️ **ЗАПРОС ПОЛЬЗОВАТЕЛЯ:** {query}
 
 ⚠️ **ТВОЯ ЗАДАЧА:**
 1. Понять, что на самом деле нужно пользователю
 2. Сгенерировать 8-10 вариантов поисковых запросов
-3. Используй синонимы и перефразирования
-4. Охвати разные углы темы
+3. Добавь в запросы уточнения: "статья", "текст", "пример", "скрипт", "шаблон", "как"
+4. Используй синонимы и перефразирования
 
 ⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
 {{
@@ -594,81 +593,68 @@ async def process_query(query: str, uid: int) -> str:
         json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
         if json_match:
             analysis = json.loads(json_match.group())
-            variants = analysis.get('variants', [query])
+            variants = analysis.get('variants', [])
+            if len(variants) < 3:
+                variants = [query]
         else:
             variants = [query]
     except:
         variants = [query]
     
+    # Если DeepSeek не дал вариантов — добавляем универсальные с уточнением
+    if len(variants) < 3:
+        variants = [
+            query,
+            f"скрипт продаж {query} статья",
+            f"как продавать {query} пример",
+            f"вопросы для клиента {query} текст",
+            f"техника продаж {query} шаблон"
+        ]
+    
     logger.info(f"🔍 DeepSeek сгенерировал {len(variants)} вариантов")
     
-    # 2. Ищем по всем вариантам
+    # 2. Ищем и добираем до 5 релевантных источников
     set_stage("🔍 Ищу в интернете")
+    
     all_results = []
     seen_urls = set()
+    target_count = 5
+    
     for v in variants[:10]:
         results = await search_with_cache(v)
         if results:
+            # Фильтруем мусор: исключаем видео и соцсети
+            filtered = []
             for r in results:
                 url = r.get('link', '')
                 if url and url not in seen_urls:
+                    # Пропускаем видео-хостинги и соцсети
+                    if any(x in url for x in ['youtube.com', 'instagram.com', 'facebook.com', 'tiktok.com', 'twitter.com']):
+                        continue
                     seen_urls.add(url)
-                    all_results.append(r)
-        if len(all_results) >= MAX_PAGES * 3:
+                    filtered.append(r)
+            all_results.extend(filtered)
+            logger.info(f"   Найдено {len(filtered)} текстовых результатов по запросу '{v[:40]}...'")
+        
+        # Если набрали 5 — выходим
+        if len(all_results) >= target_count:
             break
     
     if not all_results:
-        return "⚠️ В интернете ничего не нашлось. Попробуй переформулировать запрос."
+        return "⚠️ В интернете не нашлось текстовых источников. Попробуй переформулировать запрос."
     
-    # 3. DeepSeek оценивает релевантность
-    set_stage("📊 Оцениваю релевантность")
+    # Ограничиваем до 5
+    all_results = all_results[:target_count]
+    logger.info(f"📊 Найдено {len(all_results)} текстовых источников")
     
-    rank_prompt = f"""
-⚠️ **Оцени релевантность результатов для запроса.**
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **РЕЗУЛЬТАТЫ (только ссылки и названия):**
-{chr(10).join([f"{i+1}. {r.get('title', 'Без названия')} — {r.get('link', '')}" for i, r in enumerate(all_results[:15])])}
-
-⚠️ **ТВОЯ ЗАДАЧА:**
-1. Оцени каждый результат по шкале 0-100
-2. Учти, что YouTube и соцсети — обычно бесполезны для текстового контента
-3. Верни список оценок
-
-⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
-{{"rankings": [95, 30, 70, 85, 40, 60, 20, 10, 50, 80, 25, 55, 90, 35, 65]}}
-"""
-    
-    try:
-        rank_text = await ask_deepseek(rank_prompt, temperature=0.2, max_tokens=400)
-        json_match = re.search(r'\{.*\}', rank_text, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            rankings = data.get('rankings', [])
-            for i, r in enumerate(all_results[:15]):
-                if i < len(rankings):
-                    r['relevance'] = rankings[i] / 100
-                else:
-                    r['relevance'] = 0.5
-    except:
-        for r in all_results:
-            r['relevance'] = 0.5
-    
-    # 4. Фильтруем по релевантности
-    top_results = [r for r in all_results if r.get('relevance', 0) > 0.2][:MAX_PAGES * 2]
-    
-    if not top_results:
-        return "⚠️ Не найдено релевантных источников. Попробуй переформулировать запрос."
-    
-    # 5. Загружаем страницы
+    # 3. Загружаем страницы
     set_stage("📄 Загружаю страницы")
-    pages = await fetch_pages(top_results)
+    pages = await fetch_pages(all_results)
     
     if not pages:
         return "⚠️ Не удалось загрузить страницы. Попробуй позже."
     
-    # 6. Генерируем ответ
+    # 4. Генерируем ответ
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
@@ -809,6 +795,7 @@ def main():
     logger.info("✅ Память: 5 уровней + граф знаний")
     logger.info("✅ Индикатор точности")
     logger.info("✅ Проверка на ложь и отказ")
+    logger.info("✅ Добор до 5 текстовых источников")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
