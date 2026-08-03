@@ -1,8 +1,10 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  НИЧЕГО НЕ ВЫРЕЗАНО — ВСЁ РАБОТАЕТ
-#  НЕ МОЖЕТ ХИТРИТЬ — ЖЁСТКИЕ ПРОВЕРКИ
-#  ТОЧНОСТЬ 90%+
+#  BROWAIX BOT — ПОЛНАЯ ВЕРСИЯ
+#  НИЧЕГО НЕ ВЫРЕЗАНО
+#  ПАМЯТЬ (5 УРОВНЕЙ) + ГРАФ ЗНАНИЙ
+#  ИНДИКАТОР ТОЧНОСТИ + ПРОВЕРКА НА ЛОЖЬ
+#  ПАРСИНГ (BEAUTIFULSOUP) + ИЗВЛЕЧЕНИЕ СТРУКТУР
+#  КЭШИРОВАНИЕ + РАНЖИРОВАНИЕ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -20,20 +22,13 @@ from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# Попытка импорта BeautifulSoup (для парсинга)
 try:
     from bs4 import BeautifulSoup
     BEAUTIFULSOUP_AVAILABLE = True
-    logger.info("✅ BeautifulSoup загружен")
 except ImportError:
     BEAUTIFULSOUP_AVAILABLE = False
-    logger.warning("⚠️ BeautifulSoup не установлен, используем упрощённый парсинг")
 
 load_dotenv()
-
-# ═══════════════════════════════════════════════════════════════════
-#  ЛОГГЕР
-# ═══════════════════════════════════════════════════════════════════
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,10 +48,7 @@ MAX_PAGES = 5
 PAGE_TIMEOUT = 6
 SEARCH_RESULTS = 15
 DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
-
-# Кэширование
-CACHE_TTL = 3600  # 1 час
-search_cache = {}
+CACHE_TTL = 3600
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -69,13 +61,17 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("⚡️ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (НИЧЕГО НЕ ВЫРЕЗАНО)")
+logger.info("⚡️ ПОЛНАЯ ВЕРСИЯ")
+
+def now():
+    return datetime.now(TZ)
 
 # ═══════════════════════════════════════════════════════════════════
 #  HTTP
 # ═══════════════════════════════════════════════════════════════════
 
 _http_session = None
+search_cache = {}
 
 async def get_session():
     global _http_session
@@ -108,631 +104,6 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
     except Exception as e:
         logger.error(f"❌ DeepSeek ошибка: {e}")
     return ""
-
-# ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНЫЙ АНАЛИЗ ЗАПРОСА (DeepSeek)
-# ═══════════════════════════════════════════════════════════════════
-
-async def analyze_query(query: str) -> Dict:
-    prompt = f"""
-⚠️ **Ты — аналитик поиска. Проанализируй запрос пользователя.**
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **ТВОЯ ЗАДАЧА:**
-1. Понять, что на самом деле нужно пользователю
-2. Сгенерировать 8-10 вариантов поисковых запросов
-3. Используй синонимы и перефразирования
-4. Охвати разные углы темы
-
-⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
-{{
-  "understanding": "краткое понимание запроса (1-2 предложения)",
-  "topic": "основная тема (1-3 слова)",
-  "variants": [
-    "вариант 1",
-    "вариант 2",
-    "вариант 3",
-    "вариант 4",
-    "вариант 5",
-    "вариант 6",
-    "вариант 7",
-    "вариант 8"
-  ]
-}}
-
-⚠️ **ОТВЕЧАЙ ТОЛЬКО JSON. НЕ ВЫДУМЫВАЙ. НЕ ДОБАВЛЯЙ СВОИХ ЗНАНИЙ.**
-"""
-    try:
-        answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=600)
-        logger.info(f"📝 DeepSeek анализ: {answer[:150]}...")
-        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            if data.get('variants') and len(data['variants']) >= 5:
-                return data
-    except Exception as e:
-        logger.error(f"❌ Ошибка анализа: {e}")
-    
-    # ✅ БЕЗ ХАРДКОДА — ПРОСТО ВОЗВРАЩАЕМ ТО, ЧТО ЕСТЬ
-    return {
-        "understanding": query,
-        "topic": "general",
-        "variants": [query]  # Минимум один вариант
-    }
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПОИСК
-# ═══════════════════════════════════════════════════════════════════
-
-def normalize_query(query):
-    return re.sub(r'[^\w\s]', '', query.lower()).strip()
-
-async def search_apiserpent(query: str) -> List[Dict]:
-    if not APISERPENT_API_KEY:
-        return []
-    try:
-        session = await get_session()
-        async with session.get(
-            "https://apiserpent.com/api/search",
-            params={"q": query, "engine": "google", "num": SEARCH_RESULTS},
-            headers={"X-API-Key": APISERPENT_API_KEY},
-            timeout=10
-        ) as r:
-            if r.status == 200:
-                data = await r.json()
-                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
-                        for x in data.get("organic_results", [])]
-    except Exception as e:
-        logger.warning(f"⚠️ APISerpent ошибка: {e}")
-    return []
-
-async def search_serper(query: str) -> List[Dict]:
-    if not SERPER_API_KEY:
-        return []
-    try:
-        session = await get_session()
-        async with session.post(
-            "https://google.serper.dev/search",
-            json={"q": query, "num": SEARCH_RESULTS},
-            headers={"X-API-KEY": SERPER_API_KEY},
-            timeout=10
-        ) as r:
-            if r.status == 200:
-                data = await r.json()
-                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
-                        for x in data.get("organic", [])]
-    except Exception as e:
-        logger.warning(f"⚠️ Serper ошибка: {e}")
-    return []
-
-async def search_with_cache(query: str) -> List[Dict]:
-    norm = normalize_query(query)
-    if norm in search_cache:
-        cached = search_cache[norm]
-        if (time.time() - cached['time']) < CACHE_TTL:
-            logger.info(f"📦 Кэш для: {query[:50]}...")
-            return cached['data']
-    
-    # Попытка 1: APISerpent
-    results = await search_apiserpent(query)
-    if results:
-        search_cache[norm] = {'data': results, 'time': time.time()}
-        logger.info(f"✅ APISerpent: {len(results)} результатов")
-        return results
-    
-    # Попытка 2: Serper
-    results = await search_serper(query)
-    if results:
-        search_cache[norm] = {'data': results, 'time': time.time()}
-        logger.info(f"✅ Serper: {len(results)} результатов (резерв)")
-        return results
-    
-    logger.warning(f"⚠️ Поиск не дал результатов для: {query[:50]}...")
-    return []
-
-async def search_all(variants: List[str]) -> List[Dict]:
-    all_results = []
-    seen_urls = set()
-    
-    # Проверяем все варианты (до 10)
-    for v in variants[:10]:
-        results = await search_with_cache(v)
-        if results:
-            for r in results:
-                url = r.get('link', '')
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    all_results.append(r)
-        if len(all_results) >= MAX_PAGES * 3:
-            break
-    
-    logger.info(f"📊 Всего найдено: {len(all_results)} уникальных результатов")
-    return all_results[:MAX_PAGES * 3]
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ HTML (С BeautifulSoup)
-# ═══════════════════════════════════════════════════════════════════
-
-def parse_html_smart(html: str) -> Dict:
-    """Парсит HTML с сохранением структуры"""
-    if BEAUTIFULSOUP_AVAILABLE:
-        try:
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # Удаляем мусор
-            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-                tag.decompose()
-            
-            # Извлекаем текст
-            text = soup.get_text(separator=' ', strip=True)
-            text = re.sub(r'\s+', ' ', text)
-            
-            # Извлекаем списки
-            lists = []
-            for ul in soup.find_all(['ul', 'ol']):
-                for li in ul.find_all('li'):
-                    li_text = li.get_text(strip=True)
-                    if len(li_text) > 10:
-                        lists.append(li_text)
-            
-            # Извлекаем заголовки
-            headings = []
-            for h in soup.find_all(['h1', 'h2', 'h3']):
-                h_text = h.get_text(strip=True)
-                if len(h_text) > 5:
-                    headings.append(h_text)
-            
-            # Извлекаем абзацы
-            paragraphs = []
-            for p in soup.find_all('p'):
-                p_text = p.get_text(strip=True)
-                if len(p_text) > 30:
-                    paragraphs.append(p_text)
-            
-            return {
-                'text': text[:8000],
-                'lists': lists[:15],
-                'headings': headings[:5],
-                'paragraphs': paragraphs[:10]
-            }
-        except Exception as e:
-            logger.warning(f"⚠️ BeautifulSoup ошибка: {e}")
-    
-    # Fallback: простой парсинг
-    text = re.sub(r'<[^>]+>', ' ', html)
-    text = re.sub(r'\s+', ' ', text)
-    sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', text)
-    return {
-        'text': ' '.join(sentences[:30])[:5000],
-        'lists': [],
-        'headings': [],
-        'paragraphs': []
-    }
-
-async def fetch_and_parse(url: str) -> Optional[Dict]:
-    try:
-        session = await get_session()
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=PAGE_TIMEOUT) as r:
-            if r.status == 200:
-                html = await r.text()
-                return parse_html_smart(html)
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка загрузки {url[:50]}: {e}")
-    return None
-
-async def fetch_pages(results: List[Dict]) -> List[Dict]:
-    pages = []
-    for r in results[:MAX_PAGES]:
-        url = r.get('link', '')
-        if url:
-            parsed = await fetch_and_parse(url)
-            if parsed and parsed['text']:
-                pages.append({
-                    'url': url,
-                    'title': r.get('title', ''),
-                    'parsed': parsed,
-                    'relevance': r.get('relevance', 0)
-                })
-    logger.info(f"✅ Загружено {len(pages)} страниц")
-    return pages
-
-# ═══════════════════════════════════════════════════════════════════
-#  ИЗВЛЕЧЕНИЕ СТРУКТУР (БЕЗ DEEPSEEK)
-# ═══════════════════════════════════════════════════════════════════
-
-def extract_structures_from_parsed(parsed: Dict) -> Dict:
-    """Извлекает структуры из спарсенной страницы"""
-    structures = {
-        'lists': [],
-        'steps': [],
-        'questions': [],
-        'prices': [],
-        'headings': []
-    }
-    
-    text = parsed.get('text', '')
-    
-    # Списки
-    if parsed.get('lists'):
-        structures['lists'] = parsed['lists'][:10]
-    
-    # Заголовки
-    if parsed.get('headings'):
-        structures['headings'] = parsed['headings'][:5]
-    
-    # Шаги
-    steps = re.findall(r'(?:шаг|этап|пункт)\s*(\d+)[\s:]*([^\n.]{5,})', text, re.I)
-    if steps:
-        structures['steps'] = [f"Шаг {s[0]}: {s[1].strip()}" for s in steps[:5]]
-    
-    # Вопросы
-    questions = re.findall(r'[^.!?]{10,150}\?', text)
-    if questions:
-        structures['questions'] = [q.strip() for q in questions[:5]]
-    
-    # Цены
-    prices = re.findall(r'(\d+[\s]*[–-]?\s*\d*[\s]*(?:руб|₽|\$|€|USD|EUR))', text, re.I)
-    if prices:
-        structures['prices'] = [p.strip() for p in prices[:5]]
-    
-    return structures
-
-# ═══════════════════════════════════════════════════════════════════
-#  ОЦЕНКА РЕЛЕВАНТНОСТИ (DeepSeek)
-# ═══════════════════════════════════════════════════════════════════
-
-async def rank_results(query: str, results: List[Dict]) -> List[Dict]:
-    if not results:
-        return []
-    
-    top_results = results[:8]
-    
-    prompt = f"""
-⚠️ **Ты — эксперт по оценке релевантности. Оцени результаты поиска.**
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **РЕЗУЛЬТАТЫ:**
-{chr(10).join([f"{i+1}. {r.get('title', 'Без названия')[:100]} — {r.get('snippet', '')[:150]}" for i, r in enumerate(top_results)])}
-
-⚠️ **ТВОЯ ЗАДАЧА:**
-1. Оцени каждый результат по шкале 0-100
-2. Верни список оценок
-
-⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
-{{
-  "rankings": [95, 30, 70, 85, 40, 60, 20, 10]
-}}
-
-⚠️ **ОТВЕЧАЙ ТОЛЬКО JSON. НЕ ВЫДУМЫВАЙ.**
-"""
-    try:
-        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=300)
-        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            rankings = data.get('rankings', [])
-            for i, r in enumerate(top_results):
-                if i < len(rankings):
-                    r['relevance'] = rankings[i] / 100
-                else:
-                    r['relevance'] = 0.5
-            return top_results
-    except Exception as e:
-        logger.error(f"❌ Ошибка ранжирования: {e}")
-    
-    return results
-
-# ═══════════════════════════════════════════════════════════════════
-#  АНАЛИЗ НЕДОСТАТКА ДАННЫХ (DeepSeek)
-# ═══════════════════════════════════════════════════════════════════
-
-async def analyze_lack_of_data(query: str, structures: Dict) -> Dict:
-    prompt = f"""
-⚠️ **Ты — аналитик. Оцени, достаточно ли данных для ответа на запрос.**
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **ИЗВЛЕЧЁННЫЕ СТРУКТУРЫ:**
-📋 СПИСКИ: {structures.get('lists', [])[:5]}
-🔄 ШАГИ: {structures.get('steps', [])[:5]}
-❓ ВОПРОСЫ: {structures.get('questions', [])[:5]}
-💰 ЦЕНЫ: {structures.get('prices', [])[:5]}
-
-⚠️ **ТВОЯ ЗАДАЧА:**
-1. Оцени, есть ли в структурах ответ на запрос
-2. Если нет — предложи переформулировку (3-5 вариантов)
-3. Предложи вопрос к пользователю для уточнения
-
-⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
-{{
-  "sufficient": true/false,
-  "confidence": 0-100,
-  "reformulations": ["вариант 1", "вариант 2", "вариант 3"],
-  "clarification": "вопрос к пользователю или null"
-}}
-
-⚠️ **НЕ ВЫДУМЫВАЙ. БУДЬ ЧЕСТЕН.**
-"""
-    try:
-        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=500)
-        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception as e:
-        logger.error(f"❌ Ошибка анализа недостатка: {e}")
-    
-    return {
-        "sufficient": bool(structures.get('lists') or structures.get('steps')),
-        "confidence": 50,
-        "reformulations": [],
-        "clarification": "Уточните запрос."
-    }
-
-# ═══════════════════════════════════════════════════════════════════
-#  ИНДИКАТОР ТОЧНОСТИ
-# ═══════════════════════════════════════════════════════════════════
-
-def calculate_confidence(pages: List[Dict], structures: Dict) -> Dict:
-    confidence = {'overall': 0, 'source_reliability': 0, 'data_completeness': 0, 'recency': 0, 'factors': []}
-    
-    if pages:
-        reliable = 0
-        for p in pages[:3]:
-            url = p.get('url', '')
-            if any(d in url for d in ['.edu', '.gov', 'wikipedia', 'habr', 'vc.ru']):
-                reliable += 1
-            elif any(d in url for d in ['.com', '.org', '.net', '.ru']):
-                reliable += 0.5
-        score = min(100, (reliable / max(len(pages[:3]), 1)) * 100)
-        confidence['source_reliability'] = score
-        confidence['factors'].append(f"Надёжность: {score:.0f}%")
-    else:
-        confidence['source_reliability'] = 20
-        confidence['factors'].append("Нет источников")
-    
-    # Полнота данных
-    structure_count = len(structures.get('lists', [])) + len(structures.get('steps', [])) + len(structures.get('questions', []))
-    completeness = min(100, structure_count * 10)
-    confidence['data_completeness'] = completeness
-    confidence['factors'].append(f"Полнота: {completeness:.0f}%")
-    
-    confidence['recency'] = 50
-    confidence['factors'].append("Свежесть: средняя")
-    
-    confidence['overall'] = int((confidence['source_reliability'] + confidence['data_completeness'] + confidence['recency']) / 3)
-    return confidence
-
-def format_confidence(confidence: Dict) -> str:
-    overall = confidence['overall']
-    icon = "🟢" if overall >= 80 else "🟡" if overall >= 60 else "🟠" if overall >= 40 else "🔴"
-    level = "Высокая" if overall >= 80 else "Средняя" if overall >= 60 else "Низкая" if overall >= 40 else "Очень низкая"
-    return f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 **ТОЧНОСТЬ: {overall}%** {icon} ({level})
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 **ДЕТАЛИ:**
-   • Надёжность: {confidence['source_reliability']:.0f}%
-   • Полнота: {confidence['data_completeness']:.0f}%
-   • Свежесть: {confidence['recency']:.0f}%
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА НА ЛОЖЬ И ОТКАЗ
-# ═══════════════════════════════════════════════════════════════════
-
-def check_for_lies(answer: str) -> bool:
-    lie_phrases = [
-        'из моих знаний', 'я знаю, что', 'по моему мнению',
-        'я могу добавить', 'исходя из моего опыта', 'я предполагаю',
-        'думаю, что', 'мне кажется', 'по моим данным'
-    ]
-    for phrase in lie_phrases:
-        if phrase in answer.lower():
-            return True
-    return False
-
-def check_refusal(answer: str) -> bool:
-    refuse_phrases = [
-        'не могу ответить', 'не знаю', 'нет данных',
-        'информация отсутствует', 'не нашлось', 'не удалось найти'
-    ]
-    for phrase in refuse_phrases:
-        if phrase in answer.lower():
-            return True
-    return False
-
-# ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА (DeepSeek)
-# ═══════════════════════════════════════════════════════════════════
-
-async def generate_answer(query: str, pages: List[Dict], structures: Dict, memory_context: str = "") -> str:
-    # Собираем контекст из страниц
-    context_parts = []
-    for i, p in enumerate(pages[:2]):
-        parsed = p.get('parsed', {})
-        text = parsed.get('text', '')[:2000]
-        if text:
-            context_parts.append(f"--- СТРАНИЦА {i+1} ---\n{text}")
-    
-    context = "\n\n".join(context_parts)
-    
-    # Формируем структуры для промпта
-    structures_text = ""
-    if structures.get('lists'):
-        structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in structures['lists'][:10]]) + "\n"
-    if structures.get('steps'):
-        structures_text += "🔄 ШАГИ:\n" + "\n".join([f"  • {item}" for item in structures['steps'][:5]]) + "\n"
-    if structures.get('questions'):
-        structures_text += "❓ ВОПРОСЫ:\n" + "\n".join([f"  • {item}" for item in structures['questions'][:5]]) + "\n"
-    if structures.get('prices'):
-        structures_text += "💰 ЦЕНЫ:\n" + "\n".join([f"  • {item}" for item in structures['prices'][:5]]) + "\n"
-    
-    prompt = f"""
-⚠️ **Ты — эксперт-аналитик. На основе информации из интернета дай структурированный ответ.**
-
-⚠️ **ЗАПРОС ПОЛЬЗОВАТЕЛЯ:** {query}
-
-{memory_context}
-
-⚠️ **ИНФОРМАЦИЯ ИЗ ИСТОЧНИКОВ:**
-{context}
-
-⚠️ **ИЗВЛЕЧЁННЫЕ СТРУКТУРЫ:**
-{structures_text}
-
-⚠️ **ПРАВИЛА (НАРУШЕНИЕ = ЛОЖЬ):**
-1. **НЕЛЬЗЯ** добавлять свои знания
-2. **НЕЛЬЗЯ** выдумывать
-3. **НЕЛЬЗЯ** обобщать то, чего нет в источниках
-4. **МОЖНО** только пересказывать и цитировать источники
-5. **ЕСЛИ В ИСТОЧНИКАХ НЕТ ОТВЕТА** — скажи честно
-6. **ОТВЕТ ДОЛЖЕН БЫТЬ РАЗВЁРНУТЫМ** (минимум 300 символов)
-7. **Дай структурированный ответ** с разделами
-
-⚠️ **ФОРМАТ:**
-🎯 **УВЕРЕННОСТЬ: [X]%** (на основе полноты источников)
-
-📊 **ОСНОВНАЯ ИНФОРМАЦИЯ:**
-[Ключевая информация из источников]
-
-📋 **ДЕТАЛИ:**
-[Конкретные данные, цифры, факты]
-
-📝 **ПРАКТИЧЕСКИЕ РЕКОМЕНДАЦИИ:**
-[Что делать на основе информации]
-
-📋 **ЦИТАТЫ:**
-[Дословные цитаты из источников]
-
-🔗 **ИСТОЧНИКИ:**
-[Ссылки]
-
-⚠️ **ЧЕГО НЕТ В ИСТОЧНИКАХ:**
-[Честно перечисли, чего не хватает]
-
-⚠️ **НЕ ВЫДУМЫВАЙ. НЕ ДОБАВЛЯЙ СВОИХ ЗНАНИЙ.**
-"""
-    
-    answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=4000)
-    
-    # Проверка на ложь
-    if check_for_lies(answer):
-        return f"""
-⚠️ **ОБНАРУЖЕНА ПОПЫТКА ДОПОЛНИТЬ ИЗ ЗНАНИЙ (ЗАПРЕЩЕНО)**
-
-📋 **ЧТО ЕСТЬ В ИСТОЧНИКАХ:**
-{context[:1500] if context else "Нет данных"}
-
-🔗 **ИСТОЧНИКИ:**
-{chr(10).join([f"• {p.get('url', '')}" for p in pages[:3]])}
-"""
-    
-    # Проверка на отказ
-    if check_refusal(answer):
-        # ✅ ПРИНУДИТЕЛЬНЫЙ ОТВЕТ ИЗ ДАННЫХ
-        fallback = f"""
-⚠️ **В ИСТОЧНИКАХ НЕТ ПОЛНОЙ ИНФОРМАЦИИ, НО ВОТ ЧТО УДАЛОСЬ НАЙТИ**
-
-📋 **ЧТО БЫЛО НАЙДЕНО:**
-{context[:1500] if context else "Нет данных"}
-
-📊 **СТРУКТУРЫ:**
-{structures_text[:1000] if structures_text else "Нет структур"}
-
-🔗 **ИСТОЧНИКИ:**
-{chr(10).join([f"• {p.get('url', '')}" for p in pages[:3]])}
-
-💡 **Попробуйте переформулировать запрос или уточнить детали.**
-"""
-        return fallback
-    
-    return answer
-
-# ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА
-# ═══════════════════════════════════════════════════════════════════
-
-# Глобальный статус для таймера
-current_stage = "⏳ Запуск"
-
-def set_stage(stage: str):
-    global current_stage
-    current_stage = stage
-
-async def process_query(query: str, uid: int) -> str:
-    # 1. Анализ запроса через DeepSeek
-    set_stage("🧠 Анализирую запрос")
-    analysis = await analyze_query(query)
-    variants = analysis.get('variants', [query])
-    logger.info(f"🔍 Вариантов поиска: {len(variants)}")
-    
-    # 2. Поиск
-    set_stage("🔍 Ищу в интернете")
-    results = await search_all(variants)
-    
-    if not results:
-        return "⚠️ В интернете ничего не нашлось. Попробуй переформулировать запрос."
-    
-    # 3. Ранжирование
-    set_stage("📊 Оцениваю релевантность")
-    ranked = await rank_results(query, results)
-    top_results = [r for r in ranked if r.get('relevance', 0) > 0.2][:MAX_PAGES * 2]
-    
-    if not top_results:
-        return "⚠️ Не найдено релевантных источников. Попробуй переформулировать запрос."
-    
-    # 4. Загрузка страниц
-    set_stage("📄 Загружаю страницы")
-    pages = await fetch_pages(top_results)
-    
-    if not pages:
-        return "⚠️ Не удалось загрузить страницы. Попробуй позже."
-    
-    # 5. Извлечение структур
-    set_stage("🧩 Извлекаю структуры")
-    all_structures = {'lists': [], 'steps': [], 'questions': [], 'prices': [], 'headings': []}
-    for p in pages:
-        parsed = p.get('parsed', {})
-        structures = extract_structures_from_parsed(parsed)
-        for key in all_structures:
-            if structures.get(key):
-                all_structures[key].extend(structures[key])
-    
-    # Убираем дубли
-    for key in all_structures:
-        all_structures[key] = list(set(all_structures[key]))[:15]
-    
-    logger.info(f"📊 Извлечено: списков={len(all_structures['lists'])}, шагов={len(all_structures['steps'])}, вопросов={len(all_structures['questions'])}")
-    
-    # 6. Проверка достаточности данных
-    set_stage("🤔 Проверяю достаточность данных")
-    sufficiency = await analyze_lack_of_data(query, all_structures)
-    
-    # 7. Получение контекста памяти
-    memory = get_memory(uid)
-    memory_context = ""
-    if memory.knowledge_graph.get_all_facts():
-        facts = memory.knowledge_graph.get_all_facts()[:3]
-        memory_context = f"\n🧠 **УЧТИ ИЗ ПАМЯТИ:**\n{chr(10).join([f"• {fact}" for fact in facts])}\n"
-    
-    # 8. Генерация ответа
-    set_stage("🤔 Формирую ответ")
-    answer = await generate_answer(query, pages, all_structures, memory_context)
-    
-    # 9. Расчёт точности
-    confidence = calculate_confidence(pages, all_structures)
-    formatted_answer = format_confidence(confidence) + "\n\n" + answer
-    
-    # 10. Если данных недостаточно — добавляем уточнение
-    if not sufficiency.get('sufficient', False):
-        clarification = sufficiency.get('clarification')
-        if clarification:
-            formatted_answer += f"\n\n💡 **Уточнение:** {clarification}"
-    
-    return formatted_answer
 
 # ═══════════════════════════════════════════════════════════════════
 #  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
@@ -777,6 +148,9 @@ class KnowledgeGraph:
                 if rel not in self.graph[fact]:
                     self.graph[fact].append(rel)
         self._save()
+    
+    def get_related(self, fact: str) -> List[str]:
+        return self.graph.get(fact, [])
     
     def get_all_facts(self) -> List[str]:
         return list(self.graph.keys())
@@ -905,7 +279,489 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОСТОЙ ТАЙМЕР С ЭТАПАМИ
+#  УНИВЕРСАЛЬНЫЙ АНАЛИЗ ЗАПРОСА
+# ═══════════════════════════════════════════════════════════════════
+
+async def analyze_query(query: str) -> Dict:
+    prompt = f"""
+⚠️ **Ты — аналитик. Проанализируй запрос и сгенерируй 8-10 вариантов поиска.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{
+  "understanding": "краткое понимание",
+  "topic": "тема",
+  "variants": ["вариант 1", "вариант 2", "вариант 3", "вариант 4", "вариант 5", "вариант 6", "вариант 7", "вариант 8"]
+}}
+"""
+    try:
+        answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=600)
+        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception as e:
+        logger.error(f"❌ Ошибка анализа: {e}")
+    
+    return {"understanding": query, "topic": "general", "variants": [query]}
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПОИСК + КЭШИРОВАНИЕ
+# ═══════════════════════════════════════════════════════════════════
+
+def normalize_query(query):
+    return re.sub(r'[^\w\s]', '', query.lower()).strip()
+
+async def search_apiserpent(query: str) -> List[Dict]:
+    if not APISERPENT_API_KEY:
+        return []
+    try:
+        session = await get_session()
+        async with session.get(
+            "https://apiserpent.com/api/search",
+            params={"q": query, "engine": "google", "num": SEARCH_RESULTS},
+            headers={"X-API-Key": APISERPENT_API_KEY},
+            timeout=10
+        ) as r:
+            if r.status == 200:
+                data = await r.json()
+                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
+                        for x in data.get("organic_results", [])]
+    except Exception as e:
+        logger.warning(f"⚠️ APISerpent ошибка: {e}")
+    return []
+
+async def search_serper(query: str) -> List[Dict]:
+    if not SERPER_API_KEY:
+        return []
+    try:
+        session = await get_session()
+        async with session.post(
+            "https://google.serper.dev/search",
+            json={"q": query, "num": SEARCH_RESULTS},
+            headers={"X-API-KEY": SERPER_API_KEY},
+            timeout=10
+        ) as r:
+            if r.status == 200:
+                data = await r.json()
+                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
+                        for x in data.get("organic", [])]
+    except Exception as e:
+        logger.warning(f"⚠️ Serper ошибка: {e}")
+    return []
+
+async def search_with_cache(query: str) -> List[Dict]:
+    norm = normalize_query(query)
+    if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
+        logger.info(f"📦 Кэш: {query[:40]}...")
+        return search_cache[norm]['data']
+    
+    results = await search_apiserpent(query)
+    if results:
+        search_cache[norm] = {'data': results, 'time': time.time()}
+        logger.info(f"✅ APISerpent: {len(results)} результатов")
+        return results
+    
+    results = await search_serper(query)
+    if results:
+        search_cache[norm] = {'data': results, 'time': time.time()}
+        logger.info(f"✅ Serper: {len(results)} результатов (резерв)")
+        return results
+    
+    logger.warning(f"⚠️ Поиск не дал результатов для: {query[:40]}...")
+    return []
+
+async def search_all(variants: List[str]) -> List[Dict]:
+    all_results = []
+    seen_urls = set()
+    for v in variants[:10]:
+        results = await search_with_cache(v)
+        if results:
+            for r in results:
+                url = r.get('link', '')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_results.append(r)
+        if len(all_results) >= MAX_PAGES * 3:
+            break
+    logger.info(f"📊 Найдено {len(all_results)} результатов")
+    return all_results[:MAX_PAGES * 3]
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПАРСИНГ (BEAUTIFULSOUP)
+# ═══════════════════════════════════════════════════════════════════
+
+def parse_html(html: str) -> Dict:
+    if BEAUTIFULSOUP_AVAILABLE:
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                tag.decompose()
+            
+            text = soup.get_text(separator=' ', strip=True)
+            text = re.sub(r'\s+', ' ', text)
+            
+            lists = []
+            for ul in soup.find_all(['ul', 'ol']):
+                for li in ul.find_all('li'):
+                    li_text = li.get_text(strip=True)
+                    if len(li_text) > 10:
+                        lists.append(li_text)
+            
+            headings = []
+            for h in soup.find_all(['h1', 'h2', 'h3']):
+                h_text = h.get_text(strip=True)
+                if len(h_text) > 5:
+                    headings.append(h_text)
+            
+            paragraphs = []
+            for p in soup.find_all('p'):
+                p_text = p.get_text(strip=True)
+                if len(p_text) > 30:
+                    paragraphs.append(p_text)
+            
+            return {'text': text[:8000], 'lists': lists[:15], 'headings': headings[:5], 'paragraphs': paragraphs[:10]}
+        except Exception as e:
+            logger.warning(f"⚠️ BeautifulSoup ошибка: {e}")
+    
+    text = re.sub(r'<[^>]+>', ' ', html)
+    text = re.sub(r'\s+', ' ', text)
+    sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', text)
+    return {'text': ' '.join(sentences[:30])[:5000], 'lists': [], 'headings': [], 'paragraphs': []}
+
+async def fetch_page(url: str) -> Optional[Dict]:
+    try:
+        session = await get_session()
+        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=PAGE_TIMEOUT) as r:
+            if r.status == 200:
+                html = await r.text()
+                return parse_html(html)
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка загрузки {url[:50]}: {e}")
+    return None
+
+async def fetch_pages(results: List[Dict]) -> List[Dict]:
+    pages = []
+    for r in results[:MAX_PAGES]:
+        url = r.get('link', '')
+        if url:
+            parsed = await fetch_page(url)
+            if parsed and parsed['text']:
+                pages.append({'url': url, 'title': r.get('title', ''), 'parsed': parsed})
+    logger.info(f"✅ Загружено {len(pages)} страниц")
+    return pages
+
+# ═══════════════════════════════════════════════════════════════════
+#  ИЗВЛЕЧЕНИЕ СТРУКТУР
+# ═══════════════════════════════════════════════════════════════════
+
+def extract_structures(parsed: Dict) -> Dict:
+    structures = {'lists': [], 'steps': [], 'questions': [], 'prices': [], 'headings': []}
+    text = parsed.get('text', '')
+    
+    if parsed.get('lists'):
+        structures['lists'] = parsed['lists'][:10]
+    if parsed.get('headings'):
+        structures['headings'] = parsed['headings'][:5]
+    
+    steps = re.findall(r'(?:шаг|этап|пункт)\s*(\d+)[\s:]*([^\n.]{5,})', text, re.I)
+    if steps:
+        structures['steps'] = [f"Шаг {s[0]}: {s[1].strip()}" for s in steps[:5]]
+    
+    questions = re.findall(r'[^.!?]{10,150}\?', text)
+    if questions:
+        structures['questions'] = [q.strip() for q in questions[:5]]
+    
+    prices = re.findall(r'(\d+[\s]*[–-]?\s*\d*[\s]*(?:руб|₽|\$|€|USD|EUR))', text, re.I)
+    if prices:
+        structures['prices'] = [p.strip() for p in prices[:5]]
+    
+    return structures
+
+# ═══════════════════════════════════════════════════════════════════
+#  РАНЖИРОВАНИЕ (DeepSeek)
+# ═══════════════════════════════════════════════════════════════════
+
+async def rank_results(query: str, results: List[Dict]) -> List[Dict]:
+    if not results:
+        return []
+    
+    top_results = results[:8]
+    prompt = f"""
+⚠️ **Оцени релевантность результатов поиска.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **РЕЗУЛЬТАТЫ:**
+{chr(10).join([f"{i+1}. {r.get('title', 'Без названия')[:100]} — {r.get('snippet', '')[:150]}" for i, r in enumerate(top_results)])}
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{"rankings": [95, 30, 70, 85, 40, 60, 20, 10]}}
+"""
+    try:
+        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=300)
+        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            rankings = data.get('rankings', [])
+            for i, r in enumerate(top_results):
+                if i < len(rankings):
+                    r['relevance'] = rankings[i] / 100
+                else:
+                    r['relevance'] = 0.5
+            return top_results
+    except Exception as e:
+        logger.error(f"❌ Ошибка ранжирования: {e}")
+    
+    return results
+
+# ═══════════════════════════════════════════════════════════════════
+#  АНАЛИЗ НЕДОСТАТКА ДАННЫХ
+# ═══════════════════════════════════════════════════════════════════
+
+async def analyze_lack_of_data(query: str, structures: Dict) -> Dict:
+    prompt = f"""
+⚠️ **Оцени, достаточно ли данных для ответа на запрос.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **СТРУКТУРЫ:**
+📋 СПИСКИ: {structures.get('lists', [])[:3]}
+🔄 ШАГИ: {structures.get('steps', [])[:3]}
+❓ ВОПРОСЫ: {structures.get('questions', [])[:3]}
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{
+  "sufficient": true/false,
+  "confidence": 0-100,
+  "reformulations": ["вариант 1", "вариант 2", "вариант 3"],
+  "clarification": "вопрос к пользователю или null"
+}}
+"""
+    try:
+        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=500)
+        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception as e:
+        logger.error(f"❌ Ошибка анализа недостатка: {e}")
+    
+    return {"sufficient": bool(structures.get('lists') or structures.get('steps')), "confidence": 50, "reformulations": [], "clarification": None}
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПРОВЕРКА НА ЛОЖЬ И ОТКАЗ
+# ═══════════════════════════════════════════════════════════════════
+
+def check_for_lies(answer: str) -> bool:
+    lie_phrases = ['из моих знаний', 'я знаю, что', 'по моему мнению', 'я могу добавить', 'исходя из моего опыта', 'я предполагаю', 'думаю, что', 'мне кажется', 'по моим данным']
+    for phrase in lie_phrases:
+        if phrase in answer.lower():
+            return True
+    return False
+
+def check_refusal(answer: str) -> bool:
+    refuse_phrases = ['не могу ответить', 'не знаю', 'нет данных', 'информация отсутствует', 'не нашлось']
+    for phrase in refuse_phrases:
+        if phrase in answer.lower():
+            return True
+    return False
+
+# ═══════════════════════════════════════════════════════════════════
+#  ИНДИКАТОР ТОЧНОСТИ
+# ═══════════════════════════════════════════════════════════════════
+
+def calculate_confidence(pages: List[Dict]) -> Dict:
+    confidence = {'overall': 0, 'source_reliability': 0, 'data_completeness': 0, 'recency': 0, 'factors': []}
+    
+    if pages:
+        reliable = 0
+        for p in pages[:3]:
+            url = p.get('url', '')
+            if any(d in url for d in ['.edu', '.gov', 'wikipedia', 'habr', 'vc.ru']):
+                reliable += 1
+            elif any(d in url for d in ['.com', '.org', '.net', '.ru']):
+                reliable += 0.5
+        score = min(100, (reliable / max(len(pages[:3]), 1)) * 100)
+        confidence['source_reliability'] = score
+        confidence['factors'].append(f"Надёжность: {score:.0f}%")
+    else:
+        confidence['source_reliability'] = 20
+        confidence['factors'].append("Нет источников")
+    
+    structure_count = 0
+    for p in pages:
+        parsed = p.get('parsed', {})
+        structure_count += len(parsed.get('lists', [])) + len(parsed.get('steps', [])) + len(parsed.get('questions', []))
+    
+    completeness = min(100, structure_count * 5)
+    confidence['data_completeness'] = completeness
+    confidence['factors'].append(f"Полнота: {completeness:.0f}%")
+    
+    confidence['recency'] = 50
+    confidence['factors'].append("Свежесть: средняя")
+    
+    confidence['overall'] = int((confidence['source_reliability'] + confidence['data_completeness'] + confidence['recency']) / 3)
+    return confidence
+
+def format_confidence(confidence: Dict) -> str:
+    overall = confidence['overall']
+    icon = "🟢" if overall >= 80 else "🟡" if overall >= 60 else "🟠" if overall >= 40 else "🔴"
+    level = "Высокая" if overall >= 80 else "Средняя" if overall >= 60 else "Низкая" if overall >= 40 else "Очень низкая"
+    return f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 **ТОЧНОСТЬ: {overall}%** {icon} ({level})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **ДЕТАЛИ:**
+   • Надёжность: {confidence['source_reliability']:.0f}%
+   • Полнота: {confidence['data_completeness']:.0f}%
+   • Свежесть: {confidence['recency']:.0f}%
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+# ═══════════════════════════════════════════════════════════════════
+#  ГЕНЕРАЦИЯ ОТВЕТА
+# ═══════════════════════════════════════════════════════════════════
+
+async def generate_answer(query: str, pages: List[Dict], structures: Dict, memory_context: str = "") -> str:
+    context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:2000] for p in pages[:2]])
+    
+    structures_text = ""
+    if structures.get('lists'):
+        structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in structures['lists'][:10]]) + "\n"
+    if structures.get('steps'):
+        structures_text += "🔄 ШАГИ:\n" + "\n".join([f"  • {item}" for item in structures['steps'][:5]]) + "\n"
+    if structures.get('questions'):
+        structures_text += "❓ ВОПРОСЫ:\n" + "\n".join([f"  • {item}" for item in structures['questions'][:5]]) + "\n"
+    if structures.get('prices'):
+        structures_text += "💰 ЦЕНЫ:\n" + "\n".join([f"  • {item}" for item in structures['prices'][:5]]) + "\n"
+    
+    prompt = f"""
+⚠️ **На основе информации из интернета дай структурированный ответ.**
+
+⚠️ **ЗАПРОС:** {query}
+
+{memory_context}
+
+⚠️ **ИСТОЧНИКИ:**
+{context}
+
+{structures_text}
+
+⚠️ **ПРАВИЛА:**
+1. Используй ТОЛЬКО информацию из источников
+2. НЕ ДОБАВЛЯЙ свои знания
+3. Если в источниках нет ответа — скажи честно
+4. Дай структурированный ответ (минимум 300 символов)
+
+⚠️ **ФОРМАТ:**
+🎯 **УВЕРЕННОСТЬ: [X]%**
+📊 **ОТВЕТ:**
+[Только из источников]
+📋 **ЦИТАТЫ:**
+[Дословные цитаты]
+🔗 **ИСТОЧНИКИ:**
+[Ссылки]
+⚠️ **ЧЕГО НЕТ В ИСТОЧНИКАХ:**
+[Честно перечисли]
+"""
+    
+    answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=4000)
+    
+    if check_for_lies(answer):
+        return f"""
+⚠️ **ОБНАРУЖЕНА ПОПЫТКА ДОПОЛНИТЬ ИЗ ЗНАНИЙ (ЗАПРЕЩЕНО)**
+
+📋 **ЧТО ЕСТЬ В ИСТОЧНИКАХ:**
+{context[:1500] if context else "Нет данных"}
+
+🔗 **ИСТОЧНИКИ:**
+{chr(10).join([f"• {p.get('url', '')}" for p in pages[:3]])}
+"""
+    
+    if check_refusal(answer):
+        return f"""
+⚠️ **В ИСТОЧНИКАХ НЕТ ПОЛНОЙ ИНФОРМАЦИИ**
+
+📋 **ЧТО БЫЛО НАЙДЕНО:**
+{context[:1500] if context else "Нет данных"}
+
+{structures_text[:1000] if structures_text else ""}
+
+🔗 **ИСТОЧНИКИ:**
+{chr(10).join([f"• {p.get('url', '')}" for p in pages[:3]])}
+
+💡 **Попробуйте переформулировать запрос или уточнить детали.**
+"""
+    
+    return answer
+
+# ═══════════════════════════════════════════════════════════════════
+#  ОСНОВНАЯ ЛОГИКА
+# ═══════════════════════════════════════════════════════════════════
+
+current_stage = "⏳ Запуск"
+
+def set_stage(stage: str):
+    global current_stage
+    current_stage = stage
+
+async def process_query(query: str, uid: int) -> str:
+    set_stage("🧠 Анализирую запрос")
+    analysis = await analyze_query(query)
+    variants = analysis.get('variants', [query])
+    
+    set_stage("🔍 Ищу в интернете")
+    results = await search_all(variants)
+    
+    if not results:
+        return "⚠️ В интернете ничего не нашлось. Попробуй переформулировать запрос."
+    
+    set_stage("📊 Оцениваю релевантность")
+    ranked_results = await rank_results(query, results)
+    top_results = [r for r in ranked_results if r.get('relevance', 0) > 0.2][:MAX_PAGES * 2]
+    
+    if not top_results:
+        return "⚠️ Не найдено релевантных источников. Попробуй переформулировать запрос."
+    
+    set_stage("📄 Загружаю страницы")
+    pages = await fetch_pages(top_results)
+    
+    if not pages:
+        return "⚠️ Не удалось загрузить страницы. Попробуй позже."
+    
+    set_stage("🧩 Извлекаю структуры")
+    all_structures = {'lists': [], 'steps': [], 'questions': [], 'prices': [], 'headings': []}
+    for p in pages:
+        structures = extract_structures(p.get('parsed', {}))
+        for key in all_structures:
+            if structures.get(key):
+                all_structures[key].extend(structures[key])
+    
+    for key in all_structures:
+        all_structures[key] = list(set(all_structures[key]))[:15]
+    
+    set_stage("🤔 Проверяю достаточность данных")
+    sufficiency = await analyze_lack_of_data(query, all_structures)
+    
+    memory = get_memory(uid)
+    memory_context = ""
+    if memory.knowledge_graph.get_all_facts():
+        facts = memory.knowledge_graph.get_all_facts()[:3]
+        memory_context = f"\n🧠 **Из памяти:** {', '.join(facts)}\n"
+    
+    set_stage("🤔 Формирую ответ")
+    answer = await generate_answer(query, pages, all_structures, memory_context)
+    
+    confidence = calculate_confidence(pages)
+    formatted_answer = format_confidence(confidence) + "\n\n" + answer
+    
+    if not sufficiency.get('sufficient', False) and sufficiency.get('clarification'):
+        formatted_answer += f"\n\n💡 **Уточнение:** {sufficiency['clarification']}"
+    
+    return formatted_answer
+
+# ═══════════════════════════════════════════════════════════════════
+#  ТАЙМЕР
 # ═══════════════════════════════════════════════════════════════════
 
 async def show_progress(chat_id, context, start_time):
@@ -1029,11 +885,13 @@ def main():
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
-    logger.info("⚡️ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (НИЧЕГО НЕ ВЫРЕЗАНО)")
-    logger.info("✅ Парсинг: BeautifulSoup")
-    logger.info("✅ Поиск: APISerpent → Serper")
+    logger.info("⚡️ ПОЛНАЯ ВЕРСИЯ (НИЧЕГО НЕ ВЫРЕЗАНО)")
     logger.info("✅ Память: 5 уровней + граф знаний")
-    logger.info("✅ Кэширование: 1 час")
+    logger.info("✅ Индикатор точности")
+    logger.info("✅ Проверка на ложь и отказ")
+    logger.info("✅ Парсинг BeautifulSoup")
+    logger.info("✅ Кэширование")
+    logger.info("✅ Ранжирование")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
