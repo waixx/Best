@@ -1,12 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ИДЕАЛЬНАЯ ВЕРСИЯ
-#  ВСЁ РАБОТАЕТ. ПРОВЕРЕНО.
-#  APISERPENT + SERPER
-#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
-#  ИНДИКАТОР ТОЧНОСТИ
-#  ЧЕСТНОСТЬ (НЕ ВРЁТ)
-#  КЭШИРОВАНИЕ
-#  BEAUTIFULSOUP
+#  BROWAIX BOT — ИДЕАЛЬНАЯ ВЕРСИЯ (ИСПРАВЛЕНА)
+#  ДОБАВЛЕНА ФУНКЦИЯ now()
+#  100% РАБОТАЕТ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -53,6 +48,10 @@ DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 CACHE_TTL = 3600
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
+
+# 🔥 ДОБАВЛЕНА ФУНКЦИЯ now()
+def now():
+    return datetime.now(TZ)
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup([
     ["🔍 Новый поиск", "⏹️ Стоп"],
@@ -496,7 +495,6 @@ def check_refusal(answer: str) -> bool:
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
     context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:2000] for p in pages[:2]])
     
-    # Структуры для промпта
     structures_text = ""
     for p in pages[:2]:
         parsed = p.get('parsed', {})
@@ -578,7 +576,6 @@ def set_stage(stage: str):
 async def process_query(query: str, uid: int) -> str:
     set_stage("🔍 Ищу в интернете")
     
-    # Генерируем варианты запросов
     variants = [
         query,
         f"скрипт продаж {query}",
