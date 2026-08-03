@@ -1,8 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ СТАБИЛЬНАЯ ВЕРСИЯ
-#  С КРАСИВЫМ РАДУЖНЫМ ТАЙМЕРОМ
-#  БЕЗ ТЯЖЁЛЫХ ЗАВИСИМОСТЕЙ
-#  БЕЗ ЛАЗЕЕК ДЛЯ ЛЖИ И ЛЕНИ
+#  BROWAIX BOT — УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  БЕЗ ХАРДКОДА (DeepSeek анализирует)
+#  С ПОСТОЯННЫМИ КНОПКАМИ И РАБОЧИМ ТАЙМЕРОМ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -72,6 +71,12 @@ SKIP_DOMAINS = ['youtube.com', 'instagram.com', 'facebook.com', 'tiktok.com', 't
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
+# Постоянные кнопки
+MAIN_KEYBOARD = ReplyKeyboardMarkup([
+    ["🔍 Новый поиск", "⏹️ Стоп"],
+    ["❓ Помощь", "📊 Статистика"]
+], resize_keyboard=True)
+
 if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
@@ -80,17 +85,13 @@ logger.info(f"🔑 APISERPENT: {'✅' if APISERPENT_API_KEY else '❌'}")
 logger.info(f"🔑 SERPER: {'✅' if SERPER_API_KEY else '❌'}")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 logger.info(f"🤖 Модель: {MODEL_DEFAULT}")
-logger.info("🌈 Радужный таймер: ✅")
-logger.info("⚡️ СТАБИЛЬНАЯ ВЕРСИЯ")
+logger.info("⚡️ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
 
 def now():
     return datetime.now(TZ)
 
-def get_current_date():
-    return now().strftime("%d.%m.%Y")
-
 # ═══════════════════════════════════════════════════════════════════
-#  КРАСИВЫЙ РАДУЖНЫЙ ТАЙМЕР
+#  КРАСИВЫЙ РАДУЖНЫЙ ТАЙМЕР (С РЕАЛЬНЫМ ПРОГНОЗОМ)
 # ═══════════════════════════════════════════════════════════════════
 
 class RainbowTimer:
@@ -110,6 +111,18 @@ class RainbowTimer:
         'finalizing': 'Завершаю', 'done': 'Готово!'
     }
     
+    # Реалистичное время для каждого этапа (в секундах)
+    STAGE_DURATIONS = {
+        'analyzing': (2, 5),
+        'searching': (5, 15),
+        'loading': (8, 20),
+        'parsing': (3, 8),
+        'thinking': (2, 5),
+        'generating': (5, 15),
+        'validating': (2, 5),
+        'finalizing': (1, 3)
+    }
+    
     def __init__(self):
         self.start_time = None
         self.current_stage = 'start'
@@ -119,18 +132,25 @@ class RainbowTimer:
         self.running = False
         self.message = None
         self.rainbow_position = 0
+        self.stage_history = []
+        self.actual_times = {}
     
-    def start(self, total_estimated: int = 60):
+    def start(self):
         self.start_time = time.time()
-        self.total_estimated = total_estimated
         self.current_stage = 'start'
         self.stage_start = time.time()
         self.progress = 0
         self.running = True
         self.rainbow_position = 0
+        self.stage_history = []
+        self.total_estimated = self._calculate_total_estimate()
         return self
     
     def set_stage(self, stage: str):
+        if self.stage_start and self.current_stage != stage:
+            # Сохраняем время предыдущего этапа
+            elapsed = time.time() - self.stage_start
+            self.stage_history.append((self.current_stage, elapsed))
         self.current_stage = stage
         self.stage_start = time.time()
     
@@ -145,6 +165,8 @@ class RainbowTimer:
     
     def get_progress(self) -> int:
         elapsed = self.get_elapsed()
+        if elapsed == 0:
+            return 0
         return min(100, int((elapsed / max(self.total_estimated, 1)) * 100))
     
     def get_stage_icon(self) -> str:
@@ -166,12 +188,21 @@ class RainbowTimer:
                 bar.append('⬜')
         return ''.join(bar)
     
+    def _calculate_total_estimate(self) -> int:
+        """Рассчитывает реалистичный прогноз на основе этапов"""
+        total = 5  # Базовое время
+        for stage, (min_time, max_time) in self.STAGE_DURATIONS.items():
+            # Берём среднее
+            total += (min_time + max_time) // 2
+        return total
+    
     def get_status_line(self) -> str:
         icon = self.get_stage_icon()
         name = self.get_stage_name()
         progress = self.get_progress()
         elapsed = self.get_elapsed()
         remaining = self.get_remaining()
+        
         time_str = f"⏱️ **{elapsed}** сек · ~**{remaining}** сек" if remaining > 0 else f"⏱️ **{elapsed}** сек"
         return f"""
 {icon} **{name}**
@@ -189,52 +220,8 @@ class RainbowTimer:
         self.progress = 100
         self.running = False
 
-
 # ═══════════════════════════════════════════════════════════════════
-#  ТАЙМЕР ДЛЯ TELEGRAM
-# ═══════════════════════════════════════════════════════════════════
-
-async def send_rainbow_timer(chat_id, context, timer: RainbowTimer, update_interval: float = 0.5):
-    try:
-        initial_text = timer.get_status_line()
-        message = await context.bot.send_message(chat_id, initial_text, parse_mode='Markdown')
-        timer.message = message
-        last_text = initial_text
-        
-        while timer.running:
-            await asyncio.sleep(update_interval)
-            if context.user_data.get('found_answer'):
-                timer.finish()
-                try:
-                    await message.edit_text("✅ **Готово!** Формирую ответ...", parse_mode='Markdown')
-                except Exception:
-                    pass
-                break
-            
-            new_text = timer.get_status_line()
-            if new_text != last_text:
-                try:
-                    await message.edit_text(new_text, parse_mode='Markdown')
-                except Exception:
-                    try:
-                        message = await context.bot.send_message(chat_id, new_text, parse_mode='Markdown')
-                    except Exception:
-                        pass
-                last_text = new_text
-            
-            if timer.is_finished():
-                break
-        
-        if not context.user_data.get('found_answer'):
-            try:
-                await message.edit_text("⏳ **Завершаю...**", parse_mode='Markdown')
-            except Exception:
-                pass
-    except Exception as e:
-        logger.error(f"❌ Ошибка таймера: {e}")
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПУТИ ДЛЯ ПАМЯТИ
+#  ПАМЯТЬ
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -245,10 +232,6 @@ def profile_path(uid): return os.path.join(DATA_DIR, f"profile_{uid}.json")
 def episodic_path(uid): return os.path.join(DATA_DIR, f"episodic_{uid}.json")
 def learning_path(uid): return os.path.join(DATA_DIR, f"learning_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
-
-# ═══════════════════════════════════════════════════════════════════
-#  5 УРОВНЕЙ ПАМЯТИ
-# ═══════════════════════════════════════════════════════════════════
 
 class SuperMemory:
     def __init__(self, uid):
@@ -565,19 +548,71 @@ async def ask_deepseek(messages, temperature=DEEPSEEK_TEMPERATURE, max_tokens=MA
         return None, str(e)
 
 # ═══════════════════════════════════════════════════════════════════
+#  УНИВЕРСАЛЬНЫЙ АНАЛИЗАТОР (DeepSeek решает)
+# ═══════════════════════════════════════════════════════════════════
+
+async def analyze_with_deepseek(message: str, history: List[Dict]) -> Dict:
+    history_text = ""
+    for msg in history[-5:]:
+        history_text += f"{msg.get('role', '')}: {msg.get('content', '')[:200]}\n"
+    
+    prompt = f"""
+⚠️ **ТЫ — УНИВЕРСАЛЬНЫЙ АНАЛИТИК. ОПРЕДЕЛИ, ЧТО ДЕЛАТЬ.**
+
+⚠️ **КОНТЕКСТ ДИАЛОГА:**
+{history_text if history_text else "Нет предыдущих сообщений"}
+
+⚠️ **СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:**
+{message}
+
+⚠️ **ОПРЕДЕЛИ:**
+1. **Тип:** greeting / question / instruction / clarification / stop
+2. **Действие:** respond (ответить сразу) / search (искать в интернете) / refine (уточнить)
+3. **Сложность:** simple / complex
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{
+  "type": "question",
+  "action": "search",
+  "complexity": "complex",
+  "confidence": 85,
+  "reason": "причина",
+  "response": null
+}}
+
+⚠️ **ЕСЛИ ПРИВЕТСТВИЕ:**
+{{
+  "type": "greeting",
+  "action": "respond",
+  "complexity": "simple",
+  "confidence": 95,
+  "reason": "пользователь здоровается",
+  "response": "👋 **Привет!** Я на связи. Задавай вопрос."
+}}
+
+⚠️ **ОТВЕЧАЙ ТОЛЬКО JSON.**
+"""
+    messages = [{"role": "system", "content": prompt}]
+    answer, err = await ask_deepseek(messages, temperature=0.15, max_tokens=500)
+    
+    if err or not answer:
+        return {"type": "question", "action": "search", "complexity": "complex", "confidence": 50, "reason": "анализ не удался", "response": None}
+    
+    try:
+        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    return {"type": "question", "action": "search", "complexity": "complex", "confidence": 50, "reason": "ошибка парсинга", "response": None}
+
+# ═══════════════════════════════════════════════════════════════════
 #  УМНЫЙ ПОИСК
 # ═══════════════════════════════════════════════════════════════════
 
-def analyze_query(query: str) -> Dict:
-    words = query.lower().split()
-    stop = {'как', 'что', 'это', 'для', 'без', 'на', 'в', 'с', 'и', 'а', 'но', 'или', 'если', 'то', 'чем', 'кто'}
-    keywords = [w for w in words if w not in stop and len(w) > 2]
-    is_greeting = not keywords or any(w in query.lower() for w in ["привет", "здравствуй", "салют", "хай", "hello", "hi", "ку", "даров"])
-    return {'keywords': keywords, 'is_greeting': is_greeting}
-
-def generate_variants(query: str, analysis: Dict) -> List[str]:
+def generate_variants(query: str, keywords: List[str]) -> List[str]:
     variants = [query]
-    keywords = analysis.get('keywords', [])
     if not keywords:
         return variants
     if len(keywords) >= 2:
@@ -625,8 +660,8 @@ def score_relevance(result: Dict, query: str) -> float:
 
 async def search_until_good(query: str, min_good: int = 5) -> List[Dict]:
     logger.info(f"🔍 Нужно найти {min_good} релевантных источников")
-    analysis = analyze_query(query)
-    variants = generate_variants(query, analysis)
+    keywords = re.findall(r'\b\w{4,}\b', query.lower())
+    variants = generate_variants(query, keywords)
     good_results = []
     seen_urls = set()
     for variant in variants:
@@ -755,28 +790,15 @@ def build_prompt_with_rules(user_message: str, pages: List[Dict]) -> str:
         prompt += f"\n--- ИСТОЧНИК #{i}: {s.get('url', '')} ---\n{s.get('text', '')[:2000]}\n"
     
     prompt += """
-⚠️ **ЖЁСТКИЕ ПРАВИЛА (НАРУШЕНИЕ = ЛОЖЬ):**
+⚠️ **ЖЁСТКИЕ ПРАВИЛА:**
+❌ **НЕЛЬЗЯ:** говорить "не могу", "не уверен", "нет данных", "переформулируйте", игнорировать источники
+✅ **МОЖНО:** сказать "в интернете нет, но я знаю...", указать уверенность в %
 
-❌ **ЗАПРЕЩЕНО:**
-- Говорить "я не могу" (ты можешь)
-- Говорить "я не уверен" (ты уверен)
-- Говорить "нет данных" (данные есть)
-- Говорить "переформулируйте" (ты отвечаешь сейчас)
-- Игнорировать источники
-
-✅ **РАЗРЕШЕНО:**
-- Сказать "в интернете нет, но я знаю..." (честно)
-- Сказать "я уверен на X%" (показать уверенность)
-
-⚠️ **ФОРМАТ ОТВЕТА (ОБЯЗАТЕЛЬНО):**
-🎯 **УВЕРЕННОСТЬ: [X]%**
-📊 **ОТВЕТ:** [твой ответ на основе источников]
-📋 **ЦИТАТЫ:**
-- [Источник #1]: "дословная цитата"
-- [Источник #2]: "дословная цитата"
-🔗 **ИСТОЧНИКИ:** [ссылки]
-
-⚠️ **ЕСЛИ В ОТВЕТЕ НЕТ ЦИТАТ — ЭТО ЛОЖЬ.**
+⚠️ **ФОРМАТ:**
+🎯 УВЕРЕННОСТЬ: [X]%
+📊 ОТВЕТ: [ответ]
+📋 ЦИТАТЫ: [Источник #1]: "цитата"
+🔗 ИСТОЧНИКИ: [ссылки]
 """
     return prompt
 
@@ -801,7 +823,7 @@ def build_forced_answer(pages: List[Dict], user_message: str) -> str:
             if url:
                 parts.append(f"• {url}")
     else:
-        parts.append("⚠️ В интернете не нашлось информации. Попробуйте переформулировать вопрос.")
+        parts.append("⚠️ В интернете не нашлось информации.")
     return "\n".join(parts)
 
 def format_answer_with_confidence(answer: str, data: Dict, confidence: Dict) -> str:
@@ -821,27 +843,66 @@ def format_answer_with_confidence(answer: str, data: Dict, confidence: Dict) -> 
     return "\n".join(parts)
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЛАВНАЯ ФУНКЦИЯ
+#  ТАЙМЕР ДЛЯ TELEGRAM
+# ═══════════════════════════════════════════════════════════════════
+
+async def send_rainbow_timer(chat_id, context, timer: RainbowTimer, update_interval: float = 0.5):
+    try:
+        initial_text = timer.get_status_line()
+        message = await context.bot.send_message(chat_id, initial_text, parse_mode='Markdown')
+        timer.message = message
+        last_text = initial_text
+        
+        while timer.running:
+            await asyncio.sleep(update_interval)
+            if context.user_data.get('found_answer'):
+                timer.finish()
+                try:
+                    await message.edit_text("✅ **Готово!** Формирую ответ...", parse_mode='Markdown')
+                except Exception:
+                    pass
+                break
+            
+            new_text = timer.get_status_line()
+            if new_text != last_text:
+                try:
+                    await message.edit_text(new_text, parse_mode='Markdown')
+                except Exception:
+                    try:
+                        message = await context.bot.send_message(chat_id, new_text, parse_mode='Markdown')
+                    except Exception:
+                        pass
+                last_text = new_text
+            
+            if timer.is_finished():
+                break
+        
+        if not context.user_data.get('found_answer'):
+            try:
+                await message.edit_text("⏳ **Завершаю...**", parse_mode='Markdown')
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"❌ Ошибка таймера: {e}")
+
+# ═══════════════════════════════════════════════════════════════════
+#  ОСНОВНАЯ ЛОГИКА
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer_final(uid: int, user_message: str, history: List[Dict], timer: RainbowTimer) -> str:
     logger.info(f"🧠 УМНЫЙ РЕЖИМ: {user_message[:50]}")
-    analysis = analyze_query(user_message)
-    if analysis.get('is_greeting'):
-        timer.finish()
-        return "👋 **Привет!** Я на связи. Задавай вопрос — найду ответ в интернете."
     
     timer.set_stage('searching')
     results = await search_until_good(user_message, min_good=5)
     if not results:
         timer.finish()
-        return "⚠️ В интернете не нашлось релевантной информации. Попробуйте переформулировать вопрос."
+        return "⚠️ В интернете не нашлось релевантной информации."
     
     timer.set_stage('loading')
     pages = await fetch_pages_fast(results)
     if not pages:
         timer.finish()
-        return "⚠️ Не удалось загрузить страницы. Попробуйте позже."
+        return "⚠️ Не удалось загрузить страницы."
     
     timer.set_stage('thinking')
     data = {'sources': pages, 'raw_text': "\n\n".join([p.get('text', '') for p in pages[:3]])}
@@ -867,128 +928,126 @@ async def search_and_answer_final(uid: int, user_message: str, history: List[Dic
 #  ОБРАБОТЧИКИ TELEGRAM
 # ═══════════════════════════════════════════════════════════════════
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 **Привет! Я поисковый ассистент.**\n\n"
+        "🔍 Напиши вопрос — я найду ответ в интернете\n"
+        "📊 Покажу источники — каждый ответ подтверждён\n"
+        "⚠️ **НИКОГДА НЕ ВРУ**\n"
+        "🧠 Запоминаю тебя\n\n"
+        "Просто напиши что хочешь найти!",
+        reply_markup=MAIN_KEYBOARD
+    )
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         uid = update.effective_user.id
         if not ALLOW_ALL and uid not in ALLOWED_USERS:
             return
-        user_message = update.effective_message.text[:1000] if update.effective_message else ""
+        
+        user_message = update.effective_message.text.strip() if update.effective_message else ""
         if not user_message:
             return
+        
+        # Кнопки
+        if user_message == "⏹️ Стоп":
+            context.user_data.clear()
+            await update.message.reply_text("⏹️ **Остановлено.**", reply_markup=MAIN_KEYBOARD)
+            return
+        
         if user_message == "🔍 Новый поиск":
             context.user_data.clear()
-            await safe_reply(update, "🔍 Задай вопрос.")
-            return
-        elif user_message == "❓ Помощь":
-            await safe_reply(update, "❓ **Помощь**\n\n🔍 Новый поиск\n🔄 Сброс\n⏹️ Стоп")
-            return
-        elif user_message == "🔄 Сброс":
-            context.user_data.clear()
-            await safe_reply(update, "🔄 Диалог сброшен.")
-            return
-        elif user_message == "⏹️ Стоп":
-            context.user_data.clear()
-            await safe_reply(update, "⏹️ Остановлено.")
-            return
-        if user_message.startswith('/'):
+            await update.message.reply_text("🔍 **Напиши вопрос.**", reply_markup=MAIN_KEYBOARD)
             return
         
-        uid = update.effective_user.id
-        chat_id = update.effective_chat.id
+        if user_message == "❓ Помощь":
+            await update.message.reply_text(
+                "❓ **Помощь**\n\n"
+                "• Напиши вопрос — я найду ответ\n"
+                "• 🔍 Новый поиск — начать заново\n"
+                "• ⏹️ Стоп — остановить всё\n"
+                "• 📊 Статистика — память",
+                reply_markup=MAIN_KEYBOARD
+            )
+            return
+        
+        if user_message == "📊 Статистика":
+            memory = get_memory(uid)
+            await update.message.reply_text(
+                f"📊 **Статистика**\n\n"
+                f"💬 Сообщений: {len(memory.short_term)}\n"
+                f"👤 Профиль: {len(memory.profile)} полей\n"
+                f"⭐ Фактов: {len(memory.episodic)}\n"
+                f"📝 Всего: {memory.counter}",
+                reply_markup=MAIN_KEYBOARD
+            )
+            return
+        
+        # Универсальный анализ через DeepSeek
         history = get_memory(uid).get_context(limit=10)
+        analysis = await analyze_with_deepseek(user_message, history)
         
-        timer = RainbowTimer()
-        timer.start(total_estimated=45)
+        # Если DeepSeek сказал отвечать сразу
+        if analysis.get('action') == 'respond':
+            response = analysis.get('response', "👋 Я на связи. Задавай вопрос.")
+            await update.message.reply_text(response, reply_markup=MAIN_KEYBOARD)
+            return
+        
+        # Если DeepSeek сказал уточнить
+        if analysis.get('action') == 'refine':
+            await update.message.reply_text(
+                "📝 **Уточни запрос:**\n\nЧто именно ты хочешь найти? Напиши подробнее.",
+                reply_markup=MAIN_KEYBOARD
+            )
+            context.user_data['awaiting_refine'] = True
+            return
+        
+        # Если нужен поиск или неясно — ищем
+        chat_id = update.effective_chat.id
+        full_history = get_memory(uid).get_context(limit=10)
         
         context.user_data['uid'] = uid
-        context.user_data['history'] = history
+        context.user_data['history'] = full_history
         context.user_data['query'] = user_message
         context.user_data['chat_id'] = chat_id
         context.user_data['found_answer'] = False
         
+        timer = RainbowTimer()
+        timer.start()
+        
         timer_task = asyncio.create_task(send_rainbow_timer(chat_id, context, timer))
-        answer = await search_and_answer_final(uid, user_message, history, timer)
+        answer = await search_and_answer_final(uid, user_message, full_history, timer)
         
         context.user_data['found_answer'] = True
         await timer_task
         
         elapsed = timer.get_elapsed()
-        answer = f"⏱️ {elapsed} сек\n\n{answer}"
-        get_memory(uid).add_message("assistant", answer[:500])
+        full_answer = f"⏱️ {elapsed} сек\n\n{answer}"
+        get_memory(uid).add_message("assistant", full_answer[:500])
         
-        await safe_reply(update, answer, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Новый поиск", callback_data="new_search"),
-             InlineKeyboardButton("✏️ Уточнить", callback_data="refine")]
-        ]))
+        await update.message.reply_text(full_answer, reply_markup=MAIN_KEYBOARD)
+        
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
-        await safe_reply(update, "⚠️ Ошибка. Попробуйте еще раз.")
-
-async def handle_after_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == "new_search":
-        context.user_data.clear()
-        try:
-            await query.edit_message_text("🔍 Новый поиск. Напиши вопрос.")
-        except:
-            await query.message.reply_text("🔍 Новый поиск. Напиши вопрос.")
-    elif query.data == "refine":
-        last_query = context.user_data.get('query', '')
-        if not last_query:
-            await query.edit_message_text("⏳ Нет активного вопроса.")
-            return
-        context.user_data['awaiting_followup'] = True
-        try:
-            await query.edit_message_text(f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить.")
-        except:
-            await query.message.reply_text(f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить.")
-
-async def safe_reply(update: Update, text: str, reply_markup=None):
-    if not text:
-        text = "⚠️ Пустой ответ."
-    msg = update.effective_message
-    if not msg:
-        return
-    try:
-        if len(text) > 4096:
-            parts = []
-            current = ""
-            for line in text.split('\n'):
-                if len(current) + len(line) + 1 > 4000:
-                    parts.append(current)
-                    current = line
-                else:
-                    current += "\n" + line if current else line
-            if current:
-                parts.append(current)
-            for i, part in enumerate(parts):
-                if i == len(parts) - 1:
-                    await msg.reply_text(part, disable_web_page_preview=True, reply_markup=reply_markup)
-                else:
-                    await msg.reply_text(part, disable_web_page_preview=True)
-        else:
-            await msg.reply_text(text, disable_web_page_preview=True, reply_markup=reply_markup)
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки: {e}")
-        try:
-            await msg.reply_text(text[:4000], disable_web_page_preview=True, reply_markup=reply_markup)
-        except Exception:
-            pass
+        await update.message.reply_text("⚠️ Ошибка. Попробуйте еще раз.", reply_markup=MAIN_KEYBOARD)
 
 # ═══════════════════════════════════════════════════════════════════
 #  КОМАНДЫ
 # ═══════════════════════════════════════════════════════════════════
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await safe_reply(update, "👋 **Привет! Я поисковый ассистент.**\n\n🔍 Просто напиши вопрос — я найду ответ в интернете\n📊 Покажу источники — каждый ответ подтверждён\n⚠️ **НИКОГДА НЕ ВРУ** — если не знаю, скажу честно\n🧠 Запоминаю тебя — становлюсь умнее с каждым вопросом\n🌈 Красивый радужный таймер показывает прогресс\n\nПопробуй спросить что-нибудь!", reply_markup=ReplyKeyboardMarkup([["🔍 Новый поиск", "❓ Помощь"], ["🔄 Сброс", "⏹️ Стоп"]], resize_keyboard=True))
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not ALLOW_ALL and uid not in ALLOWED_USERS:
         return
     memory = get_memory(uid)
-    await safe_reply(update, f"📊 **Статистика**\n\n💬 В памяти: {len(memory.short_term)} сообщений\n👤 В профиле: {len(memory.profile)} полей\n⭐ Важных фактов: {len(memory.episodic)}\n💡 Предпочтений: {len(memory.learning.get('preferences', []))}\n📝 Всего сообщений: {memory.counter}")
+    await update.message.reply_text(
+        f"📊 **Статистика**\n\n"
+        f"💬 Сообщений: {len(memory.short_term)}\n"
+        f"👤 Профиль: {len(memory.profile)}\n"
+        f"⭐ Фактов: {len(memory.episodic)}\n"
+        f"📝 Всего: {memory.counter}",
+        reply_markup=MAIN_KEYBOARD
+    )
 
 async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1002,7 +1061,7 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     context.user_data.clear()
-    await safe_reply(update, "🧹 Всё забыто!")
+    await update.message.reply_text("🧹 **Всё забыто!**", reply_markup=MAIN_KEYBOARD)
 
 async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1012,7 +1071,7 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     html_cache = {}
     search_cache = {}
     answer_cache = {}
-    await safe_reply(update, "🧹 Кэш очищен!")
+    await update.message.reply_text("🧹 **Кэш очищен!**", reply_markup=MAIN_KEYBOARD)
 
 # ═══════════════════════════════════════════════════════════════════
 #  ЗАПУСК
@@ -1025,18 +1084,21 @@ def main():
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("🌈 Радужный таймер: ✅")
-    logger.info("⚡️ СТАБИЛЬНАЯ ВЕРСИЯ")
+    logger.info("⚡️ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+    
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("stats", stats_command))
         app.add_handler(CommandHandler("forget", forget_command))
         app.add_handler(CommandHandler("clearcache", clearcache_command))
-        app.add_handler(CallbackQueryHandler(handle_after_answer_callback, pattern="^(new_search|refine)$"))
+        
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
         logger.info("✅ Бот готов к работе!")
         app.run_polling()
+    
     except Exception as e:
         logger.error(f"❌ Ошибка запуска: {e}")
         import traceback
