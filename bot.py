@@ -1,7 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ИДЕАЛЬНАЯ ВЕРСИЯ (ИСПРАВЛЕНА)
-#  ДОБАВЛЕНА ФУНКЦИЯ now()
-#  100% РАБОТАЕТ
+#  BROWAIX BOT — УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  ВСЁ РЕШАЕТ DEEPSEEK (ГЕНЕРАЦИЯ ЗАПРОСОВ, ОЦЕНКА, ФИЛЬТРАЦИЯ)
+#  БЕЗ ХАРДКОДА
+#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
+#  ИНДИКАТОР ТОЧНОСТИ + ПРОВЕРКА НА ЛОЖЬ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -41,15 +43,14 @@ SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-MAX_PAGES = 4
+MAX_PAGES = 5
 PAGE_TIMEOUT = 6
-SEARCH_RESULTS = 12
+SEARCH_RESULTS = 15
 DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 CACHE_TTL = 3600
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
-# 🔥 ДОБАВЛЕНА ФУНКЦИЯ now()
 def now():
     return datetime.now(TZ)
 
@@ -62,7 +63,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 ИДЕАЛЬНАЯ ВЕРСИЯ")
+logger.info("🚀 УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ВСЁ ЧЕРЕЗ DEEPSEEK)")
 
 # ═══════════════════════════════════════════════════════════════════
 #  HTTP
@@ -277,7 +278,7 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (APISerpent → Serper)
+#  ПОИСК
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -323,11 +324,9 @@ async def search_serper(query: str) -> List[Dict]:
 
 async def search_with_cache(query: str) -> List[Dict]:
     norm = normalize_query(query)
-    if norm in search_cache:
-        cached = search_cache[norm]
-        if (time.time() - cached['time']) < CACHE_TTL:
-            logger.info(f"📦 Кэш: {query[:40]}...")
-            return cached['data']
+    if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
+        logger.info(f"📦 Кэш: {query[:40]}...")
+        return search_cache[norm]['data']
     
     results = await search_apiserpent(query)
     if results:
@@ -344,24 +343,8 @@ async def search_with_cache(query: str) -> List[Dict]:
     logger.warning(f"⚠️ Поиск не дал результатов для: {query[:40]}...")
     return []
 
-async def search_all(variants: List[str]) -> List[Dict]:
-    all_results = []
-    seen_urls = set()
-    for v in variants[:5]:
-        results = await search_with_cache(v)
-        if results:
-            for r in results:
-                url = r.get('link', '')
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    all_results.append(r)
-        if len(all_results) >= MAX_PAGES * 3:
-            break
-    logger.info(f"📊 Найдено {len(all_results)} результатов")
-    return all_results[:MAX_PAGES * 3]
-
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ (BEAUTIFULSOUP)
+#  ПАРСИНГ
 # ═══════════════════════════════════════════════════════════════════
 
 def parse_html(html: str) -> Dict:
@@ -564,7 +547,7 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА
+#  ОСНОВНАЯ ЛОГИКА (БЕЗ ХАРДКОДА)
 # ═══════════════════════════════════════════════════════════════════
 
 current_stage = "⏳ Запуск"
@@ -574,27 +557,118 @@ def set_stage(stage: str):
     current_stage = stage
 
 async def process_query(query: str, uid: int) -> str:
+    set_stage("🧠 Анализирую запрос")
+    
+    # 1. DeepSeek генерирует варианты поиска
+    analyze_prompt = f"""
+⚠️ **Ты — аналитик поиска. Проанализируй запрос пользователя.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. Понять, что на самом деле нужно пользователю
+2. Сгенерировать 8-10 вариантов поисковых запросов
+3. Используй синонимы и перефразирования
+4. Охвати разные углы темы
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{
+  "understanding": "краткое понимание (1-2 предложения)",
+  "variants": [
+    "вариант 1",
+    "вариант 2",
+    "вариант 3",
+    "вариант 4",
+    "вариант 5",
+    "вариант 6",
+    "вариант 7",
+    "вариант 8"
+  ]
+}}
+
+⚠️ **ОТВЕЧАЙ ТОЛЬКО JSON. НЕ ВЫДУМЫВАЙ.**
+"""
+    
+    try:
+        analysis_text = await ask_deepseek(analyze_prompt, temperature=0.3, max_tokens=600)
+        json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
+        if json_match:
+            analysis = json.loads(json_match.group())
+            variants = analysis.get('variants', [query])
+        else:
+            variants = [query]
+    except:
+        variants = [query]
+    
+    logger.info(f"🔍 DeepSeek сгенерировал {len(variants)} вариантов")
+    
+    # 2. Ищем по всем вариантам
     set_stage("🔍 Ищу в интернете")
+    all_results = []
+    seen_urls = set()
+    for v in variants[:10]:
+        results = await search_with_cache(v)
+        if results:
+            for r in results:
+                url = r.get('link', '')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_results.append(r)
+        if len(all_results) >= MAX_PAGES * 3:
+            break
     
-    variants = [
-        query,
-        f"скрипт продаж {query}",
-        f"как продавать {query}",
-        f"вопросы для клиента {query}",
-        f"техника продаж {query}"
-    ]
-    
-    results = await search_all(variants)
-    
-    if not results:
+    if not all_results:
         return "⚠️ В интернете ничего не нашлось. Попробуй переформулировать запрос."
     
+    # 3. DeepSeek оценивает релевантность
+    set_stage("📊 Оцениваю релевантность")
+    
+    rank_prompt = f"""
+⚠️ **Оцени релевантность результатов для запроса.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **РЕЗУЛЬТАТЫ (только ссылки и названия):**
+{chr(10).join([f"{i+1}. {r.get('title', 'Без названия')} — {r.get('link', '')}" for i, r in enumerate(all_results[:15])])}
+
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. Оцени каждый результат по шкале 0-100
+2. Учти, что YouTube и соцсети — обычно бесполезны для текстового контента
+3. Верни список оценок
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{"rankings": [95, 30, 70, 85, 40, 60, 20, 10, 50, 80, 25, 55, 90, 35, 65]}}
+"""
+    
+    try:
+        rank_text = await ask_deepseek(rank_prompt, temperature=0.2, max_tokens=400)
+        json_match = re.search(r'\{.*\}', rank_text, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            rankings = data.get('rankings', [])
+            for i, r in enumerate(all_results[:15]):
+                if i < len(rankings):
+                    r['relevance'] = rankings[i] / 100
+                else:
+                    r['relevance'] = 0.5
+    except:
+        for r in all_results:
+            r['relevance'] = 0.5
+    
+    # 4. Фильтруем по релевантности
+    top_results = [r for r in all_results if r.get('relevance', 0) > 0.2][:MAX_PAGES * 2]
+    
+    if not top_results:
+        return "⚠️ Не найдено релевантных источников. Попробуй переформулировать запрос."
+    
+    # 5. Загружаем страницы
     set_stage("📄 Загружаю страницы")
-    pages = await fetch_pages(results)
+    pages = await fetch_pages(top_results)
     
     if not pages:
         return "⚠️ Не удалось загрузить страницы. Попробуй позже."
     
+    # 6. Генерируем ответ
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
