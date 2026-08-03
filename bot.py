@@ -1,10 +1,11 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ СТАБИЛЬНАЯ ВЕРСИЯ С ПОЛНЫМ ЛОГИРОВАНИЕМ
+#  BROWAIX BOT — ФИНАЛЬНАЯ СТАБИЛЬНАЯ ВЕРСИЯ
 #  APISERPENT (ОСНОВНОЙ) + SERPER (РЕЗЕРВ)
-#  BROWSERLESS (ДЛЯ JS) + DEEPSEEK ПАРСИНГ СТРУКТУР
-#  ДОБИРАЕТ ДО 7 РЕЛЕВАНТНЫХ ИСТОЧНИКОВ
-#  ПАМЯТЬ, ТОЧНОСТЬ, ПРОВЕРКА НА ЛОЖЬ, ТАЙМЕР
-#  ПОДРОБНЫЕ ЛОГИ КАЖДОГО ШАГА
+#  УВЕЛИЧЕН ТАЙМАУТ APISERPENT ДО 25 СЕКУНД
+#  ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ КАЖДОГО ЗАПРОСА К APISERPENT
+#  ОБРАБОТКА ПУСТЫХ ОТВЕТОВ
+#  BROWSERLESS ДЛЯ JS-СТРАНИЦ
+#  ПАМЯТЬ, ТОЧНОСТЬ, ПРОВЕРКА НА ЛОЖЬ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -40,7 +41,7 @@ except ImportError:
 
 load_dotenv()
 
-# Настройка логирования с детализацией
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -68,6 +69,7 @@ PAGE_TIMEOUT = 6
 SEARCH_RESULTS = 15
 DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 CACHE_TTL = 3600
+APISERPENT_TIMEOUT = 25  # Увеличенный таймаут для APISerpent
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -83,7 +85,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 ФИНАЛЬНАЯ СТАБИЛЬНАЯ ВЕРСИЯ С ЛОГИРОВАНИЕМ")
+logger.info("🚀 ФИНАЛЬНАЯ СТАБИЛЬНАЯ ВЕРСИЯ С УВЕЛИЧЕННЫМ ТАЙМАУТОМ APISERPENT")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -123,8 +125,9 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
         ) as r:
             if r.status == 200:
                 data = await r.json()
-                logger.debug("✅ DeepSeek ответил успешно")
-                return data["choices"][0]["message"]["content"]
+                content = data["choices"][0]["message"]["content"]
+                logger.debug(f"✅ DeepSeek ответил ({len(content)} символов)")
+                return content
             else:
                 logger.error(f"❌ DeepSeek ошибка HTTP {r.status}: {await r.text()}")
                 return ""
@@ -330,7 +333,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
             "https://apiserpent.com/api/search",
             params={"q": query, "engine": "google", "num": SEARCH_RESULTS},
             headers={"X-API-Key": APISERPENT_API_KEY},
-            timeout=10
+            timeout=APISERPENT_TIMEOUT
         ) as r:
             elapsed = time.time() - start_time
             logger.info(f"⏱️ APISerpent ответ за {elapsed:.2f} сек, статус {r.status}")
@@ -340,6 +343,9 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 results = [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
                            for x in data.get("organic_results", [])]
                 logger.info(f"✅ APISerpent: {len(results)} результатов")
+                # Логируем первый результат для проверки структуры
+                if results:
+                    logger.debug(f"📄 Пример ответа APISerpent: {json.dumps(results[0], ensure_ascii=False)[:200]}")
                 return results
             else:
                 text = await r.text()
@@ -347,7 +353,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 return []
                 
     except asyncio.TimeoutError:
-        logger.warning("⏰ APISerpent таймаут (10 сек)")
+        logger.warning(f"⏰ APISerpent таймаут ({APISERPENT_TIMEOUT} сек)")
         return []
     except aiohttp.ClientError as e:
         logger.warning(f"⚠️ APISerpent ClientError: {type(e).__name__} - {e}")
@@ -701,6 +707,8 @@ def format_confidence(confidence: Dict) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def check_for_lies(answer: str) -> bool:
+    if not answer:
+        return False
     lie_phrases = ['из моих знаний', 'я знаю, что', 'по моему мнению', 'я могу добавить', 'исходя из моего опыта', 'я предполагаю', 'думаю, что', 'мне кажется', 'по моим данным']
     for phrase in lie_phrases:
         if phrase in answer.lower():
@@ -708,6 +716,8 @@ def check_for_lies(answer: str) -> bool:
     return False
 
 def check_refusal(answer: str) -> bool:
+    if not answer:
+        return False
     refuse_phrases = ['не могу ответить', 'не знаю', 'нет данных', 'информация отсутствует', 'не нашлось']
     for phrase in refuse_phrases:
         if phrase in answer.lower():
@@ -715,7 +725,7 @@ def check_refusal(answer: str) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА
+#  ГЕНЕРАЦИЯ ОТВЕТА (С ОБРАБОТКОЙ ПУСТОГО ОТВЕТА)
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
@@ -765,6 +775,23 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
 """
     
     answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=3500)
+    
+    # Если DeepSeek вернул пустой ответ — формируем fallback
+    if not answer:
+        logger.warning("⚠️ DeepSeek вернул пустой ответ, используем fallback")
+        return f"""
+⚠️ **НЕ УДАЛОСЬ СФОРМИРОВАТЬ ОТВЕТ**
+
+📋 **ЧТО БЫЛО НАЙДЕНО:**
+{context[:1500] if context else "Нет данных"}
+
+{structures_text[:500] if structures_text else ""}
+
+🔗 **ИСТОЧНИКИ:**
+{chr(10).join([f"• {p.get('url', '')}" for p in pages[:3]])}
+
+💡 **Попробуйте переформулировать запрос.**
+"""
     
     if check_for_lies(answer):
         return f"""
@@ -1083,6 +1110,8 @@ def main():
     logger.info("✅ Гибридный парсинг (HTTP + Browserless)")
     logger.info("✅ DeepSeek-извлечение структур")
     logger.info("✅ Детальное логирование каждого шага")
+    logger.info("✅ Обработка пустых ответов DeepSeek")
+    logger.info(f"✅ Таймаут APISerpent: {APISERPENT_TIMEOUT} сек")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
