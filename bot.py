@@ -1,8 +1,10 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  APISERPENT С ПАРАМЕТРОМ deep=true (ПОЛНЫЕ ДАННЫЕ)
 #  ПАРАЛЛЕЛЬНЫЙ ПОИСК ДО 15 ИСТОЧНИКОВ
-#  УМНАЯ ПЕРЕДАЧА ДАННЫХ В DEEPSEEK (БЕЗ ПОТЕРЬ)
+#  УМНАЯ ПЕРЕДАЧА ДАННЫХ В DEEPSEEK
 #  ЧЕСТНЫЙ ОТВЕТ ИЗ ЗНАНИЙ ПРИ НЕОБХОДИМОСТИ
+#  НИЧЕГО НЕ ВЫРЕЗАНО
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -63,7 +65,7 @@ PAGE_TIMEOUT = 4
 SEARCH_RESULTS = 12
 DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 20
+APISERPENT_TIMEOUT = 30
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -79,7 +81,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (deep=true)")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -304,7 +306,7 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (ПАРАЛЛЕЛЬНЫЙ)
+#  ПОИСК (APISerpent С deep=true → Serper)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -317,14 +319,60 @@ async def search_apiserpent(query: str) -> List[Dict]:
         session = await get_session()
         async with session.get(
             "https://apiserpent.com/api/search",
-            params={"q": query, "engine": "google", "num": SEARCH_RESULTS},
+            params={
+                "q": query,
+                "engine": "google",
+                "num": SEARCH_RESULTS,
+                "deep": "true"
+            },
             headers={"X-API-Key": APISERPENT_API_KEY},
             timeout=APISERPENT_TIMEOUT
         ) as r:
             if r.status == 200:
                 data = await r.json()
-                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
-                        for x in data.get("organic_results", [])]
+                results = []
+                
+                # Organic results
+                organic = data.get("organic_results", [])
+                for x in organic:
+                    results.append({
+                        "title": x.get("title", ""),
+                        "snippet": x.get("snippet", ""),
+                        "link": x.get("link", ""),
+                        "source": "organic"
+                    })
+                
+                # People Also Ask
+                paa = data.get("people_also_ask", [])
+                for item in paa:
+                    results.append({
+                        "title": item.get("question", ""),
+                        "snippet": item.get("snippet", ""),
+                        "link": item.get("link", ""),
+                        "source": "paa"
+                    })
+                
+                # Featured Snippet
+                featured = data.get("featured_snippet", {})
+                if featured:
+                    results.append({
+                        "title": featured.get("title", ""),
+                        "snippet": featured.get("snippet", ""),
+                        "link": featured.get("link", ""),
+                        "source": "featured"
+                    })
+                
+                # AI Overview
+                ai_overview = data.get("ai_overview", {})
+                if ai_overview:
+                    results.append({
+                        "title": "AI Overview",
+                        "snippet": ai_overview.get("text", ""),
+                        "link": "",
+                        "source": "ai_overview"
+                    })
+                
+                return results
     except:
         pass
     return []
@@ -348,21 +396,30 @@ async def search_serper(query: str) -> List[Dict]:
         pass
     return []
 
-async def search_single(variant: str) -> List[Dict]:
-    """Поиск по одному варианту (APISerpent → Serper)"""
-    results = await search_apiserpent(variant)
+async def search_with_cache(query: str) -> List[Dict]:
+    norm = normalize_query(query)
+    if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
+        return search_cache[norm]['data']
+    
+    results = await search_apiserpent(query)
     if results:
+        search_cache[norm] = {'data': results, 'time': time.time()}
         return results
-    return await search_serper(variant)
+    
+    results = await search_serper(query)
+    if results:
+        search_cache[norm] = {'data': results, 'time': time.time()}
+        return results
+    
+    return []
 
 async def search_parallel(variants: List[str], max_sources: int = 15) -> List[Dict]:
-    """Параллельный поиск по всем вариантам"""
     if not variants:
         return []
     
     logger.info(f"🔍 Параллельный поиск по {len(variants)} вариантам")
     
-    tasks = [search_single(v) for v in variants[:10]]
+    tasks = [search_with_cache(v) for v in variants[:10]]
     results_list = await asyncio.gather(*tasks)
     
     all_results = []
@@ -461,7 +518,6 @@ async def fetch_page(url: str) -> Optional[Dict]:
     return None
 
 async def fetch_pages_parallel(results: List[Dict], max_pages: int = MAX_PAGES) -> List[Dict]:
-    """Параллельная загрузка страниц"""
     if not results:
         return []
     
@@ -604,11 +660,11 @@ def check_refusal(answer: str) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА (УМНАЯ ПЕРЕДАЧА ДАННЫХ)
+#  ГЕНЕРАЦИЯ ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
-    # 1. Извлекаем ВСЕ данные в сжатом виде (без потерь)
+    # Извлекаем ВСЕ данные из страниц
     all_data = []
     
     for p in pages[:5]:
@@ -639,42 +695,33 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
     structures_text = "\n\n".join(all_data)
     sources_text = "\n".join([f"• {p.get('url', '')}" for p in pages[:5]])
     
-    # 2. Короткий промпт с ВСЕМИ данными
     prompt = f"""
 ⚠️ **ЗАПРОС:** {query}
 
 {memory_context}
 
-⚠️ **ДАННЫЕ ИЗ ИНТЕРНЕТА (ВСЕ):**
+⚠️ **ДАННЫЕ ИЗ ИНТЕРНЕТА:**
 {structures_text}
 
 ⚠️ **ИСТОЧНИКИ:**
 {sources_text}
 
-⚠️ **ТВОЯ ЗАДАЧА:**
-1. На основе данных выше составь практический ответ.
-2. Если данных не хватает — дополни из знаний (отметь 🧠).
-3. Дай структурированный ответ.
-4. Если данных мало — скажи честно.
-
-⚠️ **ОТВЕЧАЙ СЕЙЧАС. НЕ ОТКАЗЫВАЙСЯ.**
+⚠️ **СОСТАВЬ ПРАКТИЧЕСКИЙ ОТВЕТ НА ОСНОВЕ ДАННЫХ.**
+Если данных не хватает — дополни из знаний (отметь 🧠).
 """
     
-    # 3. Пытаемся получить ответ (3 попытки)
     for attempt in range(3):
         answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=2500)
         if answer and len(answer) > 100:
             if check_for_lies(answer) or check_refusal(answer):
                 continue
             return answer
-        logger.warning(f"⚠️ DeepSeek попытка {attempt+1} не удалась")
+        logger.warning(f"⚠️ Попытка {attempt+1} не удалась")
         await asyncio.sleep(2)
     
-    # 4. Если DeepSeek не ответил — честный ответ из знаний
     return await answer_from_knowledge(query)
 
 async def answer_from_knowledge(query: str) -> str:
-    """Честный ответ из знаний модели"""
     prompt = f"""
 ⚠️ **В интернете не удалось найти достаточно информации по запросу.**
 
@@ -683,19 +730,14 @@ async def answer_from_knowledge(query: str) -> str:
 ⚠️ **Ты — эксперт. Ответь из своих знаний.**
 
 ⚠️ **ПРАВИЛА:**
-1. Дай структурированный ответ на основе своего опыта.
+1. Дай структурированный ответ.
 2. Если не знаешь — скажи честно.
-3. Отметь: 🧠 Ответ основан на моих знаниях (в интернете мало данных).
-
-⚠️ **ФОРМАТ:**
-🧠 **ОТВЕТ (на основе знаний):**
-[Твой ответ]
-⚠️ **В интернете мало данных, ответ может быть неполным.**
+3. Отметь: 🧠 Ответ основан на моих знаниях.
 """
     answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=2500)
     if not answer:
-        return "⚠️ Не удалось найти информацию в интернете. Попробуйте переформулировать запрос."
-    return f"🧠 **ОТВЕТ (на основе знаний):**\n\n{answer}\n\n⚠️ В интернете мало данных, ответ может быть неполным."
+        return "⚠️ Не удалось найти информацию. Попробуйте переформулировать запрос."
+    return f"🧠 **ОТВЕТ (на основе знаний):**\n\n{answer}\n\n⚠️ В интернете мало данных."
 
 # ═══════════════════════════════════════════════════════════════════
 #  ОСНОВНАЯ ЛОГИКА
@@ -711,13 +753,12 @@ async def process_query(query: str, uid: int) -> str:
     logger.info(f"🧠 НАЧАЛО ОБРАБОТКИ: {query[:100]}...")
     set_stage("🧠 Анализирую запрос")
     
-    # 1. Генерация вариантов
     analyze_prompt = f"""
 ⚠️ **Ты — аналитик поиска. Сгенерируй 10 вариантов поисковых запросов для запроса:**
 {query}
 
 ⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
-{{"understanding": "краткое понимание", "variants": ["вариант 1", "вариант 2", ...]}}
+{{"understanding": "краткое понимание", "variants": ["вариант 1", ...]}}
 """
     try:
         analysis_text = await ask_deepseek(analyze_prompt, temperature=0.3, max_tokens=500)
@@ -732,15 +773,12 @@ async def process_query(query: str, uid: int) -> str:
     
     logger.info(f"🔍 Сгенерировано {len(variants)} вариантов")
     
-    # 2. Параллельный поиск
     set_stage("🔍 Ищу в интернете")
     all_results = await search_parallel(variants, max_sources=15)
     
-    # 3. Фильтрация
     filtered_results = [r for r in all_results if is_good_result(r)]
     logger.info(f"📊 После фильтрации: {len(filtered_results)} источников")
     
-    # 4. Если мало — добираем
     if len(filtered_results) < 4:
         logger.info("🔄 Мало источников, добираем...")
         broad_variants = [
@@ -754,12 +792,10 @@ async def process_query(query: str, uid: int) -> str:
             if is_good_result(r) and r.get('link') not in [x.get('link') for x in filtered_results]:
                 filtered_results.append(r)
     
-    # 5. Если всё равно мало — используем знания
     if len(filtered_results) < 3:
         logger.warning("⚠️ Мало источников, отвечаю из знаний")
         return await answer_from_knowledge(query)
     
-    # 6. Загрузка страниц (параллельно)
     set_stage("📄 Загружаю страницы")
     pages = await fetch_pages_parallel(filtered_results, max_pages=MAX_PAGES)
     
@@ -767,7 +803,6 @@ async def process_query(query: str, uid: int) -> str:
         logger.warning("⚠️ Не удалось загрузить страницы")
         return await answer_from_knowledge(query)
     
-    # 7. Формирование ответа
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
@@ -906,8 +941,8 @@ def main():
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("✅ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+    logger.info("✅ APISerpent с deep=true")
     logger.info("✅ Параллельный поиск до 15 источников")
-    logger.info("✅ Умная передача данных в DeepSeek")
     logger.info("✅ Честный ответ из знаний при необходимости")
     
     try:
