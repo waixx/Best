@@ -1,9 +1,10 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  APISERPENT ОСНОВНОЙ, SERPER РЕЗЕРВ
-#  BROWSERLESS ДЛЯ JS-СТРАНИЦ, DEEPSEEK ПАРСИНГ СТРУКТУР
-#  ДОБИРАЕТ ДО 7 РЕЛЕВАНТНЫХ ТЕКСТОВЫХ ИСТОЧНИКОВ
-#  ПАМЯТЬ, ТОЧНОСТЬ, ПРОВЕРКА НА ЛОЖЬ, ТАЙМЕР, КНОПКИ
+#  BROWAIX BOT — ФИНАЛЬНАЯ СТАБИЛЬНАЯ ВЕРСИЯ С ПОЛНЫМ ЛОГИРОВАНИЕМ
+#  APISERPENT (ОСНОВНОЙ) + SERPER (РЕЗЕРВ)
+#  BROWSERLESS (ДЛЯ JS) + DEEPSEEK ПАРСИНГ СТРУКТУР
+#  ДОБИРАЕТ ДО 7 РЕЛЕВАНТНЫХ ИСТОЧНИКОВ
+#  ПАМЯТЬ, ТОЧНОСТЬ, ПРОВЕРКА НА ЛОЖЬ, ТАЙМЕР
+#  ПОДРОБНЫЕ ЛОГИ КАЖДОГО ШАГА
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -21,11 +22,13 @@ from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
+# Попытка импорта BeautifulSoup
 try:
     from bs4 import BeautifulSoup
     BEAUTIFULSOUP_AVAILABLE = True
 except ImportError:
     BEAUTIFULSOUP_AVAILABLE = False
+    logging.warning("⚠️ BeautifulSoup не установлен, используем упрощённый парсинг")
 
 # Browserless (Playwright)
 try:
@@ -33,10 +36,19 @@ try:
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
+    logging.warning("⚠️ Playwright не установлен, Browserless недоступен")
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Настройка логирования с детализацией
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('bot.log', encoding='utf-8')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════
@@ -71,7 +83,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+logger.info("🚀 ФИНАЛЬНАЯ СТАБИЛЬНАЯ ВЕРСИЯ С ЛОГИРОВАНИЕМ")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -85,6 +97,7 @@ async def get_session():
     global _http_session
     if _http_session is None:
         _http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        logger.debug("✅ HTTP-сессия создана")
     return _http_session
 
 # ═══════════════════════════════════════════════════════════════════
@@ -92,6 +105,8 @@ async def get_session():
 # ═══════════════════════════════════════════════════════════════════
 
 async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 3000) -> str:
+    """Запрос к DeepSeek API с логированием"""
+    logger.debug("🧠 Отправка запроса к DeepSeek...")
     try:
         session = await get_session()
         payload = {
@@ -108,10 +123,14 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
         ) as r:
             if r.status == 200:
                 data = await r.json()
+                logger.debug("✅ DeepSeek ответил успешно")
                 return data["choices"][0]["message"]["content"]
+            else:
+                logger.error(f"❌ DeepSeek ошибка HTTP {r.status}: {await r.text()}")
+                return ""
     except Exception as e:
-        logger.error(f"❌ DeepSeek ошибка: {e}")
-    return ""
+        logger.error(f"❌ DeepSeek ошибка: {type(e).__name__} - {e}")
+        return ""
 
 # ═══════════════════════════════════════════════════════════════════
 #  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
@@ -131,6 +150,7 @@ class KnowledgeGraph:
     def __init__(self, uid):
         self.uid = uid
         self.graph = self._load()
+        logger.debug(f"📊 Граф знаний загружен для {uid}")
     
     def _load(self):
         try:
@@ -143,8 +163,8 @@ class KnowledgeGraph:
         try:
             with open(graph_path(self.uid), 'w', encoding='utf-8') as f:
                 json.dump(self.graph, f, ensure_ascii=False, indent=2)
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения графа: {e}")
     
     def add_fact(self, fact: str, related_to: Optional[List[str]] = None):
         if not fact or len(fact) < 10:
@@ -172,6 +192,7 @@ class SuperMemory:
         self.learning = self._load(learning_path(uid), {})
         self.counter = self._load(counter_path(uid), {"count": 0}).get("count", 0)
         self.knowledge_graph = KnowledgeGraph(uid)
+        logger.debug(f"🧠 Память загружена для {uid}, сообщений: {len(self.short_term)}")
     
     def _load(self, path, default):
         try:
@@ -185,7 +206,8 @@ class SuperMemory:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             return True
-        except:
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения {path}: {e}")
             return False
     
     def add_message(self, role, content):
@@ -200,6 +222,7 @@ class SuperMemory:
         self._extract_preferences(content)
         self._update_knowledge_graph(content)
         self.save()
+        logger.debug(f"💬 Добавлено сообщение от {role}, всего: {self.counter}")
     
     def _compress(self, messages):
         important_keywords = ['это', 'является', 'состоит', 'находится', 'важно', 'главное', 'ключевой', 'основной']
@@ -287,34 +310,62 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (APISerpent → Serper)
+#  ПОИСК (APISerpent → Serper) С ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower()).strip()
 
 async def search_apiserpent(query: str) -> List[Dict]:
+    """Поиск через APISerpent с детальным логированием"""
     if not APISERPENT_API_KEY:
+        logger.warning("⚠️ APISerpent API ключ отсутствует")
         return []
+    
+    logger.info(f"🔍 APISerpent запрос: '{query[:60]}...'")
     try:
         session = await get_session()
+        start_time = time.time()
         async with session.get(
             "https://apiserpent.com/api/search",
             params={"q": query, "engine": "google", "num": SEARCH_RESULTS},
             headers={"X-API-Key": APISERPENT_API_KEY},
             timeout=10
         ) as r:
+            elapsed = time.time() - start_time
+            logger.info(f"⏱️ APISerpent ответ за {elapsed:.2f} сек, статус {r.status}")
+            
             if r.status == 200:
                 data = await r.json()
-                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
-                        for x in data.get("organic_results", [])]
+                results = [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
+                           for x in data.get("organic_results", [])]
+                logger.info(f"✅ APISerpent: {len(results)} результатов")
+                return results
+            else:
+                text = await r.text()
+                logger.warning(f"⚠️ APISerpent статус {r.status}: {text[:200]}")
+                return []
+                
+    except asyncio.TimeoutError:
+        logger.warning("⏰ APISerpent таймаут (10 сек)")
+        return []
+    except aiohttp.ClientError as e:
+        logger.warning(f"⚠️ APISerpent ClientError: {type(e).__name__} - {e}")
+        return []
+    except json.JSONDecodeError as e:
+        logger.warning(f"⚠️ APISerpent JSON ошибка: {e}")
+        return []
     except Exception as e:
-        logger.warning(f"⚠️ APISerpent ошибка: {e}")
-    return []
+        logger.warning(f"⚠️ APISerpent неизвестная ошибка: {type(e).__name__} - {e}")
+        return []
 
 async def search_serper(query: str) -> List[Dict]:
+    """Поиск через Serper (резерв)"""
     if not SERPER_API_KEY:
+        logger.warning("⚠️ Serper API ключ отсутствует")
         return []
+    
+    logger.info(f"🔍 Serper запрос: '{query[:60]}...'")
     try:
         session = await get_session()
         async with session.post(
@@ -325,24 +376,32 @@ async def search_serper(query: str) -> List[Dict]:
         ) as r:
             if r.status == 200:
                 data = await r.json()
-                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
-                        for x in data.get("organic", [])]
+                results = [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
+                           for x in data.get("organic", [])]
+                logger.info(f"✅ Serper: {len(results)} результатов")
+                return results
+            else:
+                logger.warning(f"⚠️ Serper статус {r.status}")
+                return []
     except Exception as e:
-        logger.warning(f"⚠️ Serper ошибка: {e}")
-    return []
+        logger.warning(f"⚠️ Serper ошибка: {type(e).__name__} - {e}")
+        return []
 
 async def search_with_cache(query: str) -> List[Dict]:
+    """Поиск с кэшированием"""
     norm = normalize_query(query)
     if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
         logger.info(f"📦 Кэш: {query[:40]}...")
         return search_cache[norm]['data']
     
+    # Основной поиск — APISerpent
     results = await search_apiserpent(query)
     if results:
         search_cache[norm] = {'data': results, 'time': time.time()}
-        logger.info(f"✅ APISerpent: {len(results)} результатов")
         return results
     
+    # Резерв — Serper
+    logger.info("🔄 APISerpent не дал результатов, пробуем Serper...")
     results = await search_serper(query)
     if results:
         search_cache[norm] = {'data': results, 'time': time.time()}
@@ -353,9 +412,12 @@ async def search_with_cache(query: str) -> List[Dict]:
     return []
 
 async def search_all(variants: List[str]) -> List[Dict]:
+    """Поиск по нескольким вариантам, сбор уникальных результатов"""
     all_results = []
     seen_urls = set()
-    for v in variants[:10]:
+    logger.info(f"🔍 Поиск по {len(variants)} вариантам")
+    
+    for i, v in enumerate(variants[:10]):
         results = await search_with_cache(v)
         if results:
             for r in results:
@@ -365,7 +427,8 @@ async def search_all(variants: List[str]) -> List[Dict]:
                     all_results.append(r)
         if len(all_results) >= MAX_PAGES * 3:
             break
-    logger.info(f"📊 Найдено {len(all_results)} результатов")
+    
+    logger.info(f"📊 Найдено {len(all_results)} уникальных результатов")
     return all_results[:MAX_PAGES * 3]
 
 # ═══════════════════════════════════════════════════════════════════
@@ -375,7 +438,10 @@ async def search_all(variants: List[str]) -> List[Dict]:
 async def fetch_with_browserless(url: str) -> Optional[str]:
     """Загружает страницу через Browserless (Playwright)"""
     if not PLAYWRIGHT_AVAILABLE or not BROWSERLESS_WS_ENDPOINT:
+        logger.debug("🌐 Browserless недоступен")
         return None
+    
+    logger.info(f"🌐 Browserless загружает {url[:60]}...")
     try:
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
@@ -384,9 +450,10 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
             await page.goto(url, wait_until="domcontentloaded", timeout=10000)
             html = await page.content()
             await page.close()
+            logger.info(f"✅ Browserless загрузил {url[:60]} (длина {len(html)})")
             return html
     except Exception as e:
-        logger.warning(f"⚠️ Browserless ошибка {url[:50]}: {e}")
+        logger.warning(f"⚠️ Browserless ошибка {url[:50]}: {type(e).__name__} - {e}")
     return None
 
 # ═══════════════════════════════════════════════════════════════════
@@ -394,6 +461,7 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
 # ═══════════════════════════════════════════════════════════════════
 
 def parse_html(html: str) -> Dict:
+    """Парсинг HTML с BeautifulSoup"""
     if BEAUTIFULSOUP_AVAILABLE:
         try:
             soup = BeautifulSoup(html, 'html.parser')
@@ -416,10 +484,12 @@ def parse_html(html: str) -> Dict:
                 if len(h_text) > 5:
                     headings.append(h_text)
             
+            logger.debug(f"📄 Парсинг: {len(text)} символов, {len(lists)} списков, {len(headings)} заголовков")
             return {'text': text[:6000], 'lists': lists[:10], 'headings': headings[:5]}
         except Exception as e:
             logger.warning(f"⚠️ BeautifulSoup ошибка: {e}")
     
+    # Fallback
     text = re.sub(r'<[^>]+>', ' ', html)
     text = re.sub(r'\s+', ' ', text)
     sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', text)
@@ -433,6 +503,8 @@ async def extract_structures_with_deepseek(text: str, query: str) -> Dict:
     """DeepSeek извлекает структуры из текста"""
     if len(text) > 4000:
         text = text[:4000]
+    
+    logger.debug("🧩 Извлечение структур через DeepSeek...")
     prompt = f"""
 ⚠️ **Извлеки структурированную информацию из текста.**
 
@@ -467,7 +539,9 @@ async def extract_structures_with_deepseek(text: str, query: str) -> Dict:
         answer = await ask_deepseek(prompt, temperature=0.1, max_tokens=800)
         json_match = re.search(r'\{.*\}', answer, re.DOTALL)
         if json_match:
-            return json.loads(json_match.group())
+            data = json.loads(json_match.group())
+            logger.debug(f"✅ Извлечено структур: lists={len(data.get('lists', []))}, steps={len(data.get('steps', []))}")
+            return data
     except Exception as e:
         logger.error(f"❌ Ошибка извлечения структур: {e}")
     return {}
@@ -485,32 +559,39 @@ async def fetch_page(url: str, query: str = "") -> Optional[Dict]:
             if r.status == 200:
                 html = await r.text()
                 parsed = parse_html(html)
-                # Если текста достаточно — возвращаем
                 if parsed['text'] and len(parsed['text']) > 500:
                     structures = await extract_structures_with_deepseek(parsed['text'], query)
                     parsed['structures'] = structures
+                    logger.info(f"✅ HTTP загружена {url[:60]}, {len(parsed['text'])} символов")
                     return parsed
+            else:
+                logger.warning(f"⚠️ HTTP статус {r.status} для {url[:60]}")
     except Exception as e:
-        logger.warning(f"⚠️ HTTP ошибка {url[:50]}: {e}")
+        logger.warning(f"⚠️ HTTP ошибка {url[:60]}: {type(e).__name__} - {e}")
     
-    # 2. Если HTTP не дал результата — используем Browserless
+    # 2. Browserless
     if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
-        logger.info(f"🌐 Используем Browserless для {url[:50]}...")
+        logger.info(f"🌐 Используем Browserless для {url[:60]}...")
         html = await fetch_with_browserless(url)
         if html:
             parsed = parse_html(html)
             if parsed['text'] and len(parsed['text']) > 100:
                 structures = await extract_structures_with_deepseek(parsed['text'], query)
                 parsed['structures'] = structures
+                logger.info(f"✅ Browserless загружена {url[:60]}, {len(parsed['text'])} символов")
                 return parsed
     
     return None
 
 async def fetch_pages(results: List[Dict], query: str) -> List[Dict]:
+    """Загружает страницы для результатов"""
     pages = []
-    for r in results[:MAX_PAGES]:
+    logger.info(f"📄 Начинаем загрузку {len(results)} страниц...")
+    
+    for i, r in enumerate(results[:MAX_PAGES]):
         url = r.get('link', '')
         if url:
+            logger.info(f"📄 Загрузка страницы {i+1}/{MAX_PAGES}: {url[:60]}...")
             parsed = await fetch_page(url, query)
             if parsed and parsed.get('text'):
                 pages.append({
@@ -519,11 +600,15 @@ async def fetch_pages(results: List[Dict], query: str) -> List[Dict]:
                     'parsed': parsed,
                     'structures': parsed.get('structures', {})
                 })
-    logger.info(f"✅ Загружено {len(pages)} страниц (с Browserless при необходимости)")
+                logger.info(f"✅ Страница {i+1} загружена")
+            else:
+                logger.warning(f"⚠️ Страница {i+1} не загружена")
+    
+    logger.info(f"✅ Загружено {len(pages)} страниц")
     return pages
 
 # ═══════════════════════════════════════════════════════════════════
-#  ФИЛЬТРАЦИЯ РЕЗУЛЬТАТОВ (УМНАЯ)
+#  ФИЛЬТРАЦИЯ РЕЗУЛЬТАТОВ
 # ═══════════════════════════════════════════════════════════════════
 
 def is_good_result(result: Dict) -> bool:
@@ -535,23 +620,25 @@ def is_good_result(result: Dict) -> bool:
     # 1. Исключаем видео и соцсети
     bad_domains = ['youtube.com', 'instagram.com', 'facebook.com', 'tiktok.com', 'twitter.com']
     if any(d in url for d in bad_domains):
+        logger.debug(f"⏭️ Пропуск: {url[:60]} (соцсеть/видео)")
         return False
     
     # 2. Проверяем длину сниппета
     if len(snippet) < 50:
+        logger.debug(f"⏭️ Пропуск: {url[:60]} (короткий сниппет)")
         return False
     
-    # 3. Проверяем наличие ключевых слов (предварительная фильтрация)
+    # 3. Проверяем наличие ключевых слов
     useful_words = ['скрипт', 'пример', 'шаблон', 'вопрос', 'диалог', 'алгоритм', 'шаг', 'техника']
     if any(w in title or w in snippet for w in useful_words):
         return True
     
-    # 4. Проверяем домен: предпочтение авторитетным сайтам
+    # 4. Проверяем домен
     good_domains = ['habr.com', 'vc.ru', 'cossa.ru', 'blog', 'wiki', 'guide', 'how-to']
     if any(d in url for d in good_domains):
         return True
     
-    # Если сниппет длинный — пропускаем
+    # 5. Если сниппет длинный — пропускаем
     if len(snippet) > 150:
         return True
     
@@ -634,7 +721,6 @@ def check_refusal(answer: str) -> bool:
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
     context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:2000] for p in pages[:2]])
     
-    # Собираем структуры из страниц
     all_structures = {'lists': [], 'steps': [], 'questions': [], 'prices': [], 'definitions': [], 'examples': [], 'recommendations': []}
     for p in pages:
         structures = p.get('structures', {})
@@ -717,11 +803,13 @@ current_stage = "⏳ Запуск"
 def set_stage(stage: str):
     global current_stage
     current_stage = stage
+    logger.info(f"📌 Этап: {stage}")
 
 async def process_query(query: str, uid: int) -> str:
+    logger.info(f"🧠 НАЧАЛО ОБРАБОТКИ ЗАПРОСА: {query[:100]}...")
     set_stage("🧠 Анализирую запрос")
     
-    # 1. DeepSeek генерирует варианты с фокусом на практические статьи
+    # 1. DeepSeek генерирует варианты
     analyze_prompt = f"""
 ⚠️ **Ты — аналитик поиска. Сгенерируй поисковые запросы для поиска ПРАКТИЧЕСКИХ СТАТЕЙ с примерами.**
 
@@ -732,7 +820,6 @@ async def process_query(query: str, uid: int) -> str:
 2. Сгенерировать 10-12 вариантов поисковых запросов
 3. Добавь в запросы слова: "скрипт", "пример", "шаблон", "алгоритм", "вопросы", "как"
 4. Используй синонимы и перефразирования
-5. Запросы должны находить статьи с конкретными примерами
 
 ⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
 {{
@@ -740,7 +827,6 @@ async def process_query(query: str, uid: int) -> str:
   "variants": ["вариант 1", "вариант 2", "вариант 3", "вариант 4", "вариант 5", "вариант 6", "вариант 7", "вариант 8", "вариант 9", "вариант 10"]
 }}
 """
-    
     try:
         analysis_text = await ask_deepseek(analyze_prompt, temperature=0.3, max_tokens=600)
         json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
@@ -749,28 +835,16 @@ async def process_query(query: str, uid: int) -> str:
             variants = analysis.get('variants', [])
             if len(variants) < 3:
                 variants = [query]
+            logger.info(f"🔍 DeepSeek сгенерировал {len(variants)} вариантов")
         else:
             variants = [query]
-    except:
+            logger.warning("⚠️ DeepSeek не вернул JSON, используем только исходный запрос")
+    except Exception as e:
+        logger.error(f"❌ Ошибка генерации вариантов: {e}")
         variants = [query]
     
-    # Если DeepSeek не дал вариантов — добавляем универсальные
-    if len(variants) < 3:
-        variants = [
-            query,
-            f"скрипт продаж {query} пример",
-            f"как продавать {query} шаблон",
-            f"вопросы для клиента {query} список",
-            f"техника продаж {query} алгоритм",
-            f"пример диалога {query}",
-            f"скрипт {query} образец"
-        ]
-    
-    logger.info(f"🔍 DeepSeek сгенерировал {len(variants)} вариантов")
-    
-    # 2. Ищем и добираем до 7 релевантных источников
+    # 2. Поиск
     set_stage("🔍 Ищу в интернете")
-    
     all_results = []
     seen_urls = set()
     target_count = 7
@@ -787,6 +861,7 @@ async def process_query(query: str, uid: int) -> str:
     
     # Если меньше 5 — расширяем поиск
     if len(all_results) < 5:
+        logger.info("🔄 Мало результатов, расширяем поиск...")
         broad_variants = [
             f"пример скрипта {query}",
             f"шаблон продаж {query}",
@@ -803,6 +878,7 @@ async def process_query(query: str, uid: int) -> str:
                     break
     
     if not all_results:
+        logger.warning("⚠️ Не найдено ни одного источника")
         return "⚠️ В интернете не нашлось полезных статей. Попробуй переформулировать запрос."
     
     all_results = all_results[:target_count]
@@ -810,7 +886,6 @@ async def process_query(query: str, uid: int) -> str:
     
     # 3. Ранжирование через DeepSeek
     set_stage("📊 Оцениваю релевантность")
-    
     rank_prompt = f"""
 ⚠️ **Оцени релевантность результатов для запроса. Отдавай предпочтение статьям с практическими примерами.**
 
@@ -828,7 +903,6 @@ async def process_query(query: str, uid: int) -> str:
 ⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
 {{"rankings": [95, 30, 70, ...]}}
 """
-    
     try:
         rank_text = await ask_deepseek(rank_prompt, temperature=0.2, max_tokens=400)
         json_match = re.search(r'\{.*\}', rank_text, re.DOTALL)
@@ -840,25 +914,28 @@ async def process_query(query: str, uid: int) -> str:
                     r['relevance'] = rankings[i] / 100
                 else:
                     r['relevance'] = 0.5
-    except:
+        else:
+            logger.warning("⚠️ Ранжирование не вернуло JSON")
+    except Exception as e:
+        logger.error(f"❌ Ошибка ранжирования: {e}")
         for r in all_results:
             r['relevance'] = 0.5
     
-    # Сортируем по релевантности
     all_results.sort(key=lambda x: x.get('relevance', 0), reverse=True)
     top_results = all_results[:MAX_PAGES * 2]
+    logger.info(f"📊 Отобрано {len(top_results)} лучших результатов")
     
     if not top_results:
         return "⚠️ Не найдено релевантных источников. Попробуй переформулировать запрос."
     
-    # 4. Загружаем страницы (гибрид: HTTP + Browserless)
+    # 4. Загрузка страниц
     set_stage("📄 Загружаю страницы")
     pages = await fetch_pages(top_results, query)
     
     if not pages:
         return "⚠️ Не удалось загрузить страницы. Попробуй позже."
     
-    # 5. Генерируем ответ
+    # 5. Генерация ответа
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
@@ -871,6 +948,7 @@ async def process_query(query: str, uid: int) -> str:
     confidence = calculate_confidence(pages)
     formatted_answer = format_confidence(confidence) + "\n\n" + answer
     
+    logger.info(f"✅ ОТВЕТ СФОРМИРОВАН, длина {len(answer)} символов")
     return formatted_answer
 
 # ═══════════════════════════════════════════════════════════════════
@@ -884,6 +962,7 @@ async def show_progress(chat_id, context, start_time):
             chat_id,
             f"⏳ {current_stage}\n\n⏱️ 0 сек"
         )
+        logger.debug("⏳ Таймер запущен")
         
         while True:
             await asyncio.sleep(3)
@@ -1003,6 +1082,7 @@ def main():
     logger.info("✅ Добор до 7 текстовых источников")
     logger.info("✅ Гибридный парсинг (HTTP + Browserless)")
     logger.info("✅ DeepSeek-извлечение структур")
+    logger.info("✅ Детальное логирование каждого шага")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
