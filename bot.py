@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК, БЕЗ ВОЗМОЖНОСТИ ОБМАНУТЬ
+#  С ИНТЕЛЛЕКТУАЛЬНЫМ АНАЛИЗОМ НЕДОСТАТКА ДАННЫХ
+#  ПЕРЕФОРМУЛИРОВКА ЗАПРОСА И УТОЧНЕНИЕ У ПОЛЬЗОВАТЕЛЯ
 #  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
 #  ИЗВЛЕЧЕНИЕ СТРУКТУР ЧЕРЕЗ DEEPSEEK (ТОЧНОСТЬ 92-95%)
 #  ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА (СКОРОСТЬ 25-40 СЕК)
@@ -59,7 +60,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("⚡️ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+logger.info("⚡️ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ С ИНТЕЛЛЕКТУАЛЬНЫМ АНАЛИЗОМ")
 
 def now():
     return datetime.now(TZ)
@@ -75,6 +76,32 @@ async def get_session():
     if _http_session is None:
         _http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
     return _http_session
+
+# ═══════════════════════════════════════════════════════════════════
+#  DEEPSEEK
+# ═══════════════════════════════════════════════════════════════════
+
+async def ask_deepseek(prompt: str, temperature: float = 0.25, max_tokens: int = 3000) -> str:
+    try:
+        session = await get_session()
+        payload = {
+            "model": DEEPSEEK_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        async with session.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
+            json=payload,
+            timeout=35
+        ) as r:
+            if r.status == 200:
+                data = await r.json()
+                return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"❌ DeepSeek ошибка: {e}")
+    return ""
 
 # ═══════════════════════════════════════════════════════════════════
 #  5 УРОВНЕЙ ПАМЯТИ + ГРАФ ЗНАНИЙ
@@ -250,33 +277,7 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK
-# ═══════════════════════════════════════════════════════════════════
-
-async def ask_deepseek(prompt: str, temperature: float = 0.25, max_tokens: int = 3000) -> str:
-    try:
-        session = await get_session()
-        payload = {
-            "model": DEEPSEEK_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-        async with session.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-            json=payload,
-            timeout=35
-        ) as r:
-            if r.status == 200:
-                data = await r.json()
-                return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"❌ DeepSeek ошибка: {e}")
-    return ""
-
-# ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНЫЙ АНАЛИЗ ЗАПРОСА (DeepSeek)
+#  АНАЛИЗ ЗАПРОСА (DeepSeek)
 # ═══════════════════════════════════════════════════════════════════
 
 async def analyze_query(query: str) -> Dict:
@@ -417,7 +418,7 @@ async def fetch_pages(results: List[Dict]) -> List[str]:
     return [p for p in pages if p and len(p) > 100]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ИЗВЛЕЧЕНИЕ СТРУКТУР ЧЕРЕЗ DEEPSEEK
+#  ИЗВЛЕЧЕНИЕ СТРУКТУР (DeepSeek)
 # ═══════════════════════════════════════════════════════════════════
 
 async def extract_structures(text: str, query: str) -> Dict:
@@ -463,9 +464,65 @@ async def extract_structures(text: str, query: str) -> Dict:
         pass
     return {}
 
+async def extract_structures_parallel(pages: List[str], query: str) -> List[Dict]:
+    tasks = []
+    for page in pages[:2]:
+        tasks.append(extract_structures(page, query))
+    return await asyncio.gather(*tasks)
+
+# ═══════════════════════════════════════════════════════════════════
+#  АНАЛИЗ НЕДОСТАТКА ДАННЫХ (НОВАЯ ФУНКЦИЯ)
+# ═══════════════════════════════════════════════════════════════════
+
+async def analyze_lack_of_data(query: str, results: List[Dict]) -> Dict:
+    prompt = f"""
+⚠️ **Ты — аналитик. Оцени, почему в интернете мало информации по запросу.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **ЧТО БЫЛО НАЙДЕНО:**
+{chr(10).join([f"• {r.get('title', '')}" for r in results[:5]]) if results else "Ничего не найдено"}
+
+⚠️ **ПРИЧИНЫ:**
+1. Запрос слишком узкий
+2. Запрос слишком специфичный
+3. Нужно использовать другие ключевые слова
+4. Информация есть, но под другим названием
+5. Тема новая, информации мало
+
+⚠️ **ПРЕДЛОЖИ:**
+1. Переформулировку запроса (3 варианта)
+2. Вопрос к пользователю для уточнения (1 вопрос)
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{
+  "reason": "причина",
+  "reformulations": ["вариант 1", "вариант 2", "вариант 3"],
+  "clarification": "Вопрос к пользователю"
+}}
+"""
+    try:
+        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=500)
+        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    return {
+        "reason": "неизвестно",
+        "reformulations": [query],
+        "clarification": "Уточните, что именно вы ищете?"
+    }
+
 # ═══════════════════════════════════════════════════════════════════
 #  ИНДИКАТОР ТОЧНОСТИ
 # ═══════════════════════════════════════════════════════════════════
+
+def is_data_sufficient(structures: List[Dict]) -> bool:
+    total_lists = sum(len(s.get('lists', [])) for s in structures)
+    total_steps = sum(len(s.get('steps', [])) for s in structures)
+    total_questions = sum(len(s.get('questions', [])) for s in structures)
+    return total_lists >= 3 or total_steps >= 2 or total_questions >= 3
 
 def calculate_confidence(pages: List[str], results: List[Dict]) -> Dict:
     confidence = {'overall': 0, 'source_reliability': 0, 'data_completeness': 0, 'recency': 0, 'factors': []}
@@ -533,10 +590,10 @@ def check_refusal(answer: str) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА (С ИСПОЛЬЗОВАНИЕМ СТРУКТУР)
+#  ГЕНЕРАЦИЯ ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
 
-async def generate_answer(query: str, pages: List[str], results: List[Dict], structures: List[Dict]) -> str:
+async def generate_final_answer(query: str, pages: List[str], results: List[Dict], structures: List[Dict]) -> str:
     context = "\n\n---\n\n".join(pages[:2])
     
     structures_text = ""
@@ -619,6 +676,72 @@ async def generate_answer(query: str, pages: List[str], results: List[Dict], str
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
+#  ОСНОВНАЯ ЛОГИКА (С ПЕРЕФОРМУЛИРОВКОЙ)
+# ═══════════════════════════════════════════════════════════════════
+
+async def process_query(query: str, timer: LiveTimer, uid: int, max_retries: int = 2) -> str:
+    timer.set_stage('analyze')
+    analysis = await analyze_query(query)
+    
+    if analysis.get('action') == 'respond':
+        return analysis.get('response', "👋 Я на связи!")
+    
+    timer.set_stage('search')
+    results = await search_all(analysis.get('variants', [query]))
+    
+    if not results:
+        # Если ничего не нашлось — пробуем переформулировать
+        analysis_lack = await analyze_lack_of_data(query, [])
+        reformulations = analysis_lack.get('reformulations', [query])
+        results = await search_all(reformulations)
+        if not results:
+            return "⚠️ В интернете ничего не нашлось. Попробуй переформулировать запрос."
+    
+    timer.set_stage('load')
+    pages = await fetch_pages(results)
+    
+    if not pages:
+        return "⚠️ Не удалось загрузить страницы. Попробуй позже."
+    
+    timer.set_stage('extract')
+    structures = await extract_structures_parallel(pages, query)
+    
+    # Проверяем достаточно ли данных
+    if is_data_sufficient(structures):
+        timer.set_stage('think')
+        answer = await generate_final_answer(query, pages, results, structures)
+        confidence = calculate_confidence(pages, results)
+        return format_confidence(confidence) + "\n\n" + answer
+    
+    # Если данных мало — анализируем и переформулируем
+    if max_retries > 0:
+        timer.set_stage('think')
+        analysis_lack = await analyze_lack_of_data(query, results)
+        reformulations = analysis_lack.get('reformulations', [query])
+        clarification = analysis_lack.get('clarification', "Уточните запрос.")
+        
+        # Ищем по новым вариантам
+        new_results = await search_all(reformulations)
+        
+        if new_results and len(new_results) > len(results):
+            pages = await fetch_pages(new_results)
+            if pages:
+                structures = await extract_structures_parallel(pages, query)
+                answer = await generate_final_answer(query, pages, new_results, structures)
+                confidence = calculate_confidence(pages, new_results)
+                return format_confidence(confidence) + "\n\n" + answer + f"\n\n💡 **Уточнение:** {clarification}"
+        
+        # Если всё равно мало — отдаём что есть и предлагаем уточнить
+        answer = await generate_final_answer(query, pages, results, structures)
+        confidence = calculate_confidence(pages, results)
+        return format_confidence(confidence) + "\n\n" + answer + f"\n\n💡 **Уточнение:** {clarification}"
+    
+    # Последняя попытка
+    answer = await generate_final_answer(query, pages, results, structures)
+    confidence = calculate_confidence(pages, results)
+    return format_confidence(confidence) + "\n\n" + answer
+
+# ═══════════════════════════════════════════════════════════════════
 #  ТАЙМЕР
 # ═══════════════════════════════════════════════════════════════════
 
@@ -636,7 +759,7 @@ class LiveTimer:
     def __init__(self):
         self.start = time.time()
         self.stage = 'analyze'
-        self.total = 40
+        self.total = 45
         self.running = True
         self.pos = 0
     
@@ -693,45 +816,6 @@ async def show_timer(chat_id, context, timer: LiveTimer):
                 pass
     except Exception as e:
         logger.error(f"❌ Ошибка таймера: {e}")
-
-# ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА
-# ═══════════════════════════════════════════════════════════════════
-
-async def process_query(query: str, timer: LiveTimer, uid: int) -> str:
-    timer.set_stage('analyze')
-    analysis = await analyze_query(query)
-    
-    if analysis.get('action') == 'respond':
-        return analysis.get('response', "👋 Я на связи!")
-    
-    timer.set_stage('search')
-    variants = analysis.get('variants', [query])
-    results = await search_all(variants)
-    
-    if not results:
-        return "⚠️ В интернете ничего не нашлось. Попробуй переформулировать запрос."
-    
-    timer.set_stage('load')
-    pages = await fetch_pages(results)
-    
-    if not pages:
-        return "⚠️ Не удалось загрузить страницы. Попробуй позже."
-    
-    # 🔥 ИЗВЛЕКАЕМ СТРУКТУРЫ (параллельно)
-    timer.set_stage('extract')
-    tasks = []
-    for page in pages[:2]:
-        tasks.append(extract_structures(page, query))
-    structures = await asyncio.gather(*tasks)
-    
-    timer.set_stage('think')
-    answer = await generate_answer(query, pages, results, structures)
-    
-    confidence = calculate_confidence(pages, results)
-    formatted_answer = format_confidence(confidence) + "\n\n" + answer
-    
-    return formatted_answer
 
 # ═══════════════════════════════════════════════════════════════════
 #  ОБРАБОТЧИК TELEGRAM
@@ -813,7 +897,7 @@ async def start(update: Update, context):
     await update.message.reply_text(
         "👋 **Привет!** Я ищу ответы в интернете.\n\n"
         "Напиши вопрос — и я найду информацию.\n\n"
-        "⚠️ Я никогда не вру. Если в источниках нет ответа — скажу честно.\n"
+        "⚠️ Я никогда не вру. Если данных мало — я переформулирую запрос и поищу ещё.\n"
         "🧠 Я запоминаю тебя и учусь с каждым диалогом.\n"
         "⚡️ Отвечаю быстро и точно.",
         reply_markup=MAIN_KEYBOARD
@@ -832,7 +916,8 @@ def main():
     logger.info("⚡️ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
     logger.info("✅ Память: 5 уровней + граф знаний")
     logger.info("✅ Извлечение структур через DeepSeek")
-    logger.info("✅ Параллельная загрузка страниц")
+    logger.info("✅ Интеллектуальный анализ недостатка данных")
+    logger.info("✅ Переформулировка запроса и уточнение")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
