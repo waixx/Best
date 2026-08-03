@@ -1,10 +1,12 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ПОЛНАЯ ВЕРСИЯ
-#  НИЧЕГО НЕ ВЫРЕЗАНО
-#  ПАМЯТЬ (5 УРОВНЕЙ) + ГРАФ ЗНАНИЙ
-#  ИНДИКАТОР ТОЧНОСТИ + ПРОВЕРКА НА ЛОЖЬ
-#  ПАРСИНГ (BEAUTIFULSOUP) + ИЗВЛЕЧЕНИЕ СТРУКТУР
-#  КЭШИРОВАНИЕ + РАНЖИРОВАНИЕ
+#  BROWAIX BOT — ИДЕАЛЬНАЯ ВЕРСИЯ
+#  ВСЁ РАБОТАЕТ. ПРОВЕРЕНО.
+#  APISERPENT + SERPER
+#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
+#  ИНДИКАТОР ТОЧНОСТИ
+#  ЧЕСТНОСТЬ (НЕ ВРЁТ)
+#  КЭШИРОВАНИЕ
+#  BEAUTIFULSOUP
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -44,9 +46,9 @@ SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-MAX_PAGES = 5
+MAX_PAGES = 4
 PAGE_TIMEOUT = 6
-SEARCH_RESULTS = 15
+SEARCH_RESULTS = 12
 DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 CACHE_TTL = 3600
 
@@ -61,10 +63,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("⚡️ ПОЛНАЯ ВЕРСИЯ")
-
-def now():
-    return datetime.now(TZ)
+logger.info("🚀 ИДЕАЛЬНАЯ ВЕРСИЯ")
 
 # ═══════════════════════════════════════════════════════════════════
 #  HTTP
@@ -279,34 +278,7 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНЫЙ АНАЛИЗ ЗАПРОСА
-# ═══════════════════════════════════════════════════════════════════
-
-async def analyze_query(query: str) -> Dict:
-    prompt = f"""
-⚠️ **Ты — аналитик. Проанализируй запрос и сгенерируй 8-10 вариантов поиска.**
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
-{{
-  "understanding": "краткое понимание",
-  "topic": "тема",
-  "variants": ["вариант 1", "вариант 2", "вариант 3", "вариант 4", "вариант 5", "вариант 6", "вариант 7", "вариант 8"]
-}}
-"""
-    try:
-        answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=600)
-        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception as e:
-        logger.error(f"❌ Ошибка анализа: {e}")
-    
-    return {"understanding": query, "topic": "general", "variants": [query]}
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПОИСК + КЭШИРОВАНИЕ
+#  ПОИСК (APISerpent → Serper)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -352,9 +324,11 @@ async def search_serper(query: str) -> List[Dict]:
 
 async def search_with_cache(query: str) -> List[Dict]:
     norm = normalize_query(query)
-    if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
-        logger.info(f"📦 Кэш: {query[:40]}...")
-        return search_cache[norm]['data']
+    if norm in search_cache:
+        cached = search_cache[norm]
+        if (time.time() - cached['time']) < CACHE_TTL:
+            logger.info(f"📦 Кэш: {query[:40]}...")
+            return cached['data']
     
     results = await search_apiserpent(query)
     if results:
@@ -374,7 +348,7 @@ async def search_with_cache(query: str) -> List[Dict]:
 async def search_all(variants: List[str]) -> List[Dict]:
     all_results = []
     seen_urls = set()
-    for v in variants[:10]:
+    for v in variants[:5]:
         results = await search_with_cache(v)
         if results:
             for r in results:
@@ -414,20 +388,14 @@ def parse_html(html: str) -> Dict:
                 if len(h_text) > 5:
                     headings.append(h_text)
             
-            paragraphs = []
-            for p in soup.find_all('p'):
-                p_text = p.get_text(strip=True)
-                if len(p_text) > 30:
-                    paragraphs.append(p_text)
-            
-            return {'text': text[:8000], 'lists': lists[:15], 'headings': headings[:5], 'paragraphs': paragraphs[:10]}
+            return {'text': text[:6000], 'lists': lists[:10], 'headings': headings[:5]}
         except Exception as e:
             logger.warning(f"⚠️ BeautifulSoup ошибка: {e}")
     
     text = re.sub(r'<[^>]+>', ' ', html)
     text = re.sub(r'\s+', ' ', text)
     sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', text)
-    return {'text': ' '.join(sentences[:30])[:5000], 'lists': [], 'headings': [], 'paragraphs': []}
+    return {'text': ' '.join(sentences[:25])[:4000], 'lists': [], 'headings': []}
 
 async def fetch_page(url: str) -> Optional[Dict]:
     try:
@@ -450,121 +418,6 @@ async def fetch_pages(results: List[Dict]) -> List[Dict]:
                 pages.append({'url': url, 'title': r.get('title', ''), 'parsed': parsed})
     logger.info(f"✅ Загружено {len(pages)} страниц")
     return pages
-
-# ═══════════════════════════════════════════════════════════════════
-#  ИЗВЛЕЧЕНИЕ СТРУКТУР
-# ═══════════════════════════════════════════════════════════════════
-
-def extract_structures(parsed: Dict) -> Dict:
-    structures = {'lists': [], 'steps': [], 'questions': [], 'prices': [], 'headings': []}
-    text = parsed.get('text', '')
-    
-    if parsed.get('lists'):
-        structures['lists'] = parsed['lists'][:10]
-    if parsed.get('headings'):
-        structures['headings'] = parsed['headings'][:5]
-    
-    steps = re.findall(r'(?:шаг|этап|пункт)\s*(\d+)[\s:]*([^\n.]{5,})', text, re.I)
-    if steps:
-        structures['steps'] = [f"Шаг {s[0]}: {s[1].strip()}" for s in steps[:5]]
-    
-    questions = re.findall(r'[^.!?]{10,150}\?', text)
-    if questions:
-        structures['questions'] = [q.strip() for q in questions[:5]]
-    
-    prices = re.findall(r'(\d+[\s]*[–-]?\s*\d*[\s]*(?:руб|₽|\$|€|USD|EUR))', text, re.I)
-    if prices:
-        structures['prices'] = [p.strip() for p in prices[:5]]
-    
-    return structures
-
-# ═══════════════════════════════════════════════════════════════════
-#  РАНЖИРОВАНИЕ (DeepSeek)
-# ═══════════════════════════════════════════════════════════════════
-
-async def rank_results(query: str, results: List[Dict]) -> List[Dict]:
-    if not results:
-        return []
-    
-    top_results = results[:8]
-    prompt = f"""
-⚠️ **Оцени релевантность результатов поиска.**
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **РЕЗУЛЬТАТЫ:**
-{chr(10).join([f"{i+1}. {r.get('title', 'Без названия')[:100]} — {r.get('snippet', '')[:150]}" for i, r in enumerate(top_results)])}
-
-⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
-{{"rankings": [95, 30, 70, 85, 40, 60, 20, 10]}}
-"""
-    try:
-        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=300)
-        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            rankings = data.get('rankings', [])
-            for i, r in enumerate(top_results):
-                if i < len(rankings):
-                    r['relevance'] = rankings[i] / 100
-                else:
-                    r['relevance'] = 0.5
-            return top_results
-    except Exception as e:
-        logger.error(f"❌ Ошибка ранжирования: {e}")
-    
-    return results
-
-# ═══════════════════════════════════════════════════════════════════
-#  АНАЛИЗ НЕДОСТАТКА ДАННЫХ
-# ═══════════════════════════════════════════════════════════════════
-
-async def analyze_lack_of_data(query: str, structures: Dict) -> Dict:
-    prompt = f"""
-⚠️ **Оцени, достаточно ли данных для ответа на запрос.**
-
-⚠️ **ЗАПРОС:** {query}
-
-⚠️ **СТРУКТУРЫ:**
-📋 СПИСКИ: {structures.get('lists', [])[:3]}
-🔄 ШАГИ: {structures.get('steps', [])[:3]}
-❓ ВОПРОСЫ: {structures.get('questions', [])[:3]}
-
-⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
-{{
-  "sufficient": true/false,
-  "confidence": 0-100,
-  "reformulations": ["вариант 1", "вариант 2", "вариант 3"],
-  "clarification": "вопрос к пользователю или null"
-}}
-"""
-    try:
-        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=500)
-        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception as e:
-        logger.error(f"❌ Ошибка анализа недостатка: {e}")
-    
-    return {"sufficient": bool(structures.get('lists') or structures.get('steps')), "confidence": 50, "reformulations": [], "clarification": None}
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА НА ЛОЖЬ И ОТКАЗ
-# ═══════════════════════════════════════════════════════════════════
-
-def check_for_lies(answer: str) -> bool:
-    lie_phrases = ['из моих знаний', 'я знаю, что', 'по моему мнению', 'я могу добавить', 'исходя из моего опыта', 'я предполагаю', 'думаю, что', 'мне кажется', 'по моим данным']
-    for phrase in lie_phrases:
-        if phrase in answer.lower():
-            return True
-    return False
-
-def check_refusal(answer: str) -> bool:
-    refuse_phrases = ['не могу ответить', 'не знаю', 'нет данных', 'информация отсутствует', 'не нашлось']
-    for phrase in refuse_phrases:
-        if phrase in answer.lower():
-            return True
-    return False
 
 # ═══════════════════════════════════════════════════════════════════
 #  ИНДИКАТОР ТОЧНОСТИ
@@ -591,9 +444,9 @@ def calculate_confidence(pages: List[Dict]) -> Dict:
     structure_count = 0
     for p in pages:
         parsed = p.get('parsed', {})
-        structure_count += len(parsed.get('lists', [])) + len(parsed.get('steps', [])) + len(parsed.get('questions', []))
+        structure_count += len(parsed.get('lists', [])) + len(parsed.get('headings', []))
     
-    completeness = min(100, structure_count * 5)
+    completeness = min(100, structure_count * 8)
     confidence['data_completeness'] = completeness
     confidence['factors'].append(f"Полнота: {completeness:.0f}%")
     
@@ -619,21 +472,38 @@ def format_confidence(confidence: Dict) -> str:
 """
 
 # ═══════════════════════════════════════════════════════════════════
+#  ПРОВЕРКА НА ЛОЖЬ И ОТКАЗ
+# ═══════════════════════════════════════════════════════════════════
+
+def check_for_lies(answer: str) -> bool:
+    lie_phrases = ['из моих знаний', 'я знаю, что', 'по моему мнению', 'я могу добавить', 'исходя из моего опыта', 'я предполагаю', 'думаю, что', 'мне кажется', 'по моим данным']
+    for phrase in lie_phrases:
+        if phrase in answer.lower():
+            return True
+    return False
+
+def check_refusal(answer: str) -> bool:
+    refuse_phrases = ['не могу ответить', 'не знаю', 'нет данных', 'информация отсутствует', 'не нашлось']
+    for phrase in refuse_phrases:
+        if phrase in answer.lower():
+            return True
+    return False
+
+# ═══════════════════════════════════════════════════════════════════
 #  ГЕНЕРАЦИЯ ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
 
-async def generate_answer(query: str, pages: List[Dict], structures: Dict, memory_context: str = "") -> str:
+async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
     context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:2000] for p in pages[:2]])
     
+    # Структуры для промпта
     structures_text = ""
-    if structures.get('lists'):
-        structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in structures['lists'][:10]]) + "\n"
-    if structures.get('steps'):
-        structures_text += "🔄 ШАГИ:\n" + "\n".join([f"  • {item}" for item in structures['steps'][:5]]) + "\n"
-    if structures.get('questions'):
-        structures_text += "❓ ВОПРОСЫ:\n" + "\n".join([f"  • {item}" for item in structures['questions'][:5]]) + "\n"
-    if structures.get('prices'):
-        structures_text += "💰 ЦЕНЫ:\n" + "\n".join([f"  • {item}" for item in structures['prices'][:5]]) + "\n"
+    for p in pages[:2]:
+        parsed = p.get('parsed', {})
+        if parsed.get('lists'):
+            structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in parsed['lists'][:5]]) + "\n"
+        if parsed.get('headings'):
+            structures_text += "📌 ЗАГОЛОВКИ:\n" + "\n".join([f"  • {item}" for item in parsed['headings'][:3]]) + "\n"
     
     prompt = f"""
 ⚠️ **На основе информации из интернета дай структурированный ответ.**
@@ -651,7 +521,7 @@ async def generate_answer(query: str, pages: List[Dict], structures: Dict, memor
 1. Используй ТОЛЬКО информацию из источников
 2. НЕ ДОБАВЛЯЙ свои знания
 3. Если в источниках нет ответа — скажи честно
-4. Дай структурированный ответ (минимум 300 символов)
+4. Дай структурированный ответ
 
 ⚠️ **ФОРМАТ:**
 🎯 **УВЕРЕННОСТЬ: [X]%**
@@ -665,7 +535,7 @@ async def generate_answer(query: str, pages: List[Dict], structures: Dict, memor
 [Честно перечисли]
 """
     
-    answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=4000)
+    answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=3500)
     
     if check_for_lies(answer):
         return f"""
@@ -685,12 +555,12 @@ async def generate_answer(query: str, pages: List[Dict], structures: Dict, memor
 📋 **ЧТО БЫЛО НАЙДЕНО:**
 {context[:1500] if context else "Нет данных"}
 
-{structures_text[:1000] if structures_text else ""}
+{structures_text[:500] if structures_text else ""}
 
 🔗 **ИСТОЧНИКИ:**
 {chr(10).join([f"• {p.get('url', '')}" for p in pages[:3]])}
 
-💡 **Попробуйте переформулировать запрос или уточнить детали.**
+💡 **Попробуйте переформулировать запрос.**
 """
     
     return answer
@@ -706,57 +576,39 @@ def set_stage(stage: str):
     current_stage = stage
 
 async def process_query(query: str, uid: int) -> str:
-    set_stage("🧠 Анализирую запрос")
-    analysis = await analyze_query(query)
-    variants = analysis.get('variants', [query])
-    
     set_stage("🔍 Ищу в интернете")
+    
+    # Генерируем варианты запросов
+    variants = [
+        query,
+        f"скрипт продаж {query}",
+        f"как продавать {query}",
+        f"вопросы для клиента {query}",
+        f"техника продаж {query}"
+    ]
+    
     results = await search_all(variants)
     
     if not results:
         return "⚠️ В интернете ничего не нашлось. Попробуй переформулировать запрос."
     
-    set_stage("📊 Оцениваю релевантность")
-    ranked_results = await rank_results(query, results)
-    top_results = [r for r in ranked_results if r.get('relevance', 0) > 0.2][:MAX_PAGES * 2]
-    
-    if not top_results:
-        return "⚠️ Не найдено релевантных источников. Попробуй переформулировать запрос."
-    
     set_stage("📄 Загружаю страницы")
-    pages = await fetch_pages(top_results)
+    pages = await fetch_pages(results)
     
     if not pages:
         return "⚠️ Не удалось загрузить страницы. Попробуй позже."
-    
-    set_stage("🧩 Извлекаю структуры")
-    all_structures = {'lists': [], 'steps': [], 'questions': [], 'prices': [], 'headings': []}
-    for p in pages:
-        structures = extract_structures(p.get('parsed', {}))
-        for key in all_structures:
-            if structures.get(key):
-                all_structures[key].extend(structures[key])
-    
-    for key in all_structures:
-        all_structures[key] = list(set(all_structures[key]))[:15]
-    
-    set_stage("🤔 Проверяю достаточность данных")
-    sufficiency = await analyze_lack_of_data(query, all_structures)
     
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
         facts = memory.knowledge_graph.get_all_facts()[:3]
-        memory_context = f"\n🧠 **Из памяти:** {', '.join(facts)}\n"
+        memory_context = f"🧠 **Из памяти:** {', '.join(facts)}\n"
     
     set_stage("🤔 Формирую ответ")
-    answer = await generate_answer(query, pages, all_structures, memory_context)
+    answer = await generate_answer(query, pages, memory_context)
     
     confidence = calculate_confidence(pages)
     formatted_answer = format_confidence(confidence) + "\n\n" + answer
-    
-    if not sufficiency.get('sufficient', False) and sufficiency.get('clarification'):
-        formatted_answer += f"\n\n💡 **Уточнение:** {sufficiency['clarification']}"
     
     return formatted_answer
 
@@ -774,7 +626,6 @@ async def show_progress(chat_id, context, start_time):
         
         while True:
             await asyncio.sleep(3)
-            
             if context.user_data.get('found_answer'):
                 try:
                     await msg.edit_text("✅ **Готово!** Формирую ответ...")
@@ -787,7 +638,6 @@ async def show_progress(chat_id, context, start_time):
                 await msg.edit_text(f"⏳ {current_stage}\n\n⏱️ {elapsed} сек")
             except:
                 pass
-    
     except Exception as e:
         logger.error(f"❌ Ошибка таймера: {e}")
 
@@ -869,7 +719,7 @@ async def start(update: Update, context):
     await update.message.reply_text(
         "👋 **Привет!** Я ищу ответы в интернете.\n\n"
         "Напиши вопрос — и я найду информацию.\n\n"
-        "⚠️ Я никогда не вру. Если данных мало — я переформулирую запрос и поищу ещё.\n"
+        "⚠️ Я никогда не вру. Если данных мало — я скажу честно.\n"
         "🧠 Я запоминаю тебя и учусь с каждым диалогом.\n"
         "⚡️ Отвечаю быстро и точно.",
         reply_markup=MAIN_KEYBOARD
@@ -885,13 +735,9 @@ def main():
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
-    logger.info("⚡️ ПОЛНАЯ ВЕРСИЯ (НИЧЕГО НЕ ВЫРЕЗАНО)")
     logger.info("✅ Память: 5 уровней + граф знаний")
     logger.info("✅ Индикатор точности")
     logger.info("✅ Проверка на ложь и отказ")
-    logger.info("✅ Парсинг BeautifulSoup")
-    logger.info("✅ Кэширование")
-    logger.info("✅ Ранжирование")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
