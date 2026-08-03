@@ -1,10 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — УНИВЕРСАЛЬНАЯ ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
-#  БЕЗ ХАРДКОДА
-#  СКОРОСТЬ 40-50 СЕК
-#  ТОЧНОСТЬ 80-85%
-#  ЧЕСТНОСТЬ 100%
-#  ВСЁ РЕШАЕТ DEEPSEEK
+#  ТОЛЬКО APISERPENT (SERPER ВРЕМЕННО ОТКЛЮЧЁН)
+#  ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ APISERPENT
+#  ТАЙМАУТ 30 СЕКУНД
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -22,7 +20,6 @@ from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# Попытка импорта BeautifulSoup
 try:
     from bs4 import BeautifulSoup
     BEAUTIFULSOUP_AVAILABLE = True
@@ -30,7 +27,6 @@ except ImportError:
     BEAUTIFULSOUP_AVAILABLE = False
     logging.warning("⚠️ BeautifulSoup не установлен, используем упрощённый парсинг")
 
-# Browserless (Playwright)
 try:
     from playwright.async_api import async_playwright
     PLAYWRIGHT_AVAILABLE = True
@@ -51,13 +47,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНФИГ (ОПТИМИЗИРОВАННЫЙ)
+#  КОНФИГ
 # ═══════════════════════════════════════════════════════════════════
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+# SERPER_API_KEY = os.getenv("SERPER_API_KEY")  # ВРЕМЕННО ОТКЛЮЧЁН
 BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
@@ -67,7 +63,7 @@ PAGE_TIMEOUT = 4
 SEARCH_RESULTS = 12
 DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 20
+APISERPENT_TIMEOUT = 30  # Увеличен до 30
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -83,7 +79,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 УНИВЕРСАЛЬНАЯ ОПТИМИЗИРОВАННАЯ ВЕРСИЯ")
+logger.info("🚀 УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ТОЛЬКО APISERPENT)")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -299,53 +295,74 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (APISerpent → Serper)
+#  ПОИСК (ТОЛЬКО APISERPENT, БЕЗ SERPER)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower()).strip()
 
 async def search_apiserpent(query: str) -> List[Dict]:
+    """Поиск через APISerpent с детальным логированием"""
     if not APISERPENT_API_KEY:
+        logger.error("❌ APISerpent API ключ отсутствует!")
         return []
+    
+    logger.info(f"🔍 APISerpent запрос: '{query[:60]}...'")
+    
     try:
         session = await get_session()
+        start_time = time.time()
+        
         async with session.get(
             "https://apiserpent.com/api/search",
             params={"q": query, "engine": "google", "num": SEARCH_RESULTS},
             headers={"X-API-Key": APISERPENT_API_KEY},
             timeout=APISERPENT_TIMEOUT
         ) as r:
+            elapsed = time.time() - start_time
+            logger.info(f"⏱️ APISerpent ответ за {elapsed:.2f} сек, статус {r.status}")
+            
+            # Логируем тело ответа для диагностики
+            response_text = await r.text()
+            logger.info(f"📄 APISerpent тело (первые 500 символов): {response_text[:500]}")
+            
             if r.status == 200:
-                data = await r.json()
-                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
-                        for x in data.get("organic_results", [])]
-    except:
-        pass
-    return []
-
-async def search_serper(query: str) -> List[Dict]:
-    if not SERPER_API_KEY:
+                try:
+                    data = json.loads(response_text)
+                    results = [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
+                               for x in data.get("organic_results", [])]
+                    logger.info(f"✅ APISerpent: {len(results)} результатов")
+                    if results:
+                        logger.info(f"📄 Пример результата: {json.dumps(results[0], ensure_ascii=False)[:200]}")
+                    return results
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ APISerpent JSON ошибка: {e}")
+                    logger.error(f"❌ Ответ: {response_text[:200]}")
+                    return []
+            else:
+                logger.error(f"❌ APISerpent статус {r.status}")
+                logger.error(f"❌ Ответ: {response_text[:200]}")
+                return []
+                
+    except asyncio.TimeoutError:
+        logger.error(f"⏰ APISerpent ТАЙМАУТ ({APISERPENT_TIMEOUT} сек)!")
         return []
-    try:
-        session = await get_session()
-        async with session.post(
-            "https://google.serper.dev/search",
-            json={"q": query, "num": SEARCH_RESULTS},
-            headers={"X-API-KEY": SERPER_API_KEY},
-            timeout=10
-        ) as r:
-            if r.status == 200:
-                data = await r.json()
-                return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
-                        for x in data.get("organic", [])]
-    except:
-        pass
-    return []
+    except aiohttp.ClientError as e:
+        logger.error(f"❌ APISerpent ClientError: {type(e).__name__} - {e}")
+        return []
+    except Exception as e:
+        logger.error(f"❌ APISerpent ошибка: {type(e).__name__} - {e}")
+        return []
+
+# ═══════════════════════════════════════════════════════════════════
+#  SEARCH_WITH_CACHE (ТОЛЬКО APISERPENT, БЕЗ SERPER)
+# ═══════════════════════════════════════════════════════════════════
 
 async def search_with_cache(query: str) -> List[Dict]:
+    """Поиск с кэшированием — ТОЛЬКО APISerpent"""
     norm = normalize_query(query)
     if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
+        logger.info(f"📦 Кэш: {query[:40]}...")
         return search_cache[norm]['data']
     
     results = await search_apiserpent(query)
@@ -353,27 +370,8 @@ async def search_with_cache(query: str) -> List[Dict]:
         search_cache[norm] = {'data': results, 'time': time.time()}
         return results
     
-    results = await search_serper(query)
-    if results:
-        search_cache[norm] = {'data': results, 'time': time.time()}
-        return results
-    
+    logger.warning(f"⚠️ APISerpent не дал результатов для: {query[:40]}...")
     return []
-
-async def search_all(variants: List[str]) -> List[Dict]:
-    all_results = []
-    seen_urls = set()
-    for v in variants[:10]:
-        results = await search_with_cache(v)
-        if results:
-            for r in results:
-                url = r.get('link', '')
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    all_results.append(r)
-        if len(all_results) >= MAX_PAGES * 3:
-            break
-    return all_results[:MAX_PAGES * 3]
 
 # ═══════════════════════════════════════════════════════════════════
 #  BROWSERLESS ДЛЯ JS-СТРАНИЦ
@@ -391,8 +389,8 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
             html = await page.content()
             await page.close()
             return html
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"⚠️ Browserless ошибка: {e}")
     return None
 
 # ═══════════════════════════════════════════════════════════════════
@@ -577,7 +575,7 @@ def check_refusal(answer: str) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА (УНИВЕРСАЛЬНАЯ)
+#  ГЕНЕРАЦИЯ ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
@@ -645,7 +643,7 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА (УНИВЕРСАЛЬНАЯ)
+#  ОСНОВНАЯ ЛОГИКА
 # ═══════════════════════════════════════════════════════════════════
 
 current_stage = "⏳ Запуск"
@@ -681,7 +679,7 @@ async def process_query(query: str, uid: int) -> str:
     seen_urls = set()
     
     for v in variants[:10]:
-        results = await search_all([v])
+        results = await search_with_cache(v)
         if results:
             for r in results:
                 if is_good_result(r) and r.get('link') not in seen_urls:
@@ -692,7 +690,7 @@ async def process_query(query: str, uid: int) -> str:
     
     if len(all_results) < 3:
         for v in [f"пример {query}", f"шаблон {query}", f"как {query}"]:
-            results = await search_all([v])
+            results = await search_with_cache(v)
             if results:
                 for r in results:
                     if is_good_result(r) and r.get('link') not in seen_urls:
@@ -846,11 +844,11 @@ def main():
     logger.info(f"🤖 Токен: {TELEGRAM_TOKEN[:10]}...")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
-    logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("✅ УНИВЕРСАЛЬНАЯ ОПТИМИЗИРОВАННАЯ ВЕРСИЯ")
+    logger.info("✅ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (ТОЛЬКО APISERPENT)")
     logger.info("✅ Без хардкода")
-    logger.info("✅ Скорость 40-50 сек")
+    logger.info("✅ Детальное логирование APISerpent")
+    logger.info("✅ Таймаут APISerpent: 30 сек")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
