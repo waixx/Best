@@ -1,11 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  С ИНТЕЛЛЕКТУАЛЬНЫМ АНАЛИЗОМ НЕДОСТАТКА ДАННЫХ
-#  ПЕРЕФОРМУЛИРОВКА ЗАПРОСА И УТОЧНЕНИЕ У ПОЛЬЗОВАТЕЛЯ
-#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
-#  ИЗВЛЕЧЕНИЕ СТРУКТУР ЧЕРЕЗ DEEPSEEK (ТОЧНОСТЬ 92-95%)
-#  ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА (СКОРОСТЬ 25-40 СЕК)
-#  КРАСИВЫЙ ТАЙМЕР + КНОПКИ (СТОП, НОВЫЙ ПОИСК, СТАТИСТИКА)
+#  BROWAIX BOT — ПРОСТАЯ ЧЕСТНАЯ ВЕРСИЯ
+#  ТАЙМЕР ПОКАЗЫВАЕТ РЕАЛЬНОЕ ВРЕМЯ И ЭТАПЫ
+#  БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -24,10 +20,6 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 load_dotenv()
-
-# ═══════════════════════════════════════════════════════════════════
-#  ЛОГГЕР
-# ═══════════════════════════════════════════════════════════════════
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -50,7 +42,6 @@ DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
-# Постоянные кнопки
 MAIN_KEYBOARD = ReplyKeyboardMarkup([
     ["🔍 Новый поиск", "⏹️ Стоп"],
     ["❓ Помощь", "📊 Статистика"]
@@ -60,7 +51,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("⚡️ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ С ИНТЕЛЛЕКТУАЛЬНЫМ АНАЛИЗОМ")
+logger.info("⚡️ ПРОСТАЯ ЧЕСТНАЯ ВЕРСИЯ")
 
 def now():
     return datetime.now(TZ)
@@ -104,7 +95,7 @@ async def ask_deepseek(prompt: str, temperature: float = 0.25, max_tokens: int =
     return ""
 
 # ═══════════════════════════════════════════════════════════════════
-#  5 УРОВНЕЙ ПАМЯТИ + ГРАФ ЗНАНИЙ
+#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -146,9 +137,6 @@ class KnowledgeGraph:
                 if rel not in self.graph[fact]:
                     self.graph[fact].append(rel)
         self._save()
-    
-    def get_related(self, fact: str) -> List[str]:
-        return self.graph.get(fact, [])
     
     def get_all_facts(self) -> List[str]:
         return list(self.graph.keys())
@@ -277,7 +265,7 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  АНАЛИЗ ЗАПРОСА (DeepSeek)
+#  АНАЛИЗ ЗАПРОСА
 # ═══════════════════════════════════════════════════════════════════
 
 async def analyze_query(query: str) -> Dict:
@@ -387,7 +375,7 @@ async def search_all(variants: List[str]) -> List[Dict]:
     return unique[:MAX_PAGES * 2]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ЗАГРУЗКА СТРАНИЦ (ПАРАЛЛЕЛЬНАЯ)
+#  ЗАГРУЗКА СТРАНИЦ
 # ═══════════════════════════════════════════════════════════════════
 
 def clean_html_text(html: str) -> str:
@@ -418,7 +406,7 @@ async def fetch_pages(results: List[Dict]) -> List[str]:
     return [p for p in pages if p and len(p) > 100]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ИЗВЛЕЧЕНИЕ СТРУКТУР (DeepSeek)
+#  ИЗВЛЕЧЕНИЕ СТРУКТУР
 # ═══════════════════════════════════════════════════════════════════
 
 async def extract_structures(text: str, query: str) -> Dict:
@@ -471,7 +459,7 @@ async def extract_structures_parallel(pages: List[str], query: str) -> List[Dict
     return await asyncio.gather(*tasks)
 
 # ═══════════════════════════════════════════════════════════════════
-#  АНАЛИЗ НЕДОСТАТКА ДАННЫХ (НОВАЯ ФУНКЦИЯ)
+#  АНАЛИЗ НЕДОСТАТКА ДАННЫХ
 # ═══════════════════════════════════════════════════════════════════
 
 async def analyze_lack_of_data(query: str, results: List[Dict]) -> Dict:
@@ -676,144 +664,98 @@ async def generate_final_answer(query: str, pages: List[str], results: List[Dict
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА (С ПЕРЕФОРМУЛИРОВКОЙ)
+#  ОСНОВНАЯ ЛОГИКА
 # ═══════════════════════════════════════════════════════════════════
 
-async def process_query(query: str, timer: LiveTimer, uid: int, max_retries: int = 2) -> str:
-    timer.set_stage('analyze')
+# Глобальный статус для таймера
+current_stage = "⏳ Запуск"
+
+def set_stage(stage: str):
+    global current_stage
+    current_stage = stage
+
+async def process_query(query: str, uid: int) -> str:
+    set_stage("🧠 Анализирую запрос")
     analysis = await analyze_query(query)
     
     if analysis.get('action') == 'respond':
         return analysis.get('response', "👋 Я на связи!")
     
-    timer.set_stage('search')
+    set_stage("🔍 Ищу в интернете")
     results = await search_all(analysis.get('variants', [query]))
     
     if not results:
-        # Если ничего не нашлось — пробуем переформулировать
         analysis_lack = await analyze_lack_of_data(query, [])
         reformulations = analysis_lack.get('reformulations', [query])
         results = await search_all(reformulations)
         if not results:
             return "⚠️ В интернете ничего не нашлось. Попробуй переформулировать запрос."
     
-    timer.set_stage('load')
+    set_stage("📄 Загружаю страницы")
     pages = await fetch_pages(results)
     
     if not pages:
         return "⚠️ Не удалось загрузить страницы. Попробуй позже."
     
-    timer.set_stage('extract')
+    set_stage("🧩 Извлекаю структуры")
     structures = await extract_structures_parallel(pages, query)
     
-    # Проверяем достаточно ли данных
     if is_data_sufficient(structures):
-        timer.set_stage('think')
+        set_stage("🤔 Думаю над ответом")
         answer = await generate_final_answer(query, pages, results, structures)
         confidence = calculate_confidence(pages, results)
         return format_confidence(confidence) + "\n\n" + answer
     
-    # Если данных мало — анализируем и переформулируем
-    if max_retries > 0:
-        timer.set_stage('think')
-        analysis_lack = await analyze_lack_of_data(query, results)
-        reformulations = analysis_lack.get('reformulations', [query])
-        clarification = analysis_lack.get('clarification', "Уточните запрос.")
-        
-        # Ищем по новым вариантам
-        new_results = await search_all(reformulations)
-        
-        if new_results and len(new_results) > len(results):
-            pages = await fetch_pages(new_results)
-            if pages:
-                structures = await extract_structures_parallel(pages, query)
-                answer = await generate_final_answer(query, pages, new_results, structures)
-                confidence = calculate_confidence(pages, new_results)
-                return format_confidence(confidence) + "\n\n" + answer + f"\n\n💡 **Уточнение:** {clarification}"
-        
-        # Если всё равно мало — отдаём что есть и предлагаем уточнить
-        answer = await generate_final_answer(query, pages, results, structures)
-        confidence = calculate_confidence(pages, results)
-        return format_confidence(confidence) + "\n\n" + answer + f"\n\n💡 **Уточнение:** {clarification}"
+    set_stage("🤔 Анализирую недостаток данных")
+    analysis_lack = await analyze_lack_of_data(query, results)
+    reformulations = analysis_lack.get('reformulations', [query])
+    clarification = analysis_lack.get('clarification', "Уточните запрос.")
     
-    # Последняя попытка
+    set_stage("🔍 Ищу ещё раз")
+    new_results = await search_all(reformulations)
+    
+    if new_results and len(new_results) > len(results):
+        pages = await fetch_pages(new_results)
+        if pages:
+            structures = await extract_structures_parallel(pages, query)
+            set_stage("🤔 Думаю над ответом")
+            answer = await generate_final_answer(query, pages, new_results, structures)
+            confidence = calculate_confidence(pages, new_results)
+            return format_confidence(confidence) + "\n\n" + answer + f"\n\n💡 **Уточнение:** {clarification}"
+    
+    set_stage("🤔 Формирую ответ")
     answer = await generate_final_answer(query, pages, results, structures)
     confidence = calculate_confidence(pages, results)
-    return format_confidence(confidence) + "\n\n" + answer
+    return format_confidence(confidence) + "\n\n" + answer + f"\n\n💡 **Уточнение:** {clarification}"
 
 # ═══════════════════════════════════════════════════════════════════
-#  ТАЙМЕР
+#  ПРОСТОЙ ЧЕСТНЫЙ ТАЙМЕР
 # ═══════════════════════════════════════════════════════════════════
 
-class LiveTimer:
-    COLORS = ['🟥', '🟧', '🟨', '🟩', '🟦', '🟪']
-    STAGES = {
-        'analyze': '🧠 Анализирую запрос',
-        'search': '🔍 Ищу в интернете',
-        'load': '📄 Загружаю страницы',
-        'extract': '🧩 Извлекаю структуры',
-        'think': '🤔 Думаю над ответом',
-        'done': '🏁 Готово!'
-    }
-    
-    def __init__(self):
-        self.start = time.time()
-        self.stage = 'analyze'
-        self.total = 45
-        self.running = True
-        self.pos = 0
-    
-    def set_stage(self, stage: str):
-        self.stage = stage
-    
-    def elapsed(self) -> int:
-        return int(time.time() - self.start)
-    
-    def progress(self) -> int:
-        e = self.elapsed()
-        return min(100, int((e / max(self.total, 1)) * 100))
-    
-    def bar(self, length: int = 25) -> str:
-        prog = self.progress()
-        filled = int(length * prog / 100)
-        self.pos = (self.pos + 1) % len(self.COLORS)
-        bar = []
-        for i in range(length):
-            if i < filled:
-                bar.append(self.COLORS[(i + self.pos) % len(self.COLORS)])
-            else:
-                bar.append('⬜')
-        return ''.join(bar)
-    
-    def status(self) -> str:
-        e = self.elapsed()
-        remain = max(0, self.total - e)
-        return f"""
-{self.STAGES.get(self.stage, '⚙️ Обработка')}
-
-{self.bar(25)}
-
-📊 {self.progress()}%
-⏱️ {e} сек · ~{remain} сек
-"""
-    
-    def finish(self):
-        self.stage = 'done'
-        self.running = False
-
-async def show_timer(chat_id, context, timer: LiveTimer):
+async def show_progress(chat_id, context, start_time):
+    global current_stage
     try:
-        msg = await context.bot.send_message(chat_id, timer.status(), parse_mode='Markdown')
-        while timer.running:
-            await asyncio.sleep(0.5)
+        msg = await context.bot.send_message(
+            chat_id,
+            f"⏳ {current_stage}\n\n⏱️ 0 сек"
+        )
+        
+        while True:
+            await asyncio.sleep(3)
+            
             if context.user_data.get('found_answer'):
-                timer.finish()
-                await msg.edit_text("✅ **Готово!** Формирую ответ...", parse_mode='Markdown')
-                return
+                try:
+                    await msg.edit_text("✅ **Готово!** Формирую ответ...")
+                except:
+                    pass
+                break
+            
+            elapsed = int(time.time() - start_time)
             try:
-                await msg.edit_text(timer.status(), parse_mode='Markdown')
+                await msg.edit_text(f"⏳ {current_stage}\n\n⏱️ {elapsed} сек")
             except:
                 pass
+    
     except Exception as e:
         logger.error(f"❌ Ошибка таймера: {e}")
 
@@ -869,20 +811,18 @@ async def handle(update: Update, context):
         chat_id = update.effective_chat.id
         context.user_data['found_answer'] = False
         
-        timer = LiveTimer()
-        asyncio.create_task(show_timer(chat_id, context, timer))
+        start_time = time.time()
+        asyncio.create_task(show_progress(chat_id, context, start_time))
         
         memory = get_memory(uid)
         memory.add_message("user", text)
         
-        answer = await process_query(text, timer, uid)
+        answer = await process_query(text, uid)
         
         context.user_data['found_answer'] = True
-        timer.finish()
-        
         memory.add_message("assistant", answer[:500])
         
-        elapsed = timer.elapsed()
+        elapsed = int(time.time() - start_time)
         await update.message.reply_text(f"⏱️ {elapsed} сек\n\n{answer}", reply_markup=MAIN_KEYBOARD)
         
     except Exception as e:
@@ -913,11 +853,10 @@ def main():
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
-    logger.info("⚡️ ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+    logger.info("⚡️ ПРОСТАЯ ЧЕСТНАЯ ВЕРСИЯ")
     logger.info("✅ Память: 5 уровней + граф знаний")
-    logger.info("✅ Извлечение структур через DeepSeek")
     logger.info("✅ Интеллектуальный анализ недостатка данных")
-    logger.info("✅ Переформулировка запроса и уточнение")
+    logger.info("✅ Простой честный таймер")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
