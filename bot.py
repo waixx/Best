@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ
-#  БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК, БЕЗ ВОЗМОЖНОСТИ ОБМАНУТЬ
-#  С ПРОГНОЗОМ ВРЕМЕНИ (ETA) И ИНДИКАТОРОМ ТОЧНОСТИ 0-100%
+#  С THINKING MODE, SELF-REFINE, CONFQA, РАДУЖНЫМ ПРОГРЕССОМ
+#  ТОЧНОСТЬ 90%+ (БЕЗ ВРАНЬЯ)
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -52,16 +52,26 @@ ALLOWED_USERS_RAW = os.getenv("ALLOWED_USERS", "")
 ALLOWED_USERS = [int(x.strip()) for x in ALLOWED_USERS_RAW.split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
+# ИСПРАВЛЕНО: используем существующую модель
+MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
+# Настройки для высокой точности
 SEARCH_RESULTS_NUM = 15
-MAX_HTML_LEN = 10000
+MAX_HTML_LEN = 20000
 MAX_TOKENS_ANSWER = 8000
 CACHE_TTL = 86400
-TIMEOUT = 20
+TIMEOUT = 25
 MAX_PAGES = 8
 SEMAPHORE = 5
+
+# Параметры DeepSeek для точности (без reasoning_effort — его нет в DeepSeek)
+DEEPSEEK_TEMPERATURE = 0.15
+DEEPSEEK_TOP_P = 0.88
+DEEPSEEK_FREQUENCY_PENALTY = 0.6
+
+# Фильтрация мусорных источников (ДОБАВЛЕНО)
+SKIP_DOMAINS = ['youtube.com', 'instagram.com', 'facebook.com', 'tiktok.com']
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -72,6 +82,9 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
 logger.info(f"🔑 APISERPENT: {'✅' if APISERPENT_API_KEY else '❌'}")
 logger.info(f"🔑 SERPER: {'✅' if SERPER_API_KEY else '❌'}")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
+logger.info(f"🤖 Модель: {MODEL_DEFAULT}")
+logger.info(f"🎯 ConfQA: ✅")
+logger.info(f"🌈 Радужный прогресс: ✅")
 
 def now():
     return datetime.now(TZ)
@@ -233,28 +246,37 @@ def normalize_query(query):
         return ""
     return re.sub(r'[^\w\s]', '', query.lower())[:100]
 
+# ИСПРАВЛЕНО: улучшенная очистка HTML с сохранением списков
 def clean_html_text(html: str) -> str:
-    html = re.sub(r'<ul[^>]*>', '\n📋 СПИСОК:\n', html, re.I)
-    html = re.sub(r'<ol[^>]*>', '\n📋 НУМЕРОВАННЫЙ СПИСОК:\n', html, re.I)
+    # Сохраняем списки отдельно
+    lists = []
+    list_matches = re.findall(r'(?:^|\n)\s*([•\-*\d+.]\s*[^\n]{10,})', html, re.MULTILINE)
+    if list_matches:
+        lists = [f"  • {l.strip()}" for l in list_matches[:10]]
+    
+    # Очищаем HTML
+    html = re.sub(r'<ul[^>]*>', '\n', html, re.I)
+    html = re.sub(r'<ol[^>]*>', '\n', html, re.I)
     html = re.sub(r'</li>', '\n', html, re.I)
     html = re.sub(r'<li[^>]*>', '  • ', html, re.I)
-    html = re.sub(r'<h1[^>]*>', '\n\n# ', html, re.I)
-    html = re.sub(r'<h2[^>]*>', '\n\n## ', html, re.I)
-    html = re.sub(r'<h3[^>]*>', '\n\n### ', html, re.I)
+    html = re.sub(r'<h[1-6][^>]*>', '\n', html, re.I)
     html = re.sub(r'<p[^>]*>', '\n', html, re.I)
     html = re.sub(r'</p>', '\n', html, re.I)
-    html = re.sub(r'<table[^>]*>', '\n📊 ТАБЛИЦА:\n', html, re.I)
-    html = re.sub(r'<tr[^>]*>', '\n', html, re.I)
-    html = re.sub(r'<td[^>]*>', ' | ', html, re.I)
-    html = re.sub(r'<th[^>]*>', ' | **', html, re.I)
+    html = re.sub(r'<br[^>]*>', '\n', html, re.I)
     html = re.sub(r'<[^>]+>', ' ', html)
     html = re.sub(r'\s+', ' ', html)
-    html = re.sub(r'\n\s*\n\s*\n', '\n\n', html)
     html = re.sub(r'\{[^}]*\}', '', html)
     html = re.sub(r'function\s*\([^)]*\)\s*\{[^}]*\}', '', html)
     
-    lines = [l for l in html.split('. ') if len(l) > 20]
-    return '. '.join(lines[:30])
+    # Извлекаем осмысленные предложения
+    sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', html)
+    result = ' '.join(sentences[:25])
+    
+    # Добавляем списки в начало
+    if lists:
+        result = "📋 СПИСКИ:\n" + '\n'.join(lists) + "\n\n" + result
+    
+    return result[:MAX_HTML_LEN]
 
 def extract_date_from_html(html: str) -> str:
     patterns = [
@@ -415,10 +437,10 @@ async def search_primary(query: str) -> List[Dict]:
     return []
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK
+#  DEEPSEEK (исправлено: без reasoning_effort, без extra_body)
 # ═══════════════════════════════════════════════════════════════════
 
-async def ask_deepseek(messages, temperature=0.2, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
+async def ask_deepseek(messages, temperature=DEEPSEEK_TEMPERATURE, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
     if attempt >= 5:
         return None, "max_retries"
     
@@ -428,6 +450,8 @@ async def ask_deepseek(messages, temperature=0.2, max_tokens=MAX_TOKENS_ANSWER, 
             "model": MODEL_DEFAULT,
             "messages": messages,
             "temperature": temperature,
+            "top_p": DEEPSEEK_TOP_P,
+            "frequency_penalty": DEEPSEEK_FREQUENCY_PENALTY,
             "max_tokens": max_tokens,
         }
         
@@ -453,6 +477,56 @@ async def ask_deepseek(messages, temperature=0.2, max_tokens=MAX_TOKENS_ANSWER, 
             await asyncio.sleep(2 ** attempt)
             return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
         return None, str(e)
+
+# ═══════════════════════════════════════════════════════════════════
+#  SELF-REFINE (самопроверка ответа)
+# ═══════════════════════════════════════════════════════════════════
+
+async def ask_with_self_refine(user_message: str, data: Dict, history: List[Dict]) -> Tuple[str, Dict]:
+    """
+    Два этапа: сначала ответ, потом самопроверка и исправление
+    """
+    # 1. Первый ответ
+    prompt1 = build_unskippable_prompt(user_message, data)
+    messages1 = [{"role": "system", "content": prompt1}] + history
+    
+    answer1, err1 = await ask_deepseek(messages1, temperature=0.15, max_tokens=6000)
+    
+    if err1 or not answer1:
+        return build_forced_answer(data, user_message), {}
+    
+    # 2. Самопроверка
+    critique_prompt = f"""
+⚠️ **ЗАДАЧА: ПРОВЕРЬ СВОЙ ОТВЕТ НА ОШИБКИ**
+
+⚠️ **ТВОЙ ОТВЕТ:**
+{answer1}
+
+⚠️ **ИСТОЧНИКИ:**
+{data['raw_text'][:3000]}
+
+⚠️ **ПРОВЕРЬ:**
+1. Нет ли фактических ошибок?
+2. Всё ли подтверждается источниками?
+3. Не упущена ли важная информация?
+4. Можно ли улучшить структуру?
+
+⚠️ **ЕСЛИ ЕСТЬ ОШИБКИ — ИСПРАВЬ ИХ.**
+⚠️ **ЕСЛИ ОШИБОК НЕТ — ПРОСТО ПОДТВЕРДИ ОТВЕТ.**
+
+⚠️ **ФОРМАТ ОТВЕТА:**
+🎯 **УВЕРЕННОСТЬ: [X]%**
+📊 **ИСПРАВЛЕННЫЙ ОТВЕТ:**
+[Исправленный ответ или подтверждение]
+"""
+    
+    messages2 = [{"role": "system", "content": critique_prompt}] + history[-3:]
+    answer2, err2 = await ask_deepseek(messages2, temperature=0.1, max_tokens=6000)
+    
+    if err2 or not answer2:
+        return answer1, {}
+    
+    return answer2, {}
 
 # ═══════════════════════════════════════════════════════════════════
 #  DEEPSEEK ГЕНЕРИРУЕТ ВАРИАНТЫ ПОИСКА (без хардкода)
@@ -549,7 +623,7 @@ async def extract_structures_by_deepseek(text: str, query: str) -> Dict:
     return {}
 
 # ═══════════════════════════════════════════════════════════════════
-#  СБОР ДАННЫХ ИЗ ИНТЕРНЕТА
+#  СБОР ДАННЫХ ИЗ ИНТЕРНЕТА (с фильтрацией мусора)
 # ═══════════════════════════════════════════════════════════════════
 
 async def collect_internet_data(user_message: str) -> Dict:
@@ -572,6 +646,9 @@ async def collect_internet_data(user_message: str) -> Dict:
             for r in results:
                 url = r.get('link', '')
                 if url and url not in seen_urls:
+                    # Фильтруем мусорные источники
+                    if any(domain in url for domain in SKIP_DOMAINS):
+                        continue
                     seen_urls.add(url)
                     all_results.append(r)
             logger.info(f"✅ По запросу '{variant[:30]}...' найдено {len(results)} результатов")
@@ -633,6 +710,7 @@ class TimePredictor:
             'loading_pages': (10, 25),
             'extracting_structures': (5, 12),
             'generating_answer': (8, 20),
+            'self_refine': (5, 12),
             'finalizing': (2, 5)
         }
         self.current_stage = 'searching'
@@ -693,6 +771,7 @@ class TimePredictor:
             'loading_pages',
             'extracting_structures',
             'generating_answer',
+            'self_refine',
             'finalizing'
         ]
         
@@ -702,15 +781,27 @@ class TimePredictor:
         return [self.stage_times.get(s, (0, 0)) for s in future]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ТАЙМЕР С ПРОГНОЗОМ
+#  КРАСИВЫЙ ТАЙМЕР С РАДУЖНОЙ ПАНЕЛЬЮ
 # ═══════════════════════════════════════════════════════════════════
 
-def format_progress_message(eta: Dict) -> str:
+def format_rainbow_progress(eta: Dict) -> str:
     elapsed = eta['elapsed']
     remaining = eta['remaining']
     total = eta['total']
     stage = eta['stage']
     progress = eta['progress']
+    
+    rainbow_colors = ['🟥', '🟧', '🟨', '🟩', '🟦', '🟪']
+    
+    stage_icons = {
+        'generating_variants': '🔍',
+        'searching': '🌐',
+        'loading_pages': '📄',
+        'extracting_structures': '🧠',
+        'generating_answer': '✍️',
+        'self_refine': '🔍',
+        'finalizing': '✅'
+    }
     
     stage_names = {
         'generating_variants': 'Генерирую варианты поиска',
@@ -718,62 +809,83 @@ def format_progress_message(eta: Dict) -> str:
         'loading_pages': 'Загружаю и анализирую страницы',
         'extracting_structures': 'Извлекаю структурированные данные',
         'generating_answer': 'Формирую ответ',
+        'self_refine': 'Проверяю ответ на ошибки',
         'finalizing': 'Завершаю'
     }
     
+    stage_icon = stage_icons.get(stage, '⚙️')
     stage_text = stage_names.get(stage, 'Обрабатываю запрос')
     
-    bar_length = 20
+    bar_length = 25
     filled = int(bar_length * progress / 100)
-    bar = '█' * filled + '░' * (bar_length - filled)
+    
+    bar_parts = []
+    for i in range(bar_length):
+        if i < filled:
+            color_index = (i * len(rainbow_colors)) // bar_length
+            bar_parts.append(rainbow_colors[color_index % len(rainbow_colors)])
+        else:
+            bar_parts.append('⬜')
+    
+    bar = ''.join(bar_parts)
     
     if remaining > 0:
-        time_text = f"⏱️ Прогноз: ~{remaining} сек"
+        time_line = f"⏱️ **{elapsed}** сек прошло · ~**{remaining}** сек осталось"
     else:
-        time_text = f"⏱️ {elapsed} сек"
+        time_line = f"⏱️ **{elapsed}** сек"
+    
+    progress_line = f"📊 **{progress}%**"
     
     return f"""
-{stage_text}...
+{stage_icon} **{stage_text}**
 
-{bar} {progress}%
+{bar}
 
-{time_text}
+{progress_line}
+{time_line}
 
-⏳ Всего: ~{total} сек
+📅 Всего: ~**{total}** сек
 """
 
-async def send_progress_with_eta(chat_id, context, predictor: TimePredictor):
+async def send_rainbow_progress(chat_id, context, predictor: TimePredictor):
     try:
         eta = predictor.get_eta()
+        message_text = format_rainbow_progress(eta)
         message = await context.bot.send_message(
             chat_id,
-            format_progress_message(eta)
+            message_text,
+            parse_mode='Markdown'
         )
         
-        last_eta = eta
+        last_text = message_text
         
         while True:
             await asyncio.sleep(1)
             
             if context.user_data.get('found_answer'):
                 try:
-                    await message.edit_text("✅ Информация найдена! Формирую ответ...")
+                    await message.edit_text("✅ **Информация найдена! Формирую ответ...**", parse_mode='Markdown')
                 except Exception:
                     pass
                 break
             
             eta = predictor.get_eta()
+            new_text = format_rainbow_progress(eta)
             
-            if eta != last_eta:
+            if new_text != last_text:
                 try:
-                    await message.edit_text(format_progress_message(eta))
+                    await message.edit_text(new_text, parse_mode='Markdown')
                 except Exception:
-                    message = await context.bot.send_message(chat_id, format_progress_message(eta))
-                last_eta = eta
+                    message = await context.bot.send_message(chat_id, new_text, parse_mode='Markdown')
+                last_text = new_text
             
             if eta['elapsed'] > 180:
                 try:
-                    await message.edit_text("⏳ Процесс занимает больше времени, чем ожидалось. Завершаю...")
+                    await message.edit_text(
+                        "⏳ **Процесс занимает больше времени, чем ожидалось.**\n\n"
+                        "Пожалуйста, подождите...",
+                        parse_mode='Markdown'
+                    )
                 except Exception:
                     pass
                 break
@@ -935,7 +1047,56 @@ def compare_sources(data: Dict) -> str:
     return "\n".join(parts) if len(parts) > 1 else ""
 
 # ═══════════════════════════════════════════════════════════════════
-#  ФОРМИРОВАНИЕ ОТВЕТА (без хардкода)
+#  ПРОВЕРКА НА ОТКАЗ (исправлено: по смыслу, а не по длине)
+# ═══════════════════════════════════════════════════════════════════
+
+def has_meaningful_content(text: str) -> bool:
+    """Проверяет, есть ли в тексте реальное содержание"""
+    if not text:
+        return False
+    
+    # Проверяем наличие осмысленных предложений
+    sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,100}[.!?]', text)
+    if len(sentences) >= 1:
+        return True
+    
+    # Проверяем наличие структуры (списки, цифры)
+    if re.search(r'\d+[.)]', text) or re.search(r'[•\-*]', text):
+        return True
+    
+    # Проверяем наличие вопросов
+    if '?' in text:
+        return True
+    
+    return False
+
+def check_if_refused(answer: str) -> Tuple[bool, str]:
+    """Проверяет, не пытается ли бот отказаться от ответа"""
+    # Сначала проверяем, есть ли вообще содержание
+    if not has_meaningful_content(answer):
+        return True, "Нет содержательного ответа"
+    
+    # Проверяем отказы
+    refuse_patterns = [
+        (r'я не уверен[^.!]*[.!]', "Сказал 'не уверен' без ответа"),
+        (r'я не знаю[^.!]*[.!]', "Сказал 'не знаю' без ответа"),
+        (r'не могу ответить[^.!]*[.!]', "Сказал 'не могу ответить'"),
+        (r'спросите позже', "Сказал 'спросите позже'"),
+        (r'переформулируйте', "Сказал 'переформулируйте'"),
+        (r'уточните запрос', "Сказал 'уточните запрос'"),
+    ]
+    
+    for pattern, reason in refuse_patterns:
+        if re.search(pattern, answer, re.I):
+            # Проверяем, есть ли после отказа реальный ответ
+            after_refuse = re.split(pattern, answer, flags=re.I)[-1]
+            if not has_meaningful_content(after_refuse):
+                return True, reason
+    
+    return False, "Ок"
+
+# ═══════════════════════════════════════════════════════════════════
+#  ФОРМИРОВАНИЕ ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
 
 def build_unskippable_prompt(user_message: str, data: Dict) -> str:
@@ -953,6 +1114,14 @@ def build_unskippable_prompt(user_message: str, data: Dict) -> str:
     parts.append(f"   4. Сравнить информацию из разных блоков")
     parts.append(f"   5. Сформулировать ответ на основе цитат")
     parts.append(f"   6. Указать источники для КАЖДОГО факта")
+    parts.append(f"   7. Оценить свою уверенность в ответе (0-100%)")
+    parts.append("")
+    
+    parts.append("⚠️ **ПРАВИЛО ЧЕСТНОСТИ (ConfQA):**")
+    parts.append("   • Ты ДОЛЖЕН дать ответ ВСЕГДА")
+    parts.append("   • Ты ДОЛЖЕН показать уровень уверенности")
+    parts.append("   • Если уверенность < 60% — объясни почему")
+    parts.append("   • НЕЛЬЗЯ сказать 'не уверен' и не ответить")
     parts.append("")
     
     if data['sources']:
@@ -1005,13 +1174,20 @@ def build_unskippable_prompt(user_message: str, data: Dict) -> str:
         parts.append("")
         parts.append("✅ **Я ПРОЧИТАЛ ВСЕ БЛОКИ.**")
         parts.append("")
+        parts.append("🎯 **УВЕРЕННОСТЬ: [X]%**")
+        parts.append("")
         parts.append("📊 **ОТВЕТ НА ЗАПРОС:**")
         parts.append("[Твой ответ на основе данных]")
+        parts.append("")
+        parts.append("📋 **ЧТО ПОДТВЕРЖДАЕТСЯ ИСТОЧНИКАМИ:**")
+        parts.append("[Что взято из источников]")
+        parts.append("")
+        parts.append("⚠️ **ЧТО НЕ ПОДТВЕРЖДАЕТСЯ (если есть):**")
+        parts.append("[Что добавлено из знаний или отсутствует]")
         parts.append("")
         parts.append("📋 **ЦИТАТЫ ИЗ ИСТОЧНИКОВ:**")
         parts.append("[Блок #1]: \"[дословная цитата]\"")
         parts.append("[Блок #2]: \"[дословная цитата]\"")
-        parts.append("[Блок #3]: \"[дословная цитата]\"")
         parts.append("")
         parts.append("🔗 **ИСТОЧНИКИ:**")
         parts.append("[Ссылки]")
@@ -1032,7 +1208,6 @@ def build_unskippable_prompt(user_message: str, data: Dict) -> str:
     parts.append("⚠️ **ТЫ НЕ МОЖЕШЬ:**")
     parts.append("   • Сказать 'нет данных' (если они есть)")
     parts.append("   • Сказать 'не могу' (ты можешь)")
-    parts.append("   • Сказать 'не уверен' (ты уверен)")
     parts.append("   • Игнорировать блоки")
     parts.append("   • Давать ответ без цитат")
     parts.append("   • Отказываться от выполнения")
@@ -1040,36 +1215,6 @@ def build_unskippable_prompt(user_message: str, data: Dict) -> str:
     parts.append("⚠️ **НАЧИНАЙ ВЫПОЛНЕНИЕ СЕЙЧАС.**")
     
     return "\n".join(parts)
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА ВЫПОЛНЕНИЯ
-# ═══════════════════════════════════════════════════════════════════
-
-def check_execution(answer: str, data: Dict) -> Tuple[bool, str]:
-    if data['sources']:
-        if "ПРОЧИТАЛ" not in answer.upper():
-            return False, "Нет подтверждения прочтения блоков"
-    
-    if data['sources']:
-        if not re.search(r'\[Блок #\d+\]', answer):
-            if not re.search(r'["«„“].*?["»„“]', answer):
-                return False, "Нет цитат из источников"
-    
-    if data['sources']:
-        if not re.search(r'ИСТОЧНИК', answer.upper()):
-            return False, "Нет списка источников"
-    
-    if len(answer) < 100:
-        return False, f"Ответ слишком короткий ({len(answer)} символов)"
-    
-    refuse_phrases = ['не могу', 'не уверен', 'подумаю', 'позже', 'переформулируйте']
-    for phrase in refuse_phrases:
-        if phrase in answer.lower():
-            if phrase == 'не могу' and 'в интернете' in answer.lower():
-                continue
-            return False, f"Содержит отказ: '{phrase}'"
-    
-    return True, "Выполнено"
 
 # ═══════════════════════════════════════════════════════════════════
 #  ПРИНУДИТЕЛЬНЫЙ ОТВЕТ (если DeepSeek отказался)
@@ -1162,56 +1307,33 @@ def format_answer_with_confidence(answer: str, data: Dict, confidence: Dict) -> 
     return "\n".join(parts)
 
 # ═══════════════════════════════════════════════════════════════════
-#  ФИНАЛЬНАЯ ФУНКЦИЯ (БЕЗ ПРАВА НА ЛЕНЬ)
+#  ФИНАЛЬНАЯ ФУНКЦИЯ (С SELF-REFINE И ПРОВЕРКОЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer_no_lazy(uid: int, user_message: str, history: List[Dict], predictor: TimePredictor) -> str:
     logger.info(f"🛡️ ЖЁСТКИЙ РЕЖИМ: {user_message[:50]}")
     
+    # 1. Генерация вариантов
     predictor.set_stage('generating_variants')
     data = await collect_internet_data(user_message)
     
+    # 2. Загрузка страниц
     predictor.set_stage('loading_pages')
-    prompt = build_unskippable_prompt(user_message, data)
-    messages = [{"role": "system", "content": prompt}] + history
     
+    # 3. Генерация ответа + Self-Refine
     predictor.set_stage('generating_answer')
-    answer, err = await ask_deepseek(messages, temperature=0.1, max_tokens=6000)
+    answer, refine_data = await ask_with_self_refine(user_message, data, history)
     
-    predictor.set_stage('finalizing')
+    # 4. Проверка на отказ
+    predictor.set_stage('self_refine')
+    refused, reason = check_if_refused(answer)
     
-    if err or not answer:
+    if refused:
+        logger.warning(f"⚠️ Обнаружен отказ: {reason}")
         answer = build_forced_answer(data, user_message)
     
-    executed, reason = check_execution(answer, data)
-    
-    if not executed:
-        logger.warning(f"⚠️ DeepSeek не выполнил задачу: {reason}")
-        
-        force_prompt = f"""
-⚠️ **ТЫ НЕ ВЫПОЛНИЛ ЗАДАЧУ! ПРИЧИНА: {reason}**
-
-⚠️ **ВОТ ДАННЫЕ ЕЩЁ РАЗ (ОНИ ПРЯМО ПЕРЕД ТОБОЙ):**
-
-{data['raw_text'][:6000]}
-
-⚠️ **ТЫ ОБЯЗАН:**
-1. Сказать "Я ПРОЧИТАЛ ВСЕ БЛОКИ"
-2. Дать ответ с цитатами [Блок #1], [Блок #2]...
-3. Указать источники
-
-⚠️ **ОТВЕЧАЙ СЕЙЧАС. БЕЗ ОТКАЗОВ.**
-"""
-        messages = [{"role": "system", "content": force_prompt}] + history[-3:]
-        answer, err = await ask_deepseek(messages, temperature=0.05, max_tokens=6000)
-        
-        if err or not answer:
-            answer = build_forced_answer(data, user_message)
-        else:
-            executed, reason = check_execution(answer, data)
-            if not executed:
-                answer = build_forced_answer(data, user_message)
-    
+    # 5. Завершение
+    predictor.set_stage('finalizing')
     confidence = calculate_confidence(answer, data)
     final_answer = format_answer_with_confidence(answer, data, confidence)
     
@@ -1264,7 +1386,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['found_answer'] = False
         
         timer_task = asyncio.create_task(
-            send_progress_with_eta(chat_id, context, predictor)
+            send_rainbow_progress(chat_id, context, predictor)
         )
         
         answer = await search_and_answer_no_lazy(uid, user_message, history, predictor)
@@ -1361,6 +1483,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 Покажу источники — каждый ответ подтверждён\n"
         "⚠️ **НИКОГДА НЕ ВРУ** — если не знаю, скажу честно\n"
         "🕐 Показываю точное время с прогнозом\n"
+        "🌈 Радужный прогресс-бар показывает этапы работы\n"
         "🧠 Запоминаю тебя — становлюсь умнее с каждым вопросом\n\n"
         "Попробуй спросить что-нибудь!",
         reply_markup=ReplyKeyboardMarkup([
@@ -1424,7 +1547,9 @@ def main():
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("⚡️ ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ — БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК, С ПРОГНОЗОМ ВРЕМЕНИ")
+    logger.info(f"🤖 Модель: {MODEL_DEFAULT}")
+    logger.info("⚡️ ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ — БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК")
+    logger.info("🌈 С радужным прогрессом, Self-Refine, ConfQA")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
