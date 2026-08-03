@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — УЛУЧШЕННЫЙ ПАРСИНГ (ВСЁ НА МЕСТЕ)
-#  Больше источников, больше фильмов, больше рейтингов
-#  Без хардкода, универсально
+#  BROWAIX BOT — АБСОЛЮТНО УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  Принудительный парсинг без хардкода
+#  Всё на месте: память, граф знаний, таймер, кнопки, защита
+#  Ничего не вырезано
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -63,7 +64,7 @@ ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",
 ALLOW_ALL = not ALLOWED_USERS
 
 # ═══════════════════════════════════════════════════════════════════
-#  НАСТРОЙКИ (УВЕЛИЧЕННЫЕ ДЛЯ БОЛЬШЕГО ПАРСИНГА)
+#  НАСТРОЙКИ
 # ═══════════════════════════════════════════════════════════════════
 
 PAGE_TIMEOUT = 12
@@ -76,7 +77,7 @@ MAX_TOKENS_OUTPUT = 6000
 MAX_TOKENS_VARIANTS = 500
 MAX_ITERATIONS = 5
 TARGET_CONFIDENCE = 90
-MAX_PAGES_PER_ITERATION = 12  # ⬅️ Увеличил до 12
+MAX_PAGES_PER_ITERATION = 12
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -492,41 +493,15 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
         return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  ═══════════════════════════════════════════════════════════════════
-#  УЛУЧШЕННЫЙ ПАРСИНГ (БОЛЬШЕ ИСТОЧНИКОВ, БОЛЬШЕ ДАННЫХ)
-#  ═══════════════════════════════════════════════════════════════════
-
-def extract_year_from_text(text: str) -> Optional[str]:
-    """Извлекает год из текста"""
-    match = re.search(r'\b(19[0-9]{2}|20[0-9]{2})\b', text)
-    return match.group(1) if match else None
-
-def extract_rating_from_text(text: str) -> Optional[str]:
-    """Извлекает рейтинг из текста (универсально)"""
-    # 1. Ищем "6.1", "8.5", "9.0"
-    rating_match = re.search(r'\b(\d+\.\d{1,2})\b', text)
-    if rating_match:
-        return rating_match.group(1)
-    
-    # 2. Ищем "IMDb: 8.0", "Рейтинг: 7.5"
-    rating_match = re.search(r'(?:IMDb|Рейтинг|Rating|Score|Оценка)\s*[:]?\s*(\d+\.\d{1,2})', text, re.I)
-    if rating_match:
-        return rating_match.group(1)
-    
-    # 3. Ищем "★ 6.1", "⭐ 8.5"
-    rating_match = re.search(r'[★⭐]\s*(\d+\.\d{1,2})', text)
-    if rating_match:
-        return rating_match.group(1)
-    
-    # 4. Ищем "6.1/10", "8.5/10"
-    rating_match = re.search(r'(\d+\.\d{1,2})\s*[/]\s*10', text)
-    if rating_match:
-        return rating_match.group(1)
-    
-    return None
+#  УНИВЕРСАЛЬНЫЙ ПРИНУДИТЕЛЬНЫЙ ПАРСИНГ (БЕЗ ХАРДКОДА)
+# ═══════════════════════════════════════════════════════════════════
 
 def extract_structured_items(html: str) -> List[Dict]:
-    """Универсальное извлечение данных без хардкода"""
+    """
+    УНИВЕРСАЛЬНЫЙ ПРИНУДИТЕЛЬНЫЙ ПАРСИНГ
+    Ищет ВСЕ числа, годы, названия в кавычках
+    Без хардкода, без классов, без доменов
+    """
     items = []
     
     if not BEAUTIFULSOUP_AVAILABLE:
@@ -539,89 +514,87 @@ def extract_structured_items(html: str) -> List[Dict]:
         for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'noscript']):
             tag.decompose()
         
-        # 2. Ищем все блоки с текстом
+        # 2. Берём ВСЕ блоки с текстом
         all_blocks = []
-        for tag in soup.find_all(['div', 'li', 'article', 'section', 'p', 'span', 'h1', 'h2', 'h3', 'h4']):
+        for tag in soup.find_all(['div', 'li', 'article', 'section', 'p', 'span', 'h1', 'h2', 'h3', 'h4', 'strong', 'b', 'td']):
             text = tag.get_text(separator=' ').strip()
-            if len(text) > 30:
+            if len(text) > 20:
                 all_blocks.append({
                     'tag': tag,
                     'text': text,
-                    'children': len(tag.find_all())
+                    'html': str(tag)[:500]
                 })
         
-        # 3. Находим повторяющиеся структуры
-        structure_groups = {}
-        for block in all_blocks:
-            signature = f"{len(block['text'])}_{block['children']}"
-            if signature not in structure_groups:
-                structure_groups[signature] = []
-            structure_groups[signature].append(block)
+        # 3. Паттерны для поиска (УНИВЕРСАЛЬНЫЕ, без хардкода)
+        rating_pattern = re.compile(r'\b(\d+\.\d{1,2})\b')
+        year_pattern = re.compile(r'\b(19[0-9]{2}|20[0-9]{2})\b')
+        title_pattern = re.compile(r'[«"]([^«"»]{3,50})[»"]|[А-Я][а-я]+\s+[А-Я][а-я]+|[A-Z][a-z]+\s+[A-Z][a-z]+')
         
-        # 4. Выбираем группы с повторяющимися блоками (≥2)
-        candidate_blocks = []
-        for signature, blocks in structure_groups.items():
-            if len(blocks) >= 2:
-                candidate_blocks.extend(blocks)
+        # 4. Находим блоки с рейтингами, годами, названиями
+        rating_blocks = [b for b in all_blocks if rating_pattern.search(b['text'])]
+        year_blocks = [b for b in all_blocks if year_pattern.search(b['text'])]
+        title_blocks = [b for b in all_blocks if title_pattern.search(b['text'])]
         
-        if not candidate_blocks:
-            candidate_blocks = all_blocks[:40]
+        # 5. Объединяем все блоки (принудительно берём ВСЁ)
+        combined_blocks = list(set(rating_blocks + year_blocks + title_blocks + all_blocks[:50]))
         
-        # 5. Извлекаем данные из каждого блока
-        for block in candidate_blocks[:40]:
+        # 6. Извлекаем данные из КАЖДОГО блока
+        for block in combined_blocks[:60]:
             text = block['text']
             text = re.sub(r'\s+', ' ', text).strip()
             
             if len(text) < 20:
                 continue
             
-            # Извлекаем заголовок
-            lines = text.split('. ')
-            title = lines[0][:150] if lines else text[:100]
+            # Извлекаем рейтинг (любое число с точкой)
+            rating = None
+            rating_match = rating_pattern.search(text)
+            if rating_match:
+                rating = rating_match.group(1)
             
-            # Проверяем, не является ли заголовок датой или цифрой
-            if re.match(r'^[\d\s]+$', title):
-                continue
+            # Извлекаем год (любые 4 цифры)
+            year = None
+            year_match = year_pattern.search(text)
+            if year_match:
+                year = year_match.group(1)
             
-            # Если заголовок слишком длинный — ищем в тегах
-            if len(title) > 100:
-                heading = block['tag'].find(['h1', 'h2', 'h3', 'h4', 'strong', 'b'])
-                if heading:
-                    title = heading.get_text().strip()[:150]
+            # Извлекаем название (в кавычках или два слова с заглавной)
+            title = None
+            title_match = title_pattern.search(text)
+            if title_match:
+                title = title_match.group(1) or title_match.group(2) or title_match.group(3)
+                if title:
+                    title = title.strip()
+            
+            # Если название не нашли — берём первую строку
+            if not title:
+                lines = text.split('. ')
+                title = lines[0][:100] if lines else text[:100]
+                title = re.sub(r'^[\d\s.)-]+', '', title).strip()
             
             # Пропускаем явный мусор
-            if re.search(r'(реклама|промокод|скидка|подпишись|купить|заказать|рассылка|политика конфиденциальности)', title, re.I):
+            if re.search(r'(реклама|промокод|скидка|подпишись|купить|заказать|рассылка|политика|cookie|регистрация|войти)', title, re.I):
                 continue
             
-            # Извлекаем описание
-            desc = ""
-            if len(lines) > 1:
-                desc = '. '.join(lines[1:5])[:500]
-            
-            # Извлекаем год
-            year = extract_year_from_text(text)
-            if not year:
-                year = extract_year_from_text(title)
-            if not year and desc:
-                year = extract_year_from_text(desc)
-            
-            # Извлекаем рейтинг (универсально)
-            rating = extract_rating_from_text(text)
-            if not rating and desc:
-                rating = extract_rating_from_text(desc)
-            
-            # Пропускаем слишком короткие заголовки
             if len(title) < 3:
                 continue
+            
+            # Извлекаем описание (всё, что после названия)
+            desc = ""
+            if title and title in text:
+                parts = text.split(title, 1)
+                if len(parts) > 1:
+                    desc = parts[1][:300]
             
             items.append({
                 'title': title[:200],
                 'description': desc[:500],
                 'year': year,
-                'rating': rating
+                'rating': rating,
+                'source_text': text[:300]
             })
         
-        # Убираем дубликаты по названию
+        # 7. Убираем дубликаты по названию
         seen = set()
         unique_items = []
         for item in items:
@@ -630,10 +603,13 @@ def extract_structured_items(html: str) -> List[Dict]:
                 seen.add(title_lower)
                 unique_items.append(item)
         
-        return unique_items[:40]
+        # 8. Сортируем: сначала с рейтингом, потом с годом
+        unique_items.sort(key=lambda x: (0 if x.get('rating') else 1, 0 if x.get('year') else 2))
+        
+        return unique_items[:50]
         
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка парсинга: {e}")
+        logger.warning(f"⚠️ Ошибка принудительного парсинга: {e}")
     
     return items
 
@@ -900,14 +876,12 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     context = memory.get_context(limit=10)
     context_text = '\n'.join([m.get('content', '') for m in context])
     
-    # Сортируем и фильтруем элементы
-    # 1. Сначала по наличию рейтинга
-    # 2. Затем по актуальности (году)
+    # Сортируем: сначала с рейтингом, потом по актуальности
     current_year = now().year
     sorted_items = sorted(
         items,
         key=lambda x: (
-            1 if x.get('rating') else 2,
+            0 if x.get('rating') else 1,
             abs(current_year - int(x.get('year', current_year))) if x.get('year') else 999
         )
     )[:30]
@@ -1190,9 +1164,10 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (УЛУЧШЕННЫЙ ПАРСИНГ)")
+    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (УНИВЕРСАЛЬНАЯ ВЕРСИЯ)")
     logger.info("🎯 Целевая уверенность: 90%")
-    logger.info("📄 Максимум страниц за итерацию: 12")
+    logger.info("📄 Страниц за итерацию: 12")
+    logger.info("🔍 Парсинг: принудительный, без хардкода")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
