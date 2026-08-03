@@ -1,9 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ
-#  С СЕМАНТИЧЕСКОЙ ПАМЯТЬЮ, ГРАФОМ ЗНАНИЙ, УНИВЕРСАЛЬНЫМ
-#  ИЗВЛЕЧЕНИЕМ ФАКТОВ И САМОДИАГНОСТИКОЙ
+#  С ЛЁГКОЙ СТАТИЧЕСКОЙ МОДЕЛЬЮ (model2vec) ВМЕСТО sentence-transformers
 #  БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК, БЕЗ ВОЗМОЖНОСТИ ОБМАНУТЬ
-#  ВСЕГДА ЕСТЬ ИНТЕРНЕТ, СЕМАНТИКА, ПАМЯТЬ, ГРАФ ЗНАНИЙ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -24,22 +22,22 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 
-load_dotenv()
-
-# ═══════════════════════════════════════════════════════════════════
-#  СЕМАНТИЧЕСКАЯ МОДЕЛЬ — ОБЯЗАТЕЛЬНАЯ ЧАСТЬ
-# ═══════════════════════════════════════════════════════════════════
-
+# === ЛЁГКАЯ ЗАМЕНА sentence-transformers ===
+# Вместо 3-4 ГБ PyTorch — лёгкая статическая модель (~50 МБ)
 try:
-    from sentence_transformers import SentenceTransformer
     import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity
+    from model2vec import StaticModel
     SEMANTIC_AVAILABLE = True
-except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.info("✅ model2vec загружен (лёгкая статическая модель)")
+except ImportError as e:
     SEMANTIC_AVAILABLE = False
-    logging.error("❌ КРИТИЧЕСКАЯ ОШИБКА: sentence-transformers не установлен")
-    logging.error("❌ Установите: pip install sentence-transformers")
+    logging.error("❌ КРИТИЧЕСКАЯ ОШИБКА: model2vec не установлен")
+    logging.error("❌ Установите: pip install model2vec")
     sys.exit(1)
+
+load_dotenv()
 
 # ═══════════════════════════════════════════════════════════════════
 #  ЛОГГЕР
@@ -95,7 +93,7 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
 logger.info(f"🔑 APISERPENT: {'✅' if APISERPENT_API_KEY else '❌'}")
 logger.info(f"🔑 SERPER: {'✅' if SERPER_API_KEY else '❌'}")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-logger.info(f"🧠 Семантическая модель: ✅")
+logger.info(f"🧠 Семантическая модель: ✅ (model2vec, лёгкая)")
 logger.info(f"🤖 Модель: {MODEL_DEFAULT}")
 
 def now():
@@ -105,11 +103,20 @@ def get_current_date():
     return now().strftime("%d.%m.%Y")
 
 # ═══════════════════════════════════════════════════════════════════
-#  СЕМАНТИЧЕСКАЯ МОДЕЛЬ
+#  СЕМАНТИЧЕСКАЯ МОДЕЛЬ (model2vec — лёгкая статическая)
 # ═══════════════════════════════════════════════════════════════════
 
-semantic_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-logger.info("✅ Семантическая модель загружена")
+# Загружаем лёгкую статическую модель
+# Можно заменить на любую другую с Hugging Face
+MODEL_NAME = "cointegrated/rubert-tiny2-embedding-static"  # Лёгкая русская модель
+
+try:
+    semantic_model = StaticModel.from_pretrained(MODEL_NAME)
+    logger.info(f"✅ Семантическая модель загружена: {MODEL_NAME}")
+except Exception as e:
+    logger.error(f"❌ Ошибка загрузки модели: {e}")
+    logger.error("❌ Попробуйте другую модель или проверьте интернет")
+    sys.exit(1)
 
 def is_important_semantic(text: str, threshold: float = 0.5) -> bool:
     """Проверяет, есть ли в тексте важная информация (по смыслу)"""
@@ -204,7 +211,6 @@ class KnowledgeGraph:
         return list(self.graph.keys())
     
     def find_similar_facts(self, text: str) -> List[str]:
-        """Находит факты, похожие на текст"""
         words = set(re.findall(r'\b\w{3,}\b', text.lower()))
         similar = []
         for fact in self.graph.keys():
@@ -261,7 +267,6 @@ class SuperMemory:
         self.save()
     
     def _smart_compress(self, messages):
-        """Сжатие по смыслу"""
         for msg in messages:
             content = msg.get('content', '')
             if len(content) < 20:
@@ -276,7 +281,6 @@ class SuperMemory:
             self.episodic = self.episodic[-200:]
     
     def _extract_universal_facts(self, text):
-        """Извлекает любые факты"""
         patterns = [
             r'([А-Яа-яA-Za-z][^.!?]{10,100})\s+(?:—|–|-)\s+([^.!?]{10,100})',
             r'([А-Яа-яA-Za-z][^.!?]{10,100})\s+(?:это|является)\s+([^.!?]{10,100})',
@@ -322,7 +326,6 @@ class SuperMemory:
                 )[:100]
     
     def _update_knowledge_graph(self, text):
-        """Обновляет граф знаний"""
         facts = self._extract_universal_facts(text)
         for fact in facts:
             self.knowledge_graph.add_fact(fact)
@@ -342,7 +345,6 @@ class SuperMemory:
             profile_text = f"👤 О пользователе: {', '.join([f'{k}: {v}' for k, v in self.profile.items() if k != 'updated'])}"
             ctx.append({"role": "system", "content": profile_text})
         
-        # Добавляем связанные факты из графа знаний
         if self.knowledge_graph.get_all_facts():
             facts = self.knowledge_graph.get_all_facts()[:5]
             if facts:
@@ -351,7 +353,6 @@ class SuperMemory:
         return ctx
     
     def memory_health_check(self) -> Dict:
-        """Диагностика памяти"""
         return {
             'short_term': len(self.short_term),
             'profile': len(self.profile),
@@ -408,13 +409,11 @@ def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower())[:100]
 
 def clean_html_text(html: str) -> str:
-    # Сохраняем списки
     lists = []
     list_matches = re.findall(r'(?:^|\n)\s*([•\-*\d+.]\s*[^\n]{10,})', html, re.MULTILINE)
     if list_matches:
         lists = [f"  • {l.strip()}" for l in list_matches[:10]]
     
-    # Очищаем HTML
     html = re.sub(r'<ul[^>]*>', '\n', html, re.I)
     html = re.sub(r'<ol[^>]*>', '\n', html, re.I)
     html = re.sub(r'</li>', '\n', html, re.I)
@@ -428,7 +427,6 @@ def clean_html_text(html: str) -> str:
     html = re.sub(r'\{[^}]*\}', '', html)
     html = re.sub(r'function\s*\([^)]*\)\s*\{[^}]*\}', '', html)
     
-    # Извлекаем осмысленные предложения
     sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', html)
     result = ' '.join(sentences[:25])
     
@@ -642,7 +640,6 @@ async def ask_deepseek(messages, temperature=DEEPSEEK_TEMPERATURE, max_tokens=MA
 # ═══════════════════════════════════════════════════════════════════
 
 def analyze_query(query: str) -> Dict:
-    """Универсальный анализ запроса — без хардкода"""
     words = query.lower().split()
     stop = {'как', 'что', 'это', 'для', 'без', 'на', 'в', 'с', 'и', 'а', 'но', 'или', 'если', 'то', 'чем', 'кто'}
     keywords = [w for w in words if w not in stop and len(w) > 2]
@@ -677,7 +674,6 @@ def analyze_query(query: str) -> Dict:
 # ═══════════════════════════════════════════════════════════════════
 
 def generate_variants(query: str, analysis: Dict) -> List[str]:
-    """Генерирует универсальные варианты поиска"""
     variants = [query]
     keywords = analysis['keywords']
     
@@ -717,7 +713,6 @@ def generate_variants(query: str, analysis: Dict) -> List[str]:
 # ═══════════════════════════════════════════════════════════════════
 
 def is_valid_result(result: Dict) -> bool:
-    """Проверяет, является ли результат полезным"""
     title = result.get('title', '')
     snippet = result.get('snippet', '')
     url = result.get('link', '')
@@ -735,7 +730,6 @@ def is_valid_result(result: Dict) -> bool:
     return True
 
 def score_relevance(result: Dict, query: str) -> float:
-    """Оценивает релевантность результата"""
     title = result.get('title', '')
     snippet = result.get('snippet', '')
     text = (title + ' ' + snippet).lower()
@@ -750,11 +744,10 @@ def score_relevance(result: Dict, query: str) -> float:
     return overlap / len(query_words) if query_words else 0.0
 
 # ═══════════════════════════════════════════════════════════════════
-#  УМНЫЙ ПОИСК (ИЩЕТ, ПОКА НЕ НАЙДЁТ 5 ХОРОШИХ)
+#  УМНЫЙ ПОИСК
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_until_good(query: str, min_good: int = 5) -> List[Dict]:
-    """Ищет, пока не найдёт min_good релевантных результатов"""
     logger.info(f"🔍 Нужно найти {min_good} релевантных источников")
     
     analysis = analyze_query(query)
@@ -796,7 +789,6 @@ async def search_until_good(query: str, min_good: int = 5) -> List[Dict]:
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_pages_fast(results: List[Dict]) -> List[Dict]:
-    """Быстрая загрузка страниц"""
     if not results:
         return []
     
@@ -928,7 +920,7 @@ def format_confidence(confidence: Dict) -> str:
     return result
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА НА ОТКАЗ (ЖЁСТКАЯ)
+#  ПРОВЕРКА НА ОТКАЗ
 # ═══════════════════════════════════════════════════════════════════
 
 def has_meaningful_content(text: str) -> bool:
@@ -1059,33 +1051,27 @@ async def search_and_answer_final(uid: int, user_message: str, history: List[Dic
     
     analysis = analyze_query(user_message)
     
-    # Простые запросы — мгновенный ответ
     if analysis['is_greeting']:
         return "👋 **Привет!** Я на связи. Задавай вопрос — найду ответ в интернете."
     if analysis['is_test']:
         return "✅ **Тест пройден!** Я работаю нормально. Задавай вопрос."
     
-    # Ищем релевантные источники
     results = await search_until_good(user_message, min_good=5)
     
     if not results:
-        # Если интернет пуст — используем знания
         return "⚠️ В интернете не нашлось релевантной информации. Попробуйте переформулировать вопрос."
     
-    # Загружаем страницы
     pages = await fetch_pages_fast(results)
     
     if not pages:
         return "⚠️ Не удалось загрузить страницы. Попробуйте позже."
     
-    # Собираем данные
     data = {
         'sources': pages,
         'raw_text': "\n\n".join([p.get('text', '') for p in pages[:3]]),
         'structures': {}
     }
     
-    # Формируем промпт
     prompt = f"""
 ⚠️ **ЗАПРОС:** {user_message}
 
@@ -1330,7 +1316,7 @@ def main():
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info(f"🧠 Семантическая модель: ✅")
+    logger.info(f"🧠 Семантическая модель: ✅ (model2vec, лёгкая)")
     logger.info(f"🤖 Модель: {MODEL_DEFAULT}")
     logger.info("⚡️ ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ — БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК")
     
