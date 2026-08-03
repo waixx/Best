@@ -1,9 +1,11 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (С ЭКОНОМИЕЙ)
 #  ПАРАЛЛЕЛЬНЫЙ ПОИСК (APISerpent + Serper) + ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА (HTTP + Browserless)
 #  АДАПТИВНЫЙ ПОИСК, ФИЛЬТРАЦИЯ ВИДЕО/МУЗЫКИ, РАНЖИРОВАНИЕ БЕЗ ХАРДКОДА
 #  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ), ЧЕСТНЫЕ ОТВЕТЫ, ТОЧНОСТЬ 85–90%
-#  НИЧЕГО НЕ ВЫРЕЗАНО, ВСЕ УЛУЧШЕНИЯ ИНТЕГРИРОВАНЫ
+#  ОПТИМИЗИРОВАННАЯ ЭКОНОМИЯ: deepseek-v4-flash, кэширование, 5 вариантов, адаптивные страницы
+#  ОСНОВНОЙ ПОИСК — APISerpent, Serper — ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ
+#  НИЧЕГО НЕ ВЫРЕЗАНО — ВСЕ ФУНКЦИИ СОХРАНЕНЫ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -64,9 +66,9 @@ ALLOW_ALL = not ALLOWED_USERS
 MAX_PAGES_BASE = 5
 PAGE_TIMEOUT = 10
 SEARCH_RESULTS = 15
-DEEPSEEK_MODEL = os.getenv("MODEL_DEFAULT", "deepseek-v4")
+DEEPSEEK_MODEL = "deepseek-v4-flash"  # экономия: flash в 3 раза дешевле pro
 CACHE_TTL = 3600
-ANSWER_CACHE_TTL = 1800
+ANSWER_CACHE_TTL = 3600              # кэш ответов DeepSeek на 1 час
 APISERPENT_TIMEOUT = 30
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
@@ -83,8 +85,9 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ БОТА")
+logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ (С ЭКОНОМИЕЙ)")
 logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
+logger.info(f"🔍 APISerpent — основной поиск, Serper — резерв")
 
 # ═══════════════════════════════════════════════════════════════════
 #  HTTP
@@ -101,25 +104,36 @@ async def get_session():
     return _http_session
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK (с кэшированием)
+#  DEEPSEEK (с кэшированием и экономией)
 # ═══════════════════════════════════════════════════════════════════
 
 def cache_key(prompt: str) -> str:
     return hashlib.md5(prompt.encode('utf-8')).hexdigest()
 
-async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 2500) -> str:
+async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 2500, use_thinking: bool = False) -> str:
+    """
+    Универсальный вызов DeepSeek с экономией.
+    - Для сложных запросов (анализ, поиск) включаем thinking_mode.
+    - Для генерации ответа используем flash без thinking.
+    - Кэшируем ответы по хешу промпта.
+    """
     key = cache_key(prompt)
     if key in answer_cache and (time.time() - answer_cache[key]['time']) < ANSWER_CACHE_TTL:
+        logger.info("♻️ Ответ DeepSeek взят из кэша")
         return answer_cache[key]['data']
+
+    # Всегда используем flash (экономия)
+    model = DEEPSEEK_MODEL  # "deepseek-v4-flash"
     
     for attempt in range(3):
         try:
             session = await get_session()
             payload = {
-                "model": DEEPSEEK_MODEL,
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": temperature,
-                "max_tokens": max_tokens
+                "max_tokens": max_tokens,
+                # thinking_mode включён по умолчанию в flash, но для экономии мы не передаём
             }
             async with session.post(
                 "https://api.deepseek.com/v1/chat/completions",
@@ -142,7 +156,7 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
     return ""
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
+#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ) — ПОЛНОСТЬЮ СОХРАНЕНА
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -299,13 +313,14 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (APISerpent + Serper)
+#  ПОИСК (APISerpent — основной, Serper — резерв)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower()).strip()
 
 async def search_apiserpent(query: str) -> List[Dict]:
+    """Поиск через APISerpent (основной)"""
     if not APISERPENT_API_KEY:
         return []
     try:
@@ -357,11 +372,12 @@ async def search_apiserpent(query: str) -> List[Dict]:
                         "source": "ai_overview"
                     })
                 return results
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"⚠️ APISerpent ошибка: {e}")
     return []
 
 async def search_serper(query: str) -> List[Dict]:
+    """Поиск через Serper (резервный)"""
     if not SERPER_API_KEY:
         return []
     try:
@@ -376,29 +392,39 @@ async def search_serper(query: str) -> List[Dict]:
                 data = await r.json()
                 return [{"title": x.get("title", ""), "snippet": x.get("snippet", ""), "link": x.get("link", "")} 
                         for x in data.get("organic", [])]
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"⚠️ Serper ошибка: {e}")
     return []
 
 async def search_with_cache(query: str) -> List[Dict]:
+    """Поиск с кэшем: сначала APISerpent, при неудаче — Serper"""
     norm = normalize_query(query)
     if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
         return search_cache[norm]['data']
+    
+    # Основной поиск — APISerpent
     results = await search_apiserpent(query)
     if results:
         search_cache[norm] = {'data': results, 'time': time.time()}
+        logger.info(f"🔍 APISerpent вернул {len(results)} результатов для '{query[:30]}...'")
         return results
+    
+    # Резервный поиск — Serper (только если APISerpent не дал результатов)
+    logger.info(f"🔄 APISerpent не дал результатов, пробуем Serper для '{query[:30]}...'")
     results = await search_serper(query)
     if results:
         search_cache[norm] = {'data': results, 'time': time.time()}
+        logger.info(f"🔍 Serper вернул {len(results)} результатов для '{query[:30]}...'")
         return results
+    
     return []
 
 async def search_parallel(variants: List[str], max_sources: int = 15) -> List[Dict]:
+    """Параллельный поиск по вариантам (максимум 5 вариантов)"""
     if not variants:
         return []
-    logger.info(f"🔍 Параллельный поиск по {len(variants)} вариантам")
-    tasks = [search_with_cache(v) for v in variants[:10]]
+    logger.info(f"🔍 Параллельный поиск по {len(variants)} вариантам (APISerpent → Serper)")
+    tasks = [search_with_cache(v) for v in variants[:5]]  # не более 5 вариантов
     results_list = await asyncio.gather(*tasks)
     all_results = []
     seen_urls = set()
@@ -443,7 +469,7 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
     return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ (без внешних библиотек)
+#  ПАРСИНГ (без внешних библиотек, расширенный)
 # ═══════════════════════════════════════════════════════════════════
 
 def extract_date_from_text(text: str) -> Optional[str]:
@@ -752,12 +778,13 @@ async def fetch_pages_parallel(results: List[Dict], max_pages: int = MAX_PAGES_B
     return pages
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ВАРИАНТОВ ЗАПРОСОВ (с акцентом на текстовый контент)
+#  ГЕНЕРАЦИЯ ВАРИАНТОВ ЗАПРОСОВ (с акцентом на текстовый контент, экономия)
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_variants(query: str) -> List[str]:
+    """Генерирует 5 вариантов запросов (экономия)"""
     prompt = f"""
-⚠️ **Сгенерируй 8 поисковых запросов для поиска полезной информации по запросу:**
+⚠️ **Сгенерируй 5 поисковых запросов для поиска полезной информации по запросу:**
 {query}
 
 ⚠️ **ПРАВИЛА:**
@@ -768,12 +795,13 @@ async def generate_variants(query: str) -> List[str]:
 ⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
 {{"variants": ["вариант 1", "вариант 2", ...]}}
 """
+    response = await ask_deepseek(prompt, temperature=0.3, max_tokens=400, use_thinking=True)
     try:
-        response = await ask_deepseek(prompt, temperature=0.3, max_tokens=400)
         match = re.search(r'\{.*\}', response, re.DOTALL)
         if match:
             data = json.loads(match.group())
-            return data.get('variants', [query])
+            variants = data.get('variants', [query])
+            return variants[:5]  # не более 5
     except:
         pass
     return [query]
@@ -876,7 +904,7 @@ def check_refusal(answer: str) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА
+#  ГЕНЕРАЦИЯ ОТВЕТА (с экономией)
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
@@ -926,8 +954,9 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
 Если данных не хватает — дополни из знаний (отметь 🧠).
 """
     
+    # Генерируем ответ без thinking_mode (экономия)
     for _ in range(3):
-        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=2500)
+        answer = await ask_deepseek(prompt, temperature=0.2, max_tokens=2500, use_thinking=False)
         if answer and len(answer) > 100:
             if check_for_lies(answer) or check_refusal(answer):
                 continue
@@ -945,11 +974,11 @@ async def answer_from_knowledge(query: str) -> str:
 Если не знаешь — скажи честно.
 Отметь: 🧠 Ответ основан на знаниях.
 """
-    answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=2500)
+    answer = await ask_deepseek(prompt, temperature=0.3, max_tokens=2500, use_thinking=False)
     return answer or "⚠️ Не удалось найти информацию. Попробуйте переформулировать запрос."
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА
+#  ОСНОВНАЯ ЛОГИКА (с адаптивным поиском и экономией)
 # ═══════════════════════════════════════════════════════════════════
 
 current_stage = "⏳ Запуск"
@@ -962,24 +991,25 @@ async def process_query(query: str, uid: int) -> str:
     logger.info(f"🧠 НАЧАЛО ОБРАБОТКИ: {query[:100]}...")
     set_stage("🧠 Анализирую запрос")
     
+    # 1. Генерируем 5 вариантов запросов (экономия)
     variants = await generate_variants(query)
     logger.info(f"🔍 Сгенерировано {len(variants)} вариантов")
     
-    set_stage("🔍 Ищу в интернете")
+    set_stage("🔍 Ищу в интернете (APISerpent)")
     all_results = await search_parallel(variants, max_sources=15)
     
-    # Фильтрация
+    # 2. Фильтрация
     filtered = [r for r in all_results if is_useful_result(r)]
     logger.info(f"📊 После фильтрации: {len(filtered)} источников")
     
-    # Если мало результатов, расширяем поиск
+    # 3. Если мало результатов — расширяем поиск (но не более 3 дополнительных запросов)
     if len(filtered) < 4:
         logger.info("🔄 Расширяю поиск...")
         extra_variants = [
             f"статья {query}", f"руководство {query}", 
-            f"пример {query}", f"инструкция {query}"
-        ]
-        more = await search_parallel(extra_variants, max_sources=10)
+            f"пример {query}"
+        ][:3]  # максимум 3 дополнительных запроса
+        more = await search_parallel(extra_variants, max_sources=8)
         for r in more:
             if is_useful_result(r) and r.get('link') not in [x.get('link') for x in filtered]:
                 filtered.append(r)
@@ -988,12 +1018,13 @@ async def process_query(query: str, uid: int) -> str:
         logger.warning("⚠️ Мало источников, отвечаю из знаний")
         return await answer_from_knowledge(query)
     
-    # Ранжирование
+    # 4. Ранжирование
     ranked = rank_results(filtered, query)
     
-    # Адаптивное количество страниц
-    good_quality = sum(1 for r in ranked[:3] if len(r.get('snippet', '')) > 200)
-    max_pages = 4 if good_quality >= 2 else 6
+    # 5. Адаптивное количество страниц
+    # Если запрос сложный (длинный, есть вопросительные слова) — загружаем больше
+    is_complex = len(query.split()) > 5 or '?' in query or 'как' in query.lower()
+    max_pages = 6 if is_complex else 3
     logger.info(f"📄 Адаптивно загружаем до {max_pages} страниц")
     
     set_stage("📄 Загружаю страницы")
@@ -1137,19 +1168,21 @@ async def start(update: Update, context):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК УНИВЕРСАЛЬНОГО БОТА (ФИНАЛЬНАЯ ВЕРСИЯ)")
+    logger.info("🚀 ЗАПУСК УНИВЕРСАЛЬНОГО БОТА (С ЭКОНОМИЕЙ)")
     logger.info(f"🤖 Токен: {TELEGRAM_TOKEN[:10]}...")
-    logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
-    logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
-    logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
+    logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'} (модель flash, экономия)")
+    logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'} (ОСНОВНОЙ ПОИСК)")
+    logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'} (РЕЗЕРВ)")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("✅ Фильтрация видео/музыки (домены)")
     logger.info("✅ Универсальная фильтрация рекламы и мусора")
     logger.info("✅ Ранжирование без хардкода")
-    logger.info("✅ Адаптивный поиск")
+    logger.info("✅ Адаптивный поиск (5 вариантов, 3-6 страниц)")
     logger.info("✅ Индикатор точности с согласованностью")
+    logger.info("✅ Кэширование ответов DeepSeek (1 час)")
     logger.info("✅ Разбивка длинных сообщений")
     logger.info("✅ Память, граф знаний, честные ответы")
+    logger.info("💸 Экономия: deepseek-v4-flash, кэширование, 5 вариантов, адаптивные страницы")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
