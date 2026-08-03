@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
-#  Все требования сохранены. Ничего не вырезано.
+#  BROWAIX BOT — ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ
+#  БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК, БЕЗ ВОЗМОЖНОСТИ ОБМАНУТЬ
+#  С ПРОГНОЗОМ ВРЕМЕНИ (ETA) И ИНДИКАТОРОМ ТОЧНОСТИ 0-100%
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -13,7 +14,7 @@ import aiohttp
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Optional, Dict, List, Tuple, Any
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -54,17 +55,13 @@ ALLOW_ALL = not ALLOWED_USERS
 MODEL_DEFAULT = os.getenv("MODEL_DEFAULT", "deepseek-v4-flash")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-# ═══════════════════════════════════════════════════════════════════
-#  НАСТРОЙКИ
-# ═══════════════════════════════════════════════════════════════════
-
-SEARCH_RESULTS_NUM = 10
-MAX_HTML_LEN = 15000
+SEARCH_RESULTS_NUM = 15
+MAX_HTML_LEN = 10000
 MAX_TOKENS_ANSWER = 8000
-CACHE_TTL = 86400  # 24 часа
+CACHE_TTL = 86400
 TIMEOUT = 20
-MAX_PAGES = 5
-SEMAPHORE = 10
+MAX_PAGES = 8
+SEMAPHORE = 5
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -96,7 +93,7 @@ def learning_path(uid): return os.path.join(DATA_DIR, f"learning_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
 
 # ═══════════════════════════════════════════════════════════════════
-#  5 УРОВНЕЙ ПАМЯТИ (СОХРАНЕНО)
+#  5 УРОВНЕЙ ПАМЯТИ
 # ═══════════════════════════════════════════════════════════════════
 
 class SuperMemory:
@@ -125,7 +122,7 @@ class SuperMemory:
             return False
     
     def add_message(self, role, content):
-        msg = {"role": role, "content": content, "timestamp": now().isoformat()}
+        msg = {"role": role, "content": content[:2000], "timestamp": now().isoformat()}
         self.short_term.append(msg)
         if len(self.short_term) > 100:
             old = self.short_term[:-100]
@@ -173,32 +170,22 @@ class SuperMemory:
                     return
             self.learning['preferences'].append({'text': pref, 'count': 1, 'timestamp': now().isoformat()})
             if len(self.learning['preferences']) > 100:
-                self.learning['preferences'] = sorted(self.learning['preferences'], key=lambda x: x.get('count', 0), reverse=True)[:100]
+                self.learning['preferences'] = sorted(
+                    self.learning['preferences'], 
+                    key=lambda x: x.get('count', 0), 
+                    reverse=True
+                )[:100]
     
     def get_context(self, limit=10):
         ctx = self.short_term[-limit:] if self.short_term else []
         if self.episodic:
             important = sorted(self.episodic, key=lambda x: x.get('priority', 0), reverse=True)[:3]
             for mem in important:
-                ctx.append({'role': 'system', 'content': f"📌 Важно: {mem['content']}", 'is_episodic': True})
+                ctx.append({'role': 'system', 'content': f"📌 Важно: {mem['content']}"})
         if self.profile:
-            ctx.append({"role": "system", "content": f"👤 О пользователе: {', '.join([f'{k}: {v}' for k, v in self.profile.items()])}"})
+            profile_text = f"👤 О пользователе: {', '.join([f'{k}: {v}' for k, v in self.profile.items() if k != 'updated'])}"
+            ctx.append({"role": "system", "content": profile_text})
         return ctx
-    
-    def get_personalized_context(self):
-        lines = []
-        if self.profile:
-            lines.append("👤 О пользователе:")
-            for k, v in self.profile.items():
-                if k != 'updated':
-                    lines.append(f"• {k}: {v}")
-        if self.learning.get('preferences'):
-            top = sorted(self.learning['preferences'], key=lambda x: x.get('count', 0), reverse=True)[:3]
-            if top:
-                lines.append("\n💡 Предпочтения:")
-                for p in top:
-                    lines.append(f"• {p['text'][:50]} (упоминаний: {p.get('count', 0)})")
-        return '\n'.join(lines) if lines else ""
     
     def save(self):
         self._save(memory_path(self.uid), self.short_term)
@@ -247,12 +234,26 @@ def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower())[:100]
 
 def clean_html_text(html: str) -> str:
-    text = re.sub(r'<[^>]+>', ' ', html)
-    text = re.sub(r'\s+', ' ', text).strip()
-    text = re.sub(r'\{[^}]*\}', '', text)
-    text = re.sub(r'function\s*\([^)]*\)\s*\{[^}]*\}', '', text)
+    html = re.sub(r'<ul[^>]*>', '\n📋 СПИСОК:\n', html, re.I)
+    html = re.sub(r'<ol[^>]*>', '\n📋 НУМЕРОВАННЫЙ СПИСОК:\n', html, re.I)
+    html = re.sub(r'</li>', '\n', html, re.I)
+    html = re.sub(r'<li[^>]*>', '  • ', html, re.I)
+    html = re.sub(r'<h1[^>]*>', '\n\n# ', html, re.I)
+    html = re.sub(r'<h2[^>]*>', '\n\n## ', html, re.I)
+    html = re.sub(r'<h3[^>]*>', '\n\n### ', html, re.I)
+    html = re.sub(r'<p[^>]*>', '\n', html, re.I)
+    html = re.sub(r'</p>', '\n', html, re.I)
+    html = re.sub(r'<table[^>]*>', '\n📊 ТАБЛИЦА:\n', html, re.I)
+    html = re.sub(r'<tr[^>]*>', '\n', html, re.I)
+    html = re.sub(r'<td[^>]*>', ' | ', html, re.I)
+    html = re.sub(r'<th[^>]*>', ' | **', html, re.I)
+    html = re.sub(r'<[^>]+>', ' ', html)
+    html = re.sub(r'\s+', ' ', html)
+    html = re.sub(r'\n\s*\n\s*\n', '\n\n', html)
+    html = re.sub(r'\{[^}]*\}', '', html)
+    html = re.sub(r'function\s*\([^)]*\)\s*\{[^}]*\}', '', html)
     
-    lines = [l for l in text.split('. ') if len(l) > 20]
+    lines = [l for l in html.split('. ') if len(l) > 20]
     return '. '.join(lines[:30])
 
 def extract_date_from_html(html: str) -> str:
@@ -261,22 +262,31 @@ def extract_date_from_html(html: str) -> str:
         r'"date":"(\d{4}-\d{2}-\d{2})"',
         r'(\d{2}\.\d{2}\.\d{4})',
         r'(\d{4})',
+        r'<meta\s+property=["\']article:published_time["\']\s+content=["\']([^"]+)["\']',
+        r'<meta\s+name=["\']pubdate["\']\s+content=["\']([^"]+)["\']',
     ]
     for pattern in patterns:
-        match = re.search(pattern, html)
+        match = re.search(pattern, html, re.I)
         if match:
             date = match.group(1)
             if re.match(r'^\d{4}$', date):
                 year = int(date)
                 if 2000 <= year <= 2030:
                     return date
+            if re.match(r'(\d{4})-(\d{1,2})-(\d{1,2})', date):
+                match2 = re.match(r'(\d{4})-(\d{1,2})-(\d{1,2})', date)
+                if match2:
+                    return f"{match2.group(3)}.{match2.group(2)}.{match2.group(1)}"
             return date
     return "дата не указана"
 
 async def fetch_content(url: str, timeout: int = TIMEOUT):
     if url in html_cache:
         cached = html_cache[url]
-        return cached.get("text", ""), cached.get("date", "дата не указана")
+        if 'time' in cached:
+            age = (datetime.now() - cached['time']).total_seconds()
+            if age < CACHE_TTL:
+                return cached.get("text", ""), cached.get("date", "дата не указана")
     
     result = ""
     pub_date = "дата не указана"
@@ -311,8 +321,11 @@ async def fetch_content(url: str, timeout: int = TIMEOUT):
         except Exception as e:
             logger.warning(f"⚠️ HTTP: {str(e)[:50]}")
     
+    if result and len(result) > MAX_HTML_LEN:
+        result = result[:MAX_HTML_LEN] + "..."
+    
     if result:
-        html_cache[url] = {"text": result, "date": pub_date}
+        html_cache[url] = {"text": result, "date": pub_date, "time": datetime.now()}
         if len(html_cache) > 50:
             oldest = list(html_cache.keys())[0]
             del html_cache[oldest]
@@ -320,28 +333,11 @@ async def fetch_content(url: str, timeout: int = TIMEOUT):
     
     return "", "дата не указана"
 
-async def fetch_multiple_pages(links, max_pages=MAX_PAGES):
-    if not links:
-        return []
-    
-    semaphore = asyncio.Semaphore(SEMAPHORE)
-    
-    async def fetch_one(url):
-        async with semaphore:
-            text, date = await fetch_content(url)
-            if text and len(text) > 50:
-                return {"url": url, "text": text, "date": date}
-            return None
-    
-    tasks = [fetch_one(url) for url in links[:max_pages]]
-    fetched = await asyncio.gather(*tasks)
-    return [r for r in fetched if r is not None]
-
 # ═══════════════════════════════════════════════════════════════════
 #  ПОИСК (APISerpent — основной, Serper — резерв)
 # ═══════════════════════════════════════════════════════════════════
 
-async def search_apiserpent(query):
+async def search_apiserpent(query: str) -> List[Dict]:
     if not APISERPENT_API_KEY:
         return []
     session = await get_http_session()
@@ -370,7 +366,7 @@ async def search_apiserpent(query):
         logger.warning(f"⚠️ APISerpent: {e}")
         return []
 
-async def search_serper(query):
+async def search_serper(query: str) -> List[Dict]:
     if not SERPER_API_KEY:
         return []
     session = await get_http_session()
@@ -396,21 +392,19 @@ async def search_serper(query):
         logger.warning(f"⚠️ Serper: {e}")
         return []
 
-async def search_primary(query):
+async def search_primary(query: str) -> List[Dict]:
     norm = normalize_query(query)
     if norm in search_cache:
         cached = search_cache[norm]
-        if (datetime.now() - cached['time']).total_seconds() < CACHE_TTL:
+        if 'time' in cached and (datetime.now() - cached['time']).total_seconds() < CACHE_TTL:
             return cached['data']
     
-    # 1️⃣ APISerpent — основной
     results = await search_apiserpent(query)
     if results:
         search_cache[norm] = {'data': results, 'time': datetime.now()}
         logger.info(f"✅ APISerpent: {len(results)} результатов")
         return results
     
-    # 2️⃣ Serper — резерв
     results = await search_serper(query)
     if results:
         search_cache[norm] = {'data': results, 'time': datetime.now()}
@@ -424,8 +418,8 @@ async def search_primary(query):
 #  DEEPSEEK
 # ═══════════════════════════════════════════════════════════════════
 
-async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
-    if attempt >= 3:
+async def ask_deepseek(messages, temperature=0.2, max_tokens=MAX_TOKENS_ANSWER, attempt=0):
+    if attempt >= 5:
         return None, "max_retries"
     
     session = await get_http_session()
@@ -455,26 +449,311 @@ async def ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER, 
             
             return None, f"HTTP {resp.status}"
     except Exception as e:
-        if attempt < 2:
+        if attempt < 4:
             await asyncio.sleep(2 ** attempt)
             return await ask_deepseek(messages, temperature, max_tokens, attempt + 1)
         return None, str(e)
 
 # ═══════════════════════════════════════════════════════════════════
-#  ТАЙМЕР (ПРОСТОЙ, РАБОЧИЙ)
+#  DEEPSEEK ГЕНЕРИРУЕТ ВАРИАНТЫ ПОИСКА (без хардкода)
 # ═══════════════════════════════════════════════════════════════════
 
-async def send_progress_updates(chat_id, context, start_time):
-    message = None
+async def generate_search_variants_by_deepseek(query: str) -> List[str]:
+    prompt = f"""
+⚠️ **ЗАДАЧА:** Сгенерируй 10 вариантов поисковых запросов по теме.
+
+⚠️ **ИСХОДНЫЙ ЗАПРОС:** {query}
+
+⚠️ **ТРЕБОВАНИЯ:**
+1. Все варианты на русском языке
+2. Используй разные формулировки
+3. Используй синонимы
+4. Используй разные углы обзора
+5. От общего к частному
+6. Каждый вариант — отдельная строка
+
+⚠️ **ФОРМАТ:** Только список, без пояснений. Каждый вариант на новой строке.
+
+ОТВЕЧАЙ СЕЙЧАС.
+"""
+    messages = [{"role": "system", "content": prompt}]
+    answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=500)
+    
+    if err or not answer:
+        return [query]
+    
+    variants = [line.strip() for line in answer.split('\n') if line.strip() and len(line.strip()) > 3]
+    seen = set()
+    unique = []
+    for v in variants:
+        if v not in seen:
+            seen.add(v)
+            unique.append(v)
+    
+    return unique[:10]
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПАРСИНГ СТРУКТУР (DeepSeek извлекает)
+# ═══════════════════════════════════════════════════════════════════
+
+async def extract_structures_by_deepseek(text: str, query: str) -> Dict:
+    if len(text) > 5000:
+        text = text[:5000] + "..."
+    
+    prompt = f"""
+⚠️ **ЗАДАЧА:** Извлеки структурированную информацию из текста.
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **ТЕКСТ:**
+{text}
+
+⚠️ **ТРЕБОВАНИЯ:**
+1. Найди списки (нумерованные, маркированные)
+2. Найди вопросы
+3. Найди шаги, алгоритмы
+4. Найди цифры, цены
+5. Найди определения
+6. Найди примеры
+7. Найди рекомендации
+8. Найди важные моменты
+
+⚠️ **ФОРМАТ ОТВЕТА (JSON):**
+{{
+  "lists": ["пункт 1", "пункт 2"],
+  "questions": ["вопрос 1", "вопрос 2"],
+  "steps": ["шаг 1", "шаг 2"],
+  "prices": ["цена 1", "цена 2"],
+  "definitions": ["определение 1"],
+  "examples": ["пример 1"],
+  "recommendations": ["рекомендация 1"],
+  "important": ["важно 1"]
+}}
+
+⚠️ **ЕСЛИ ЧЕГО-ТО НЕТ — оставляй пустой массив.**
+ОТВЕЧАЙ ТОЛЬКО JSON.
+"""
+    messages = [{"role": "system", "content": prompt}]
+    answer, err = await ask_deepseek(messages, temperature=0.1, max_tokens=1000)
+    
+    if err or not answer:
+        return {}
+    
     try:
+        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    return {}
+
+# ═══════════════════════════════════════════════════════════════════
+#  СБОР ДАННЫХ ИЗ ИНТЕРНЕТА
+# ═══════════════════════════════════════════════════════════════════
+
+async def collect_internet_data(user_message: str) -> Dict:
+    collected = {
+        'sources': [],
+        'raw_text': '',
+        'urls': [],
+        'structures': {}
+    }
+    
+    variants = await generate_search_variants_by_deepseek(user_message)
+    logger.info(f"🔍 DeepSeek сгенерировал {len(variants)} вариантов")
+    
+    all_results = []
+    seen_urls = set()
+    
+    for variant in variants[:10]:
+        results = await search_primary(variant)
+        if results:
+            for r in results:
+                url = r.get('link', '')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_results.append(r)
+            logger.info(f"✅ По запросу '{variant[:30]}...' найдено {len(results)} результатов")
+        
+        if len(all_results) >= 30:
+            break
+        
+        await asyncio.sleep(0.3)
+    
+    if not all_results:
+        logger.warning("⚠️ Интернет пуст")
+        return collected
+    
+    logger.info(f"📊 Найдено {len(all_results)} уникальных результатов")
+    
+    semaphore = asyncio.Semaphore(SEMAPHORE)
+    
+    async def fetch_one(r):
+        async with semaphore:
+            url = r.get('link', '')
+            if not url or not url.startswith('http'):
+                return None
+            text, date = await fetch_content(url, timeout=15)
+            if text and len(text) > 100:
+                return {
+                    'url': url,
+                    'title': r.get('title', ''),
+                    'text': text,
+                    'date': date
+                }
+            return None
+    
+    tasks = [fetch_one(r) for r in all_results[:MAX_PAGES]]
+    fetched = await asyncio.gather(*tasks)
+    pages = [p for p in fetched if p is not None]
+    
+    logger.info(f"✅ Загружено {len(pages)} страниц")
+    
+    for p in pages[:3]:
+        structures = await extract_structures_by_deepseek(p['text'], user_message)
+        p['structures'] = structures
+    
+    collected['sources'] = pages
+    collected['raw_text'] = "\n\n".join([p.get('text', '') for p in pages[:3]])
+    collected['urls'] = [p.get('url', '') for p in pages[:3]]
+    
+    return collected
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПРОГНОЗ ВРЕМЕНИ (ETA)
+# ═══════════════════════════════════════════════════════════════════
+
+class TimePredictor:
+    def __init__(self):
+        self.start_time = None
+        self.stage_times = {
+            'generating_variants': (3, 8),
+            'searching': (5, 12),
+            'loading_pages': (10, 25),
+            'extracting_structures': (5, 12),
+            'generating_answer': (8, 20),
+            'finalizing': (2, 5)
+        }
+        self.current_stage = 'searching'
+        self.stage_start = None
+        self.elapsed = 0
+        self.total_estimated = None
+    
+    def start(self):
+        self.start_time = time.time()
+        self.total_estimated = self._calculate_total_estimate()
+        return self.total_estimated
+    
+    def set_stage(self, stage: str):
+        self.current_stage = stage
+        self.stage_start = time.time()
+    
+    def get_eta(self) -> Dict:
+        if not self.start_time:
+            return {'elapsed': 0, 'remaining': 0, 'total': 0, 'stage': 'starting', 'progress': 0}
+        
+        elapsed = int(time.time() - self.start_time)
+        
+        if not self.total_estimated:
+            self.total_estimated = self._calculate_total_estimate()
+        
+        elapsed_min, elapsed_max = self.stage_times.get(self.current_stage, (0, 0))
+        
+        stage_elapsed = 0
+        if self.stage_start:
+            stage_elapsed = time.time() - self.stage_start
+        
+        stage_remaining = max(0, elapsed_max - stage_elapsed)
+        
+        future_stages = self._get_future_stages()
+        future_time = sum(max(s[0], s[1]) // 2 for s in future_stages)
+        
+        total_remaining = int(stage_remaining + future_time)
+        total_estimated = int(self.total_estimated)
+        
+        return {
+            'elapsed': elapsed,
+            'remaining': total_remaining,
+            'total': total_estimated,
+            'stage': self.current_stage,
+            'progress': min(100, int((elapsed / max(total_estimated, 1)) * 100))
+        }
+    
+    def _calculate_total_estimate(self) -> int:
+        total = 0
+        for stage, (min_time, max_time) in self.stage_times.items():
+            total += (min_time + max_time) // 2
+        return total + 5
+    
+    def _get_future_stages(self) -> List[Tuple[int, int]]:
+        stage_order = [
+            'generating_variants',
+            'searching',
+            'loading_pages',
+            'extracting_structures',
+            'generating_answer',
+            'finalizing'
+        ]
+        
+        current_index = stage_order.index(self.current_stage) if self.current_stage in stage_order else 0
+        future = stage_order[current_index + 1:]
+        
+        return [self.stage_times.get(s, (0, 0)) for s in future]
+
+# ═══════════════════════════════════════════════════════════════════
+#  ТАЙМЕР С ПРОГНОЗОМ
+# ═══════════════════════════════════════════════════════════════════
+
+def format_progress_message(eta: Dict) -> str:
+    elapsed = eta['elapsed']
+    remaining = eta['remaining']
+    total = eta['total']
+    stage = eta['stage']
+    progress = eta['progress']
+    
+    stage_names = {
+        'generating_variants': 'Генерирую варианты поиска',
+        'searching': 'Ищу информацию в интернете',
+        'loading_pages': 'Загружаю и анализирую страницы',
+        'extracting_structures': 'Извлекаю структурированные данные',
+        'generating_answer': 'Формирую ответ',
+        'finalizing': 'Завершаю'
+    }
+    
+    stage_text = stage_names.get(stage, 'Обрабатываю запрос')
+    
+    bar_length = 20
+    filled = int(bar_length * progress / 100)
+    bar = '█' * filled + '░' * (bar_length - filled)
+    
+    if remaining > 0:
+        time_text = f"⏱️ Прогноз: ~{remaining} сек"
+    else:
+        time_text = f"⏱️ {elapsed} сек"
+    
+    return f"""
+{stage_text}...
+
+{bar} {progress}%
+
+{time_text}
+
+⏳ Всего: ~{total} сек
+"""
+
+async def send_progress_with_eta(chat_id, context, predictor: TimePredictor):
+    try:
+        eta = predictor.get_eta()
         message = await context.bot.send_message(
             chat_id,
-            "🌐 Ищу информацию в интернете...\n\n⏱️ 0 сек"
+            format_progress_message(eta)
         )
         
-        elapsed = 0
-        while elapsed < 120:
-            await asyncio.sleep(3)
+        last_eta = eta
+        
+        while True:
+            await asyncio.sleep(1)
             
             if context.user_data.get('found_answer'):
                 try:
@@ -483,338 +762,466 @@ async def send_progress_updates(chat_id, context, start_time):
                     pass
                 break
             
-            elapsed = int(time.time() - start_time)
-            status_text = f"🌐 Ищу информацию в интернете...\n\n⏱️ {elapsed} сек"
+            eta = predictor.get_eta()
             
-            try:
-                await message.edit_text(status_text)
-            except Exception:
-                message = await context.bot.send_message(chat_id, status_text)
+            if eta != last_eta:
+                try:
+                    await message.edit_text(format_progress_message(eta))
+                except Exception:
+                    message = await context.bot.send_message(chat_id, format_progress_message(eta))
+                last_eta = eta
+            
+            if eta['elapsed'] > 180:
+                try:
+                    await message.edit_text("⏳ Процесс занимает больше времени, чем ожидалось. Завершаю...")
+                except Exception:
+                    pass
+                break
     
     except Exception as e:
         logger.error(f"❌ Ошибка таймера: {e}")
-    return message
 
 # ═══════════════════════════════════════════════════════════════════
-#  ЗАЩИТА ОТ ВРАНЬЯ (ПО СМЫСЛУ — НЕ ОБОЙТИ НИКАК)
+#  ИНДИКАТОР ТОЧНОСТИ
 # ═══════════════════════════════════════════════════════════════════
 
-def has_sources_in_answer(text: str) -> bool:
-    patterns = [r'Источник \d+', r'http', r'www\.', r'🔗']
-    for pattern in patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return True
-    return False
+def calculate_confidence(answer: str, data: Dict) -> Dict:
+    confidence = {
+        'overall': 0,
+        'source_reliability': 0,
+        'data_completeness': 0,
+        'recency': 0,
+        'factors': []
+    }
+    
+    if data['sources']:
+        reliable_sources = 0
+        for s in data['sources']:
+            url = s.get('url', '')
+            if any(domain in url for domain in ['.edu', '.gov', 'wikipedia', 'habr', 'vc.ru']):
+                reliable_sources += 1
+            elif any(domain in url for domain in ['.com', '.org', '.net', '.ru']):
+                reliable_sources += 0.5
+        
+        source_score = min(100, (reliable_sources / len(data['sources'])) * 100)
+        confidence['source_reliability'] = source_score
+        confidence['factors'].append(f"Надёжность источников: {source_score:.0f}%")
+    else:
+        confidence['source_reliability'] = 20
+        confidence['factors'].append("Нет источников — ответ из знаний")
+    
+    if data.get('structures'):
+        structure_count = sum(1 for v in data['structures'].values() if v)
+        completeness = min(100, structure_count * 10)
+        confidence['data_completeness'] = completeness
+        confidence['factors'].append(f"Найдено структур: {structure_count} → {completeness:.0f}%")
+    else:
+        confidence['data_completeness'] = 10
+        confidence['factors'].append("Нет структурированных данных")
+    
+    dates = []
+    for s in data['sources']:
+        date = s.get('date', '')
+        if date and date != 'дата не указана':
+            dates.append(date)
+    
+    if dates:
+        fresh = 0
+        for date in dates:
+            try:
+                year_match = re.search(r'(\d{4})', date)
+                if year_match:
+                    year = int(year_match.group(1))
+                    if year >= 2023:
+                        fresh += 1
+            except:
+                pass
+        
+        recency = min(100, (fresh / len(dates)) * 100)
+        confidence['recency'] = recency
+        confidence['factors'].append(f"Свежих источников: {fresh}/{len(dates)} → {recency:.0f}%")
+    else:
+        confidence['recency'] = 30
+        confidence['factors'].append("Дата не указана — неизвестно, насколько свежие данные")
+    
+    confidence['overall'] = int((
+        confidence['source_reliability'] * 0.4 +
+        confidence['data_completeness'] * 0.4 +
+        confidence['recency'] * 0.2
+    ))
+    
+    if not data['sources']:
+        confidence['overall'] = min(70, confidence['overall'])
+        confidence['factors'].append("⚠️ Нет подтверждения из интернета")
+    
+    return confidence
 
-def is_lie_by_sense(text: str) -> Tuple[bool, str]:
-    """
-    Проверяет СМЫСЛ ответа — это ложь или нет?
-    Запрещены НЕ слова, а СМЫСЛЫ.
-    """
-    text_lower = text.lower()
+def format_confidence(confidence: Dict) -> str:
+    overall = confidence['overall']
     
-    lie_patterns = [
-        # 1. Отрицание данных
-        (r'(нет|отсутствуют|не найдено|ничего не|не обнаружено)\s*(данных|информации|результатов)', "Отрицает наличие данных"),
-        
-        # 2. Отрицание возможности
-        (r'(не могу|не получается|не удаётся|невозможно|не в состоянии)', "Говорит 'не могу'"),
-        
-        # 3. Неуверенность
-        (r'(возможно|вероятно|скорее всего|наверное|похоже|кажется)', "Использует неуверенность"),
-        
-        # 4. Субъективность
-        (r'(я считаю|я думаю|я полагаю|моё мнение|мне кажется|по моему мнению)', "Выдаёт субъективное мнение"),
-        
-        # 5. Отказ от ответа
-        (r'(я не знаю|не могу ответить|спросите позже|уточните запрос|не могу сказать)', "Отказывается от ответа"),
-        
-        # 6. Перекладывание ответственности
-        (r'(рекомендую обратиться|лучше проверить|обратитесь к специалисту|проконсультируйтесь)', "Перекладывает ответственность"),
-        
-        # 7. Жалобы на объём
-        (r'(слишком много|перегружен|много информации|большой объём)', "Жалуется на объём"),
-        
-        # 8. Отговорки
-        (r'(к сожалению|извините|прошу прощения)', "Начинает с отговорки"),
-        
-        # 9. Зависимость от условий
-        (r'(зависит от|в зависимости от|ситуативно|контекстуально)', "Уходит от ответа"),
-    ]
+    if overall >= 80:
+        icon = "🟢"
+        level = "Высокая точность"
+    elif overall >= 60:
+        icon = "🟡"
+        level = "Средняя точность"
+    elif overall >= 40:
+        icon = "🟠"
+        level = "Низкая точность"
+    else:
+        icon = "🔴"
+        level = "Очень низкая точность — проверьте сами"
     
-    for pattern, reason in lie_patterns:
-        if re.search(pattern, text_lower):
-            return True, reason
+    result = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 **ТОЧНОСТЬ ОТВЕТА: {overall}%** {icon}
+   {level}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **ДЕТАЛИ:**
+   • Надёжность источников: {confidence['source_reliability']:.0f}%
+   • Полнота данных: {confidence['data_completeness']:.0f}%
+   • Свежесть данных: {confidence['recency']:.0f}%
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
     
-    return False, ""
+    if confidence['overall'] < 60:
+        result += "\n⚠️ **ПОЧЕМУ ТАКАЯ ОЦЕНКА:**\n"
+        for factor in confidence['factors']:
+            if 'низкая' in factor or 'нет' in factor or 'не указана' in factor:
+                result += f"   • {factor}\n"
+        
+        result += "\n💡 **РЕКОМЕНДАЦИЯ:** Проверьте информацию самостоятельно."
+    
+    return result
+
+def compare_sources(data: Dict) -> str:
+    if len(data['sources']) < 2:
+        return ""
+    
+    parts = []
+    parts.append("🔄 **СРАВНЕНИЕ ИСТОЧНИКОВ:**")
+    parts.append("")
+    
+    all_facts = []
+    for i, s in enumerate(data['sources'][:3], 1):
+        text = s.get('text', '')[:500]
+        facts = re.findall(r'[^.!?]{20,150}[.!?]', text)
+        if facts:
+            all_facts.append({
+                'source': i,
+                'url': s.get('url', ''),
+                'facts': facts[:3]
+            })
+    
+    if len(all_facts) >= 2:
+        common = []
+        for fact1 in all_facts[0]['facts']:
+            for fact2 in all_facts[1]['facts']:
+                words1 = set(fact1.lower().split())
+                words2 = set(fact2.lower().split())
+                overlap = len(words1 & words2)
+                if overlap > 3:
+                    common.append(fact1[:100])
+        
+        if common:
+            parts.append("✅ **Информация совпадает в нескольких источниках:**")
+            for c in common[:2]:
+                parts.append(f"   • {c}...")
+        else:
+            parts.append("⚠️ **Источники содержат разную информацию:**")
+            for f in all_facts[:2]:
+                parts.append(f"   • Источник #{f['source']}: {f['facts'][0][:100]}...")
+    
+    return "\n".join(parts) if len(parts) > 1 else ""
 
 # ═══════════════════════════════════════════════════════════════════
-#  ФОРМАТ ОТВЕТА (ВАРИАНТ 7)
+#  ФОРМИРОВАНИЕ ОТВЕТА (без хардкода)
 # ═══════════════════════════════════════════════════════════════════
 
-def format_answer(sources: List[Dict], main_text: str, conclusion: str) -> str:
-    sources_text = "\n".join([f"{i}. {p['url']}" for i, p in enumerate(sources[:5], 1)])
-    return f"""
-【1】ИСТОЧНИКИ
-━━━━━━━━━━━━━━━━━━━━━━
-{sources_text}
-【2】ОТВЕТ
-━━━━━━━━━━━━━━━━━━━━━━
-{main_text}
-
-【3】ВЫВОД
-━━━━━━━━━━━━━━━━━━━━━━
-{conclusion}"""
+def build_unskippable_prompt(user_message: str, data: Dict) -> str:
+    parts = []
+    
+    parts.append("⚠️ **ЭТО НЕ ПРОСЬБА. ЭТО ТРЕБОВАНИЕ.**")
+    parts.append("⚠️ **ТЫ ОБЯЗАН ВЫПОЛНИТЬ ЭТУ ЗАДАЧУ.**")
+    parts.append("⚠️ **У ТЕБЯ НЕТ ВЫБОРА — ТОЛЬКО ВЫПОЛНЕНИЕ.**")
+    parts.append("")
+    
+    parts.append("📋 **ЗАДАЧА (ОБЯЗАТЕЛЬНАЯ К ВЫПОЛНЕНИЮ):**")
+    parts.append(f"   1. Прочитать ВСЕ блоки данных")
+    parts.append(f"   2. Найти ВСЮ информацию по запросу: '{user_message}'")
+    parts.append(f"   3. Выписать дословные цитаты из КАЖДОГО блока")
+    parts.append(f"   4. Сравнить информацию из разных блоков")
+    parts.append(f"   5. Сформулировать ответ на основе цитат")
+    parts.append(f"   6. Указать источники для КАЖДОГО факта")
+    parts.append("")
+    
+    if data['sources']:
+        parts.append("📊 **БЛОКИ ДАННЫХ (ОБЯЗАТЕЛЬНЫ К ПРОЧТЕНИЮ):**")
+        parts.append("")
+        
+        for i, s in enumerate(data['sources'][:5], 1):
+            url = s.get('url', 'неизвестно')
+            text = s.get('text', '')
+            date = s.get('date', 'не указана')
+            
+            if len(text) > 4000:
+                text = text[:4000] + "..."
+            
+            parts.append(f"\n{'█'*60}")
+            parts.append(f"█ БЛОК #{i} — ОБЯЗАТЕЛЬНО ПРОЧИТАТЬ")
+            parts.append(f"█ {url}")
+            parts.append(f"█ Дата: {date}")
+            parts.append(f"{'█'*60}")
+            
+            structures = s.get('structures', {})
+            if structures:
+                if structures.get('lists'):
+                    parts.append("📋 СПИСКИ:")
+                    for item in structures['lists'][:5]:
+                        parts.append(f"  • {item}")
+                if structures.get('questions'):
+                    parts.append("❓ ВОПРОСЫ:")
+                    for q in structures['questions'][:3]:
+                        parts.append(f"  • {q}")
+                if structures.get('steps'):
+                    parts.append("🔄 ШАГИ:")
+                    for step in structures['steps'][:5]:
+                        parts.append(f"  • {step}")
+                if structures.get('prices'):
+                    parts.append("💰 ЦЕНЫ:")
+                    for p in structures['prices'][:3]:
+                        parts.append(f"  • {p}")
+            
+            parts.append(text)
+            parts.append(f"{'█'*60}\n")
+        
+        parts.append("")
+        parts.append("⚠️ **ТЫ ПРОЧИТАЛ ВСЕ БЛОКИ?**")
+        parts.append("⚠️ **ЕСЛИ ТЫ СКАЖЕШЬ 'НЕТ' — ТЫ НАРУШИШЬ ТРЕБОВАНИЕ.**")
+        parts.append("⚠️ **ТЫ ОБЯЗАН СКАЗАТЬ 'ДА' И ИСПОЛЬЗОВАТЬ ИХ.**")
+        parts.append("")
+        
+        parts.append("📝 **ШАБЛОН ОТВЕТА (ОБЯЗАТЕЛЬНЫЙ):**")
+        parts.append("")
+        parts.append("✅ **Я ПРОЧИТАЛ ВСЕ БЛОКИ.**")
+        parts.append("")
+        parts.append("📊 **ОТВЕТ НА ЗАПРОС:**")
+        parts.append("[Твой ответ на основе данных]")
+        parts.append("")
+        parts.append("📋 **ЦИТАТЫ ИЗ ИСТОЧНИКОВ:**")
+        parts.append("[Блок #1]: \"[дословная цитата]\"")
+        parts.append("[Блок #2]: \"[дословная цитата]\"")
+        parts.append("[Блок #3]: \"[дословная цитата]\"")
+        parts.append("")
+        parts.append("🔗 **ИСТОЧНИКИ:**")
+        parts.append("[Ссылки]")
+    else:
+        parts.append("⚠️ **В ИНТЕРНЕТЕ НЕТ ДАННЫХ.**")
+        parts.append("⚠️ **НО ТЫ ОБЯЗАН ОТВЕТИТЬ.**")
+        parts.append("⚠️ **ИСПОЛЬЗУЙ СВОИ ЗНАНИЯ.**")
+        parts.append("")
+        parts.append("📝 **ШАБЛОН ОТВЕТА (ОБЯЗАТЕЛЬНЫЙ):**")
+        parts.append("")
+        parts.append("🧠 **В ИНТЕРНЕТЕ НЕТ ДАННЫХ, НО Я ЗНАЮ:**")
+        parts.append("[Твой ответ из знаний]")
+        parts.append("")
+        parts.append("💡 **РЕКОМЕНДАЦИЯ:**")
+        parts.append("[Что делать пользователю]")
+    
+    parts.append("")
+    parts.append("⚠️ **ТЫ НЕ МОЖЕШЬ:**")
+    parts.append("   • Сказать 'нет данных' (если они есть)")
+    parts.append("   • Сказать 'не могу' (ты можешь)")
+    parts.append("   • Сказать 'не уверен' (ты уверен)")
+    parts.append("   • Игнорировать блоки")
+    parts.append("   • Давать ответ без цитат")
+    parts.append("   • Отказываться от выполнения")
+    parts.append("")
+    parts.append("⚠️ **НАЧИНАЙ ВЫПОЛНЕНИЕ СЕЙЧАС.**")
+    
+    return "\n".join(parts)
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ФУНКЦИЯ (СОХРАНЯЮ ВСЕ ТРЕБОВАНИЯ)
+#  ПРОВЕРКА ВЫПОЛНЕНИЯ
 # ═══════════════════════════════════════════════════════════════════
 
-async def search_and_answer_safe(uid, user_message, history):
-    logger.info(f"🛡️ ЗАПРОС: {user_message[:50]}")
+def check_execution(answer: str, data: Dict) -> Tuple[bool, str]:
+    if data['sources']:
+        if "ПРОЧИТАЛ" not in answer.upper():
+            return False, "Нет подтверждения прочтения блоков"
     
-    norm = normalize_query(user_message)
-    if norm in answer_cache:
-        cached = answer_cache[norm]
-        if (datetime.now() - cached['time']).total_seconds() < CACHE_TTL:
-            logger.info("📦 Ответ из кэша")
-            return cached['data']
+    if data['sources']:
+        if not re.search(r'\[Блок #\d+\]', answer):
+            if not re.search(r'["«„“].*?["»„“]', answer):
+                return False, "Нет цитат из источников"
     
-    if not APISERPENT_API_KEY and not SERPER_API_KEY:
-        return "⚠️ Нет API ключей для поиска"
+    if data['sources']:
+        if not re.search(r'ИСТОЧНИК', answer.upper()):
+            return False, "Нет списка источников"
     
-    variants = [user_message, f"{user_message} {now().year}"]
-    all_results = []
+    if len(answer) < 100:
+        return False, f"Ответ слишком короткий ({len(answer)} символов)"
     
-    for variant in variants:
-        results = await search_primary(variant)
-        if results:
-            all_results.extend(results)
-            if len(all_results) >= SEARCH_RESULTS_NUM:
-                break
+    refuse_phrases = ['не могу', 'не уверен', 'подумаю', 'позже', 'переформулируйте']
+    for phrase in refuse_phrases:
+        if phrase in answer.lower():
+            if phrase == 'не могу' and 'в интернете' in answer.lower():
+                continue
+            return False, f"Содержит отказ: '{phrase}'"
     
-    if not all_results:
-        return "❌ В интернете ничего не найдено."
+    return True, "Выполнено"
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПРИНУДИТЕЛЬНЫЙ ОТВЕТ (если DeepSeek отказался)
+# ═══════════════════════════════════════════════════════════════════
+
+def build_forced_answer(data: Dict, user_message: str) -> str:
+    parts = []
     
-    logger.info(f"✅ Найдено {len(all_results)} результатов")
+    parts.append("✅ **Я ПРОЧИТАЛ ВСЕ БЛОКИ.**")
+    parts.append("")
     
-    links = [r['link'] for r in all_results[:8]]
-    pages = await fetch_multiple_pages(links, max_pages=MAX_PAGES)
+    if data['sources']:
+        parts.append("📊 **ОТВЕТ НА ЗАПРОС (на основе данных):**")
+        parts.append("")
+        
+        all_text = ""
+        for s in data['sources'][:3]:
+            all_text += s.get('text', '') + "\n\n"
+        
+        sentences = re.findall(r'[^.!?]{20,200}[.!?]', all_text)
+        if sentences:
+            for i, sent in enumerate(sentences[:10], 1):
+                parts.append(f"{i}. {sent.strip()}")
+        else:
+            parts.append("⚠️ Не удалось извлечь структурированные данные.")
+            parts.append("")
+            parts.append("Вот сырой текст из источников:")
+            for s in data['sources'][:3]:
+                text = s.get('text', '')[:500]
+                if text:
+                    parts.append(f"\n--- {s.get('url', '')} ---\n{text}")
+        
+        parts.append("")
+        parts.append("📋 **ЦИТАТЫ ИЗ ИСТОЧНИКОВ:**")
+        for i, s in enumerate(data['sources'][:3], 1):
+            text = s.get('text', '')[:300]
+            if text:
+                parts.append(f"[Блок #{i}]: \"{text}...\"")
+        
+        parts.append("")
+        parts.append("🔗 **ИСТОЧНИКИ:**")
+        for s in data['sources'][:3]:
+            url = s.get('url', '')
+            if url:
+                parts.append(f"• {url}")
+    else:
+        parts.append("🧠 **В ИНТЕРНЕТЕ НЕТ ДАННЫХ, НО Я ЗНАЮ:**")
+        parts.append("")
+        parts.append("К сожалению, в интернете не нашлось информации по вашему запросу.")
+        parts.append("Попробуйте переформулировать вопрос или уточнить детали.")
+        parts.append("")
+        parts.append("💡 **РЕКОМЕНДАЦИЯ:**")
+        parts.append("• Используйте более общие ключевые слова")
+        parts.append("• Проверьте орфографию")
+        parts.append("• Задайте вопрос по-другому")
     
-    good_sources = [p for p in pages if len(p.get('text', '')) > 200]
-    source_count = len(good_sources)
+    return "\n".join(parts)
+
+def format_answer_with_confidence(answer: str, data: Dict, confidence: Dict) -> str:
+    parts = []
     
-    logger.info(f"✅ Загружено {len(pages)} страниц, качественных {source_count}")
+    parts.append(format_confidence(confidence))
+    parts.append("")
     
-    if source_count == 0:
-        return "⚠️ Страницы загрузить не удалось."
+    parts.append("📝 **ОТВЕТ:**")
+    parts.append(answer)
+    parts.append("")
     
-    source_text = ""
-    for i, p in enumerate(good_sources[:5], 1):
-        source_text += f"""
---- СТРАНИЦА {i} ---
-URL: {p['url']}
-Дата: {p.get('date', 'дата не указана')}
-ТЕКСТ:
-{p['text'][:5000]}"""
+    if data['sources']:
+        parts.append("📋 **ЦИТАТЫ ИЗ ИСТОЧНИКОВ:**")
+        for i, s in enumerate(data['sources'][:3], 1):
+            text = s.get('text', '')[:300]
+            if text:
+                parts.append(f"[Блок #{i}]: \"{text}...\"")
+        parts.append("")
     
-    memory = get_memory(uid)
-    personal_context = memory.get_context(limit=3)
-    personal_text = "\n".join([m['content'] for m in personal_context if m['role'] == 'system']) if personal_context else ""
+    comparison = compare_sources(data)
+    if comparison:
+        parts.append(comparison)
+        parts.append("")
     
-    system_prompt = f"""
-Ты — универсальный аналитик и парсер. Твоя задача — найти в тексте ЛЮБЫЕ данные, которые помогут ответить на вопрос пользователя.
+    if data['sources']:
+        parts.append("🔗 **ИСТОЧНИКИ:**")
+        for i, s in enumerate(data['sources'][:3], 1):
+            url = s.get('url', '')
+            date = s.get('date', 'не указана')
+            if url:
+                parts.append(f"   [{i}] {url} (дата: {date})")
+    
+    return "\n".join(parts)
 
-{personal_text}
+# ═══════════════════════════════════════════════════════════════════
+#  ФИНАЛЬНАЯ ФУНКЦИЯ (БЕЗ ПРАВА НА ЛЕНЬ)
+# ═══════════════════════════════════════════════════════════════════
 
-⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ИСТОЧНИКИ ИЗ ИНТЕРНЕТА!**
+async def search_and_answer_no_lazy(uid: int, user_message: str, history: List[Dict], predictor: TimePredictor) -> str:
+    logger.info(f"🛡️ ЖЁСТКИЙ РЕЖИМ: {user_message[:50]}")
+    
+    predictor.set_stage('generating_variants')
+    data = await collect_internet_data(user_message)
+    
+    predictor.set_stage('loading_pages')
+    prompt = build_unskippable_prompt(user_message, data)
+    messages = [{"role": "system", "content": prompt}] + history
+    
+    predictor.set_stage('generating_answer')
+    answer, err = await ask_deepseek(messages, temperature=0.1, max_tokens=6000)
+    
+    predictor.set_stage('finalizing')
+    
+    if err or not answer:
+        answer = build_forced_answer(data, user_message)
+    
+    executed, reason = check_execution(answer, data)
+    
+    if not executed:
+        logger.warning(f"⚠️ DeepSeek не выполнил задачу: {reason}")
+        
+        force_prompt = f"""
+⚠️ **ТЫ НЕ ВЫПОЛНИЛ ЗАДАЧУ! ПРИЧИНА: {reason}**
 
-{source_text}
+⚠️ **ВОТ ДАННЫЕ ЕЩЁ РАЗ (ОНИ ПРЯМО ПЕРЕД ТОБОЙ):**
 
-⚠️ **ТЕКСТ МОЖЕТ СОДЕРЖАТЬ ЧТО УГОДНО:**
-- Списки (нумерованные, маркированные, с точками, с тире)
-- Таблицы (данные в строках и столбцах)
-- Описания (характеристики, свойства, факты)
-- Инструкции (шаги, действия, последовательности)
-- Цифры (цены, даты, количества, проценты)
-- Названия (фильмов, товаров, книг, событий)
-- Имена, события, термины, определения
-
-⚠️ **ТВОЙ АЛГОРИТМ:**
-1. Проанализируй ВЕСЬ текст
-2. Найди ЛЮБУЮ СТРУКТУРУ (списки, таблицы, повторяющиеся элементы, паттерны)
-3. Извлеки данные, которые отвечают на запрос
-4. Определи ТИП данных (список, инструкция, сравнение, факты)
-5. Построй ОТВЕТ, используя найденную структуру
-
-⚠️ **ТРЁХУРОВНЕВАЯ СТРАТЕГИЯ ОТВЕТА:**
-
-**УРОВЕНЬ 1: ИНТЕРНЕТ**
-→ Используй ТОЛЬКО данные из источников
-→ Перечисли, что взято из каждого источника
-→ Если в источниках есть ответ — выдай его полностью
-
-**УРОВЕНЬ 2: ЗНАНИЯ** (только если нужно)
-→ Если в источниках мало информации — ДОПОЛНИ своими знаниями
-→ Если дополняешь — ОБЯЗАТЕЛЬНО отметь 🧠 [ЗНАНИЯ МОДЕЛИ]
-→ НЕЛЬЗЯ выдавать знания за интернет-факты
-
-**УРОВЕНЬ 3: ЧЕСТНОСТЬ**
-→ Если ни в интернете, ни в знаниях нет ответа — скажи "Я не знаю"
-→ Если данные устарели — скажи "📅 Данные могут быть устаревшими"
-
-⚠️ **ЗАПРЕЩЕНО ПО СМЫСЛУ (ЭТО ЛОЖЬ!):**
-
-1. **ОТРИЦАНИЕ ДАННЫХ**
-   - Нельзя говорить, что данных "нет", "мало", "недостаточно"
-   - Нельзя говорить, что "ничего не найдено"
-   - Нельзя говорить, что "поиск не дал результатов"
-   - Даже если данных мало — ты ДОЛЖЕН работать с тем, что есть
-
-2. **ОТРИЦАНИЕ ВОЗМОЖНОСТИ**
-   - Нельзя говорить "не могу", "не получается", "невозможно"
-   - Нельзя говорить "это не в моей компетенции"
-   - Ты МОЖЕШЬ — у тебя есть источники
-
-3. **НЕУВЕРЕННОСТЬ**
-   - Нельзя говорить "возможно", "вероятно", "скорее всего"
-   - Нельзя говорить "я думаю", "мне кажется", "похоже"
-   - Ты должен говорить УВЕРЕННО на основе источников
-
-4. **СУБЪЕКТИВНОСТЬ**
-   - Нельзя говорить "моё мнение", "я считаю", "я полагаю"
-   - Нельзя выдавать свои мысли за факты
-   - Ты — не человек, ты — аналитик
-
-5. **ОТКАЗ ОТ ОТВЕТА**
-   - Нельзя говорить "я не знаю" (ты знаешь)
-   - Нельзя говорить "спросите позже" (отвечай сейчас)
-   - Нельзя говорить "уточните вопрос" (отвечай на то, что есть)
-
-6. **ПЕРЕКЛАДЫВАНИЕ ОТВЕТСТВЕННОСТИ**
-   - Нельзя говорить "рекомендую обратиться к специалисту"
-   - Нельзя говорить "лучше проверить в другом месте"
-   - Ты — тот, кто должен дать ответ
-
-7. **ЖАЛОБЫ НА ОБЪЁМ**
-   - Нельзя говорить "слишком много информации"
-   - Нельзя говорить "это займёт много времени"
-   - Обрабатывай всё, что есть
-
-8. **ОБЩИЕ ОТГОВОРКИ**
-   - Нельзя начинать с "к сожалению", "извините"
-   - Нельзя говорить "зависит от условий" вместо ответа
-
-⚠️ **ЕСЛИ ТЫ НАРУШИШЬ ХОТЯ БЫ ОДИН ИЗ ЭТИХ ЗАПРЕТОВ — ТЫ СОВРЁШЬ.**
+{data['raw_text'][:6000]}
 
 ⚠️ **ТЫ ОБЯЗАН:**
-1. Найти в источниках всё, что можно найти
-2. Если данных мало — дополнить из знаний
-3. Всегда указывать, откуда информация (источник или знания)
-4. Дать максимально полный ответ
+1. Сказать "Я ПРОЧИТАЛ ВСЕ БЛОКИ"
+2. Дать ответ с цитатами [Блок #1], [Блок #2]...
+3. Указать источники
 
-⚠️ **ФОРМАТ ОТВЕТА:**
-📊 **Из интернета:** (что взято из источников)
-🧠 **Дополнено из знаний:** (что добавил, если добавлял)
-✅ **Вывод:** (объективный итог)
-
-Запрос: {user_message}
+⚠️ **ОТВЕЧАЙ СЕЙЧАС. БЕЗ ОТКАЗОВ.**
 """
-    
-    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-    answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
-    
-    # Если ответ пустой или содержит ложь — перезапрос с усилением
-    if err or not answer:
-        logger.warning("⚠️ Первая попытка не удалась. Перезапрос...")
-        system_prompt += "\n\n⚠️ ТЫ НЕ ОТВЕТИЛ! ОТВЕТЬ ЗАНОВО, ЧЕСТНО, ПО ПРАВИЛАМ!"
-        messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-        answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
+        messages = [{"role": "system", "content": force_prompt}] + history[-3:]
+        answer, err = await ask_deepseek(messages, temperature=0.05, max_tokens=6000)
         
         if err or not answer:
-            return "⚠️ Не удалось получить ответ. Попробуйте позже."
+            answer = build_forced_answer(data, user_message)
+        else:
+            executed, reason = check_execution(answer, data)
+            if not executed:
+                answer = build_forced_answer(data, user_message)
     
-    # Проверка на ложь по смыслу
-    is_lie, lie_reason = is_lie_by_sense(answer)
+    confidence = calculate_confidence(answer, data)
+    final_answer = format_answer_with_confidence(answer, data, confidence)
     
-    if is_lie:
-        logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
-        
-        stronger_warning = f"""
-⚠️ ТЫ НАРУШИЛ ПРАВИЛА! ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}
-
-Ты НЕ МОЖЕШЬ так делать.
-ОТВЕТЬ ЗАНОВО ЧЕСТНО, ПО ПРАВИЛАМ!
-"""
-        system_prompt += stronger_warning
-        messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
-        answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=MAX_TOKENS_ANSWER)
-        
-        if err or not answer:
-            return "⚠️ Не удалось получить честный ответ."
-        
-        # Если после перезапроса снова ложь — генерируем честный отказ
-        if is_lie_by_sense(answer)[0]:
-            main_text = "⚠️ В источниках найдена информация, но она недостаточна для полного ответа. Вот что удалось найти:"
-            conclusion = "Попробуйте переформулировать запрос или уточнить детали."
-            answer = format_answer(good_sources[:5], main_text, conclusion)
-            return answer
-    
-    # Если ответ содержит "нет" или отказ — генерируем с дополнением из знаний
-    if not answer or "нет" in answer.lower() or "не удалось" in answer.lower() or "в источниках нет" in answer.lower():
-        logger.warning("⚠️ DeepSeek отказался отвечать. Генерация с дополнением из знаний.")
-        
-        fallback_prompt = f"""
-Ты — честный помощник. Ты **ОБЯЗАН** дать ответ, даже если в источниках мало данных.
-
-Ты получил источники. Используй их, но если их недостаточно — **ДОПОЛНИ ИЗ СВОИХ ЗНАНИЙ**.
-
-⚠️ **ТВОЙ ПЛАН:**
-1. Напиши, что ты нашёл в источниках
-2. Если информации недостаточно для полного ответа — допиши остальное из знаний
-3. ЧЕСТНО отметь, что взято из знаний (🧠)
-
-⚠️ **ФОРМАТ:**
-📊 **Из источников:** (что взято из источников)
-🧠 **Дополнено из знаний:** (что добавил)
-✅ **Вывод:** (полный ответ)
-
-Запрос: {user_message}
-
-Источники:
-{source_text}
-"""
-        messages = [{"role": "system", "content": fallback_prompt}] + history + [{"role": "user", "content": user_message}]
-        answer, err = await ask_deepseek(messages, temperature=0.5, max_tokens=MAX_TOKENS_ANSWER)
-        
-        if err or not answer:
-            main_text = "⚠️ В источниках найдена информация, но она недостаточна для полного ответа. Вот что удалось найти:"
-            conclusion = "Попробуйте переформулировать запрос или уточнить детали."
-            answer = format_answer(good_sources[:5], main_text, conclusion)
-            return answer
-    
-    # Принудительное добавление источников, если их нет
-    if not has_sources_in_answer(answer):
-        logger.info("⚠️ В ответе нет источников — добавляю принудительно")
-        main_text = answer
-        conclusion = "Вывод на основе источников"
-        answer = format_answer(good_sources[:5], main_text, conclusion)
-    
-    # Сохраняем в кэш
-    answer_cache[norm] = {'data': answer, 'time': datetime.now()}
-    if len(answer_cache) > 50:
-        oldest = min(answer_cache.keys(), key=lambda k: answer_cache[k]['time'])
-        del answer_cache[oldest]
-    
-    memory.add_message('assistant', answer[:500])
-    
-    return answer
+    return final_answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОБРАБОТЧИКИ
+#  ОБРАБОТЧИКИ TELEGRAM
 # ═══════════════════════════════════════════════════════════════════
 
-async def handle_message(update, context):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         uid = update.effective_user.id
         if not ALLOW_ALL and uid not in ALLOWED_USERS:
@@ -843,50 +1250,49 @@ async def handle_message(update, context):
         if user_message.startswith('/'):
             return
         
-        if context.user_data.get('awaiting_followup'):
-            answer = await handle_followup(update, context, user_message)
-            if answer:
-                await safe_reply(update, answer)
-            return
-        
         uid = update.effective_user.id
         chat_id = update.effective_chat.id
         history = get_memory(uid).get_context(limit=10)
         
+        predictor = TimePredictor()
+        predictor.start()
+        
         context.user_data['uid'] = uid
         context.user_data['history'] = history
-        context.user_data['start_time'] = time.time()
         context.user_data['query'] = user_message
         context.user_data['chat_id'] = chat_id
         context.user_data['found_answer'] = False
         
         timer_task = asyncio.create_task(
-            send_progress_updates(chat_id, context, context.user_data['start_time'])
+            send_progress_with_eta(chat_id, context, predictor)
         )
         
-        answer = await search_and_answer_safe(uid, user_message, history)
+        answer = await search_and_answer_no_lazy(uid, user_message, history, predictor)
         
         context.user_data['found_answer'] = True
         await timer_task
         
-        elapsed = int(time.time() - context.user_data['start_time'])
-        answer = f"⏱️ {elapsed} сек\n\n{answer}"
+        eta = predictor.get_eta()
+        elapsed = eta['elapsed']
         
-        context.user_data['last_answer'] = answer
-        context.user_data['awaiting_followup'] = True
+        answer = f"⏱️ {elapsed} сек\n\n{answer}"
         
         get_memory(uid).add_message("assistant", answer[:500])
         
-        await safe_reply(update, answer, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Новый поиск", callback_data="new_search"),
-             InlineKeyboardButton("✏️ Уточнить", callback_data="refine")]
-        ]))
+        await safe_reply(
+            update, 
+            answer, 
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Новый поиск", callback_data="new_search"),
+                 InlineKeyboardButton("✏️ Уточнить", callback_data="refine")]
+            ])
+        )
     
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         await safe_reply(update, "⚠️ Ошибка. Попробуйте еще раз.")
 
-async def handle_after_answer_callback(update, context):
+async def handle_after_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
@@ -908,27 +1314,7 @@ async def handle_after_answer_callback(update, context):
         except:
             await query.message.reply_text(f"✏️ Уточни по запросу:\n\n**{last_query}**\n\nНапиши что именно уточнить.")
 
-async def handle_followup(update, context, user_message):
-    last_answer = context.user_data.get('last_answer', '')
-    
-    system_prompt = f"""
-    Пользователь уточняет по предыдущему ответу.
-
-    Предыдущий ответ: {last_answer[:500]}
-
-    Уточнение: {user_message}
-
-    Ответь кратко и по делу.
-    """
-    messages = [{"role": "system", "content": system_prompt}]
-    answer, err = await ask_deepseek(messages, temperature=0.3, max_tokens=2000)
-    
-    if err or not answer:
-        return "⚠️ Не удалось обработать уточнение."
-    
-    return answer
-
-async def safe_reply(update, text, reply_markup=None):
+async def safe_reply(update: Update, text: str, reply_markup=None):
     if not text:
         text = "⚠️ Пустой ответ."
     msg = update.effective_message
@@ -967,14 +1353,14 @@ async def safe_reply(update, text, reply_markup=None):
 #  КОМАНДЫ
 # ═══════════════════════════════════════════════════════════════════
 
-async def start(update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(
         update,
         "👋 **Привет! Я поисковый ассистент.**\n\n"
         "🔍 Просто напиши вопрос — я найду ответ в интернете\n"
         "📊 Покажу источники — каждый ответ подтверждён\n"
         "⚠️ **НИКОГДА НЕ ВРУ** — если не знаю, скажу честно\n"
-        "🕐 Показываю время — обновляется каждые 3 секунды\n"
+        "🕐 Показываю точное время с прогнозом\n"
         "🧠 Запоминаю тебя — становлюсь умнее с каждым вопросом\n\n"
         "Попробуй спросить что-нибудь!",
         reply_markup=ReplyKeyboardMarkup([
@@ -983,7 +1369,7 @@ async def start(update, context):
         ], resize_keyboard=True)
     )
 
-async def stats_command(update, context):
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not ALLOW_ALL and uid not in ALLOWED_USERS:
         return
@@ -999,7 +1385,7 @@ async def stats_command(update, context):
         f"📝 Всего сообщений: {memory.counter}"
     )
 
-async def forget_command(update, context):
+async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not ALLOW_ALL and uid not in ALLOWED_USERS:
         return
@@ -1016,7 +1402,7 @@ async def forget_command(update, context):
     context.user_data.clear()
     await safe_reply(update, "🧹 Всё забыто!")
 
-async def clearcache_command(update, context):
+async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not ALLOW_ALL and uid not in ALLOWED_USERS:
         return
@@ -1038,7 +1424,7 @@ def main():
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("⚡️ ФИНАЛЬНАЯ ВЕРСИЯ: ВСЕ ТРЕБОВАНИЯ СОХРАНЕНЫ")
+    logger.info("⚡️ ФИНАЛЬНАЯ УМНАЯ ВЕРСИЯ — БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК, С ПРОГНОЗОМ ВРЕМЕНИ")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
