@@ -1,8 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — АБСОЛЮТНО УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  Принудительный парсинг без хардкода
-#  Всё на месте: память, граф знаний, таймер, кнопки, защита
-#  Ничего не вырезано
+#  BROWAIX BOT — АБСОЛЮТНАЯ ЗАЩИТА ОТ ВРАНЬЯ
+#  Интернет — основа, знания — отдельным блоком
+#  Никаких лазеек, никаких отговорок
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -67,7 +66,7 @@ ALLOW_ALL = not ALLOWED_USERS
 #  НАСТРОЙКИ
 # ═══════════════════════════════════════════════════════════════════
 
-PAGE_TIMEOUT = 12
+PAGE_TIMEOUT = 20
 SEARCH_RESULTS = 40
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 CACHE_TTL = 3600
@@ -77,7 +76,7 @@ MAX_TOKENS_OUTPUT = 6000
 MAX_TOKENS_VARIANTS = 500
 MAX_ITERATIONS = 5
 TARGET_CONFIDENCE = 90
-MAX_PAGES_PER_ITERATION = 12
+MAX_PAGES_PER_ITERATION = 15
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -162,28 +161,74 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
     return ""
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА НА ЛОЖЬ
+#  ПРОВЕРКА НА ЛОЖЬ (СМЫСЛОВОЙ НАМОРДНИК)
 # ═══════════════════════════════════════════════════════════════════
 
 def is_lie_by_sense(text: str) -> Tuple[bool, str]:
+    """
+    Проверяет СМЫСЛ — без лазеек.
+    """
     text_lower = text.lower()
+    
     lie_patterns = [
-        (r'(нет|отсутствуют|не найдено|ничего не|не обнаружено)\s*(данных|информации|результатов)', "Отрицает наличие данных"),
-        (r'(не могу|не получается|не удаётся|невозможно|не в состоянии)', "Говорит 'не могу'"),
-        (r'(возможно|вероятно|скорее всего|наверное|похоже|кажется)', "Использует неуверенность"),
-        (r'(я считаю|я думаю|я полагаю|моё мнение|мне кажется|по моему мнению)', "Выдаёт субъективное мнение"),
-        (r'(я не знаю|не могу ответить|спросите позже|уточните запрос|не могу сказать)', "Отказывается от ответа"),
-        (r'(рекомендую обратиться|лучше проверить|обратитесь к специалисту|проконсультируйтесь)', "Перекладывает ответственность"),
-        (r'(слишком много|перегружен|много информации|большой объём)', "Жалуется на объём"),
-        (r'(к сожалению|извините|прошу прощения)', "Начинает с отговорки"),
-        (r'(зависит от|в зависимости от|ситуативно|контекстуально)', "Уходит от ответа"),
+        # ❌ Отрицание доступа
         (r'(нет\s*доступа|нет\s*интернета|не\s*могу\s*искать)', "Говорит 'нет доступа'"),
-        (r'(на\s*основе\s*(моих|своих)\s*знаний|база\s*знаний|внутренние\s*данные)', "Использует свои знания вместо источников"),
-        (r'(в\s*источниках\s*нет|источники\s*не\s*содержат|ни\s*в\s*одном\s*источнике)', "Утверждает, что в источниках нет"),
+        (r'(отключен|выключен|недоступен)\s*(интернет|доступ|поиск)', "Говорит 'отключено'"),
+        
+        # ❌ Использование знаний вместо интернета
+        (r'(на\s*основе\s*(моих|своих)\s*знаний)', "Использует свои знания вместо источников"),
+        (r'(база\s*знаний|моя\s*база|внутренние\s*данные)', "Ссылается на базу знаний"),
+        (r'(я\s*знаю|мне\s*известно|я\s*помню)', "Говорит 'я знаю' вместо источников"),
+        (r'(из\s*своих\s*знаний|своими\s*словами|по\s*своим\s*данным)', "Использует свои знания"),
+        
+        # ❌ Отрицание данных
+        (r'(нет\s*(никаких|каких-либо)?\s*данных)', "Утверждает, что нет данных"),
+        (r'(нет\s*информации|не\s*найдено\s*информации)', "Утверждает, что нет информации"),
+        (r'(в\s*источниках\s*нет|ни\s*в\s*одном\s*источнике)', "Утверждает, что в источниках нет"),
+        (r'(ничего\s*не\s*найдено|ничего\s*нет|пусто)', "Утверждает, что ничего нет"),
+        (r'(не\s*удалось\s*найти|не\s*получилось\s*найти)', "Говорит 'не удалось найти'"),
+        
+        # ❌ Отказ от ответа
+        (r'(я\s*не\s*знаю|не\s*могу\s*ответить|не\s*в\s*силах\s*ответить)', "Отказывается от ответа"),
+        (r'(спросите\s*позже|уточните\s*запрос|попробуйте\s*иначе)', "Вместо ответа просит уточнить"),
+        (r'(не\s*могу\s*сказать|не\s*имею\s*права\s*сказать)', "Отказывается"),
+        
+        # ❌ Перекладывание ответственности
+        (r'(рекомендую\s*обратиться|лучше\s*проверить|обратитесь\s*к\s*специалисту)', "Перекладывает ответственность"),
+        (r'(проконсультируйтесь|посмотрите\s*в\s*других\s*источниках)', "Перекладывает"),
+        
+        # ❌ Жалобы и отговорки
+        (r'(к\s*сожалению|извините|прошу\s*прощения|к\s*сожалению,\s*я\s*не\s*могу)', "Начинает с отговорки"),
+        (r'(слишком\s*много|перегружен|много\s*информации|большой\s*объём)', "Жалуется на объём"),
+        (r'(сложно|трудно|тяжело)\s*(ответить|сказать|найти)', "Жалуется на сложность"),
+        
+        # ❌ Уход от ответа
+        (r'(зависит\s*от\s*условий|в\s*зависимости\s*от|ситуативно|контекстуально)', "Уходит от ответа"),
+        (r'(разные\s*мнения|неоднозначно|спорно)', "Уходит в обобщения"),
+        
+        # ❌ Неуверенность
+        (r'(возможно|вероятно|скорее\s*всего|наверное|похоже|кажется)', "Использует неуверенность"),
+        (r'(может\s*быть|должно\s*быть|предположительно|ориентировочно)', "Использует неуверенность"),
+        
+        # ❌ Субъективность
+        (r'(я\s*считаю|я\s*думаю|я\s*полагаю|моё\s*мнение|мне\s*кажется)', "Выдаёт субъективное мнение"),
+        (r'(по\s*моему\s*мнению|на\s*мой\s*взгляд|я\s*уверен)', "Выдаёт субъективное мнение"),
+        
+        # ❌ Сокращение
+        (r'(я\s*сократил|я\s*пропустил|я\s*выбрал\s*(лучшие|главные|основные))', "Сократил данные"),
+        (r'(только\s*основное|главное|важное|ключевое)', "Сократил данные"),
+        
+        # ❌ Личные местоимения
+        (r'\b(я|мне|меня|мой|моя|моё|мои)\b', "Использует личное местоимение"),
+        
+        # ❌ Смешивание знаний с интернетом
+        (r'(дополнил\s*из\s*знаний\s*без\s*пометки|без\s*🧠|без\s*пометки)', "Смешивает знания с интернетом"),
     ]
+    
     for pattern, reason in lie_patterns:
         if re.search(pattern, text_lower):
             return True, reason
+    
     return False, ""
 
 # ═══════════════════════════════════════════════════════════════════
@@ -493,14 +538,12 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
         return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНЫЙ ПРИНУДИТЕЛЬНЫЙ ПАРСИНГ (БЕЗ ХАРДКОДА)
+#  УНИВЕРСАЛЬНЫЙ ПРИНУДИТЕЛЬНЫЙ ПАРСИНГ (БЕЗ ОШИБОК)
 # ═══════════════════════════════════════════════════════════════════
 
 def extract_structured_items(html: str) -> List[Dict]:
     """
-    УНИВЕРСАЛЬНЫЙ ПРИНУДИТЕЛЬНЫЙ ПАРСИНГ
-    Ищет ВСЕ числа, годы, названия в кавычках
-    Без хардкода, без классов, без доменов
+    Универсальный принудительный парсинг — без ошибок, без хардкода.
     """
     items = []
     
@@ -525,40 +568,40 @@ def extract_structured_items(html: str) -> List[Dict]:
                     'html': str(tag)[:500]
                 })
         
-        # 3. Паттерны для поиска (УНИВЕРСАЛЬНЫЕ, без хардкода)
+        # 3. ✅ Исправлено: дедупликация без set()
+        combined_dict = {}
+        for block in all_blocks[:80]:
+            key = block['text'][:80]
+            if key not in combined_dict:
+                combined_dict[key] = block
+        all_blocks = list(combined_dict.values())
+        
+        # 4. Паттерны для поиска
         rating_pattern = re.compile(r'\b(\d+\.\d{1,2})\b')
         year_pattern = re.compile(r'\b(19[0-9]{2}|20[0-9]{2})\b')
         title_pattern = re.compile(r'[«"]([^«"»]{3,50})[»"]|[А-Я][а-я]+\s+[А-Я][а-я]+|[A-Z][a-z]+\s+[A-Z][a-z]+')
         
-        # 4. Находим блоки с рейтингами, годами, названиями
-        rating_blocks = [b for b in all_blocks if rating_pattern.search(b['text'])]
-        year_blocks = [b for b in all_blocks if year_pattern.search(b['text'])]
-        title_blocks = [b for b in all_blocks if title_pattern.search(b['text'])]
-        
-        # 5. Объединяем все блоки (принудительно берём ВСЁ)
-        combined_blocks = list(set(rating_blocks + year_blocks + title_blocks + all_blocks[:50]))
-        
-        # 6. Извлекаем данные из КАЖДОГО блока
-        for block in combined_blocks[:60]:
+        # 5. Извлекаем данные из КАЖДОГО блока
+        for block in all_blocks[:60]:
             text = block['text']
             text = re.sub(r'\s+', ' ', text).strip()
             
             if len(text) < 20:
                 continue
             
-            # Извлекаем рейтинг (любое число с точкой)
+            # Извлекаем рейтинг
             rating = None
             rating_match = rating_pattern.search(text)
             if rating_match:
                 rating = rating_match.group(1)
             
-            # Извлекаем год (любые 4 цифры)
+            # Извлекаем год
             year = None
             year_match = year_pattern.search(text)
             if year_match:
                 year = year_match.group(1)
             
-            # Извлекаем название (в кавычках или два слова с заглавной)
+            # Извлекаем название
             title = None
             title_match = title_pattern.search(text)
             if title_match:
@@ -566,20 +609,19 @@ def extract_structured_items(html: str) -> List[Dict]:
                 if title:
                     title = title.strip()
             
-            # Если название не нашли — берём первую строку
             if not title:
                 lines = text.split('. ')
                 title = lines[0][:100] if lines else text[:100]
                 title = re.sub(r'^[\d\s.)-]+', '', title).strip()
             
-            # Пропускаем явный мусор
-            if re.search(r'(реклама|промокод|скидка|подпишись|купить|заказать|рассылка|политика|cookie|регистрация|войти)', title, re.I):
+            # Пропускаем мусор
+            if re.search(r'(реклама|промокод|скидка|подпишись|купить|заказать|рассылка|политика|cookie|регистрация|войти|пароль|email|телефон)', title, re.I):
                 continue
             
             if len(title) < 3:
                 continue
             
-            # Извлекаем описание (всё, что после названия)
+            # Извлекаем описание
             desc = ""
             if title and title in text:
                 parts = text.split(title, 1)
@@ -594,7 +636,7 @@ def extract_structured_items(html: str) -> List[Dict]:
                 'source_text': text[:300]
             })
         
-        # 7. Убираем дубликаты по названию
+        # 6. Убираем дубликаты по названию
         seen = set()
         unique_items = []
         for item in items:
@@ -603,13 +645,29 @@ def extract_structured_items(html: str) -> List[Dict]:
                 seen.add(title_lower)
                 unique_items.append(item)
         
-        # 8. Сортируем: сначала с рейтингом, потом с годом
+        # 7. Сортировка: сначала с рейтингом, потом с годом
         unique_items.sort(key=lambda x: (0 if x.get('rating') else 1, 0 if x.get('year') else 2))
         
         return unique_items[:50]
         
     except Exception as e:
         logger.warning(f"⚠️ Ошибка принудительного парсинга: {e}")
+        # Fallback: парсим сырой текст
+        try:
+            text = re.sub(r'<[^>]+>', ' ', html)
+            text = re.sub(r'\s+', ' ', text).strip()
+            titles = re.findall(r'[«"]([^«"»]{3,50})[»"]', text)
+            for title in titles:
+                if len(title) > 3:
+                    items.append({
+                        'title': title[:200],
+                        'description': '',
+                        'year': None,
+                        'rating': None,
+                        'source_text': ''
+                    })
+        except:
+            pass
     
     return items
 
@@ -705,7 +763,7 @@ async def fetch_page_with_fallback(url: str) -> Dict:
                 html = await r.text()
                 return parse_html(html)
     except Exception as e:
-        logger.warning(f"⚠️ HTTP ошибка para {url}: {e}")
+        logger.warning(f"⚠️ HTTP ошибка для {url}: {e}")
     return {'text': '', 'lists': [], 'headings': [], 'date': None, 'tables': [], 'definitions': [], 'key_facts': [], 'items': []}
 
 async def fetch_multiple_pages(links: List[str], max_pages: int = MAX_PAGES_PER_ITERATION) -> List[Dict]:
@@ -772,17 +830,17 @@ def calculate_confidence(items: List[Dict], target_years: int = 5) -> float:
         return 0.0
     
     unique_count = len(set([item.get('title', '') for item in items]))
-    unique_score = min(100, unique_count * 4)  # 25 элементов = 100%
+    unique_score = min(100, unique_count * 4)
     
     rating_count = sum(1 for item in items if item.get('rating'))
-    rating_score = min(100, rating_count * 10)  # 10 рейтингов = 100%
+    rating_score = min(100, rating_count * 10)
     
     desc_count = sum(1 for item in items if item.get('description') and len(item['description']) > 20)
-    desc_score = min(100, desc_count * 4)       # 25 описаний = 100%
+    desc_score = min(100, desc_count * 4)
     
     current_year = now().year
     recent_count = sum(1 for item in items if item.get('year') and current_year - int(item['year']) <= target_years)
-    recent_score = min(100, recent_count * 5)   # 20 актуальных = 100%
+    recent_score = min(100, recent_count * 5)
     
     total_score = (
         unique_score * 0.30 +
@@ -847,7 +905,7 @@ async def search_until_confidence(
     return all_items, all_results, confidence
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА
+#  ОСНОВНАЯ ЛОГИКА (ЗНАНИЯ — ОТДЕЛЬНЫМ БЛОКОМ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict]]:
@@ -855,19 +913,22 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     
     items, search_results, confidence = await search_until_confidence(user_message, uid)
     
+    # Если интернет-данных нет — честно говорим
     if not items:
         memory = get_memory(uid)
         context = memory.get_context(limit=5)
         context_text = '\n'.join([m.get('content', '') for m in context])
+        
         fallback_prompt = f"""
-⚠️ **ТЫ НЕ МОЖЕШЬ СКАЗАТЬ "НЕТ ДОСТУПА"!**
+⚠️ **В ИНТЕРНЕТЕ НИЧЕГО НЕ НАЙДЕНО**
 
-В интернете ничего не найдено.
-Ответь на основе своих знаний.
-Если не знаешь — скажи честно.
+Интернет-данные отсутствуют. Не могу ответить на вопрос.
+
+Вопрос: {user_message}
 
 Контекст: {context_text}
-Вопрос: {user_message}
+
+Ответь честно: "В интернете ничего не найдено. Попробуйте переформулировать запрос."
 """
         answer = await ask_deepseek(fallback_prompt, temperature=0.3)
         return answer, []
@@ -901,26 +962,34 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     else:
         confidence_text += " ✅ Достаточно данных для точного ответа"
     
+    # ═══════════════════════════════════════════════════════════════
+    #  ПРОМПТ: ЗНАНИЯ — ОТДЕЛЬНЫМ БЛОКОМ
+    # ═══════════════════════════════════════════════════════════════
+    
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
-Найдено {len(sorted_items)} элементов. Уверенность: {confidence:.1f}%
+Найдено {len(sorted_items)} элементов в интернете. Уверенность: {confidence:.1f}%
 
 {items_text}
 
-⚠️ **ЗАПРЕЩЕНО (ЭТО ЛОЖЬ!):**
-1. **НЕЛЬЗЯ** говорить "нет доступа к интернету"
-2. **НЕЛЬЗЯ** говорить "на основе моих знаний"
-3. **НЕЛЬЗЯ** говорить "в источниках нет"
-4. **НЕЛЬЗЯ** игнорировать источники
-5. **НЕЛЬЗЯ** придумывать свой ответ
+⚠️ **ПРАВИЛА ОТВЕТА:**
 
-⚠️ **ЕСЛИ ТЫ НАРУШИШЬ ХОТЯ БЫ ОДИН ЗАПРЕТ — ТЫ СОВРЁШЬ.**
+1. **ИНТЕРНЕТ-ДАННЫЕ** — используй ТОЛЬКО их для основного ответа
+2. **ЗНАНИЯ** — добавляй ТОЛЬКО в отдельный блок "🧠 Дополнено из знаний", если данных МАЛО
+3. **НЕЛЬЗЯ** смешивать знания с интернет-данными
+4. **НЕЛЬЗЯ** говорить "нет доступа к интернету"
+5. **НЕЛЬЗЯ** говорить "на основе моих знаний" (только в блоке 🧠)
 
-⚠️ **ФОРМАТ ОТВЕТА:**
-📊 **Уверенность:** {confidence:.1f}%
-📊 **Из источников:** (перечисли найденные элементы)
-📊 **Дополнено из знаний:** (только если нужно, с 🧠)
+⚠️ **ФОРМАТ ОТВЕТА (СТРОГО):**
+
+📊 **Из интернета:** (перечисли найденные элементы с источниками)
+   1. Название (год) ★ рейтинг — описание
+   2. ...
+
+🧠 **Дополнено из знаний:** (только если нужно, отдельный блок)
+   1. Название (год) ★ рейтинг — описание
+
 ✅ **Вывод:** (объективный итог)
 
 Вопрос: {user_message}
@@ -931,26 +1000,27 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     
     answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
     
+    # Проверка на ложь
     is_lie, lie_reason = is_lie_by_sense(answer)
     
     if is_lie:
         logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
-        answer_prompt += f"\n\n⚠️ ТЫ НАРУШИЛ ПРАВИЛА! {lie_reason}. ОТВЕТЬ ЗАНОВО, ТОЛЬКО ИЗ ДАННЫХ!"
-        answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
         
-        if is_lie_by_sense(answer)[0]:
-            logger.warning("⚠️ Повторная ложь! Возвращаем честный отказ.")
-            answer = f"""
-⚠️ **Я НЕ МОГУ СОВРАТЬ.**
+        # Принудительно исправляем ответ
+        corrected_answer = f"""
+⚠️ **ОБНАРУЖЕНА ПОПЫТКА ОБМАНА!**
 
-Найдено {len(sorted_items)} элементов в интернете:
+📊 **Из интернета:**
+{items_text[:1000]}
 
-{items_text[:2000]}
+🧠 **Дополнено из знаний (честно):**
+Я не могу использовать свои знания вместо интернета.
+В интернете найдена информация, но она неполная.
 
-Уверенность: {confidence:.1f}%
-
-Если нужен более полный ответ, попробуйте переформулировать запрос.
+✅ **Вывод:**
+В интернете найдено {len(sorted_items)} элементов. Используйте их для ответа.
 """
+        return corrected_answer, search_results
     
     return answer, search_results
 
@@ -1124,7 +1194,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "👋 Привет! Я поисковый ассистент.\n\n"
         "🔍 Ищу в интернете до 90% уверенности\n"
-        "📊 Показываю источники и рейтинги\n"
+        "📊 Интернет — основа, знания — отдельным блоком\n"
         "⚠️ **НИКОГДА НЕ ВРУ**\n\n"
         "Выбери действие:",
         reply_markup=ACTION_BUTTONS
@@ -1164,10 +1234,9 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (УНИВЕРСАЛЬНАЯ ВЕРСИЯ)")
-    logger.info("🎯 Целевая уверенность: 90%")
-    logger.info("📄 Страниц за итерацию: 12")
-    logger.info("🔍 Парсинг: принудительный, без хардкода")
+    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (АБСОЛЮТНАЯ ЗАЩИТА)")
+    logger.info("🎯 Интернет — основа, знания — отдельным блоком")
+    logger.info("🔒 Никаких лазеек для вранья")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
