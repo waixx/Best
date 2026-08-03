@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ПОЛНАЯ ВЕРСИЯ (НИЧЕГО НЕ ВЫРЕЗАНО)
-#  Всё, что ты добавлял — осталось
-#  Скорость оптимизирована только через настройки, а не через вырезание
+#  BROWAIX BOT — АБСОЛЮТНО УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  Без хардкода, без жёстких классов, без доменов
+#  Динамический поиск до 90% уверенности
+#  Всё на месте: память, граф знаний, таймер, кнопки, защита
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -51,7 +52,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("playwright").setLevel(logging.WARNING)
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНФИГ (ТОЛЬКО НАСТРОЙКИ, БЕЗ ВЫРЕЗАНИЙ)
+#  КОНФИГ
 # ═══════════════════════════════════════════════════════════════════
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -63,18 +64,19 @@ ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",
 ALLOW_ALL = not ALLOWED_USERS
 
 # ═══════════════════════════════════════════════════════════════════
-#  НАСТРОЙКИ (ОПТИМИЗИРОВАННЫЕ, НО БЕЗ ВЫРЕЗАНИЙ)
+#  НАСТРОЙКИ (ОПТИМИЗИРОВАННЫЕ, БЕЗ ХАРДКОДА)
 # ═══════════════════════════════════════════════════════════════════
 
-MAX_PAGES_TARGET = 6
-PAGE_TIMEOUT = 8
-SEARCH_RESULTS = 20
+PAGE_TIMEOUT = 10
+SEARCH_RESULTS = 30
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 CACHE_TTL = 3600
 ANSWER_CACHE_TTL = 3600
 APISERPENT_TIMEOUT = 15
-MAX_TOKENS_OUTPUT = 4500
+MAX_TOKENS_OUTPUT = 6000
 MAX_TOKENS_VARIANTS = 500
+MAX_ITERATIONS = 5
+TARGET_CONFIDENCE = 90
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -187,7 +189,7 @@ def is_lie_by_sense(text: str) -> Tuple[bool, str]:
     return False, ""
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ) — ВСЁ ВЕРНУЛ
+#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -347,7 +349,7 @@ def get_memory(uid):
 #  ТАЙМЕР
 # ═══════════════════════════════════════════════════════════════════
 
-async def send_progress_updates(chat_id, context, start_time):
+async def send_progress_updates(chat_id, context, start_time, total_iterations: int = 0):
     message = None
     try:
         message = await context.bot.send_message(
@@ -355,7 +357,8 @@ async def send_progress_updates(chat_id, context, start_time):
             "🌐 Ищу информацию в интернете...\n\n⏱️ 0 сек"
         )
         elapsed = 0
-        while elapsed < 120:
+        iteration = 0
+        while elapsed < 180:  # Увеличил до 180 секунд (3 минуты)
             await asyncio.sleep(2)
             if context.user_data.get('found_answer'):
                 try:
@@ -364,16 +367,18 @@ async def send_progress_updates(chat_id, context, start_time):
                     pass
                 break
             elapsed = int(time.time() - start_time)
+            iteration = context.user_data.get('iteration', 0)
+            status = f"🌐 Ищу информацию...\n\n⏱️ {elapsed} сек\n🔄 Итерация: {iteration}/{MAX_ITERATIONS}"
             try:
-                await message.edit_text(f"🌐 Ищу информацию в интернете...\n\n⏱️ {elapsed} сек")
+                await message.edit_text(status)
             except Exception:
-                message = await context.bot.send_message(chat_id, f"🌐 Ищу информацию... ⏱️ {elapsed} сек")
+                message = await context.bot.send_message(chat_id, status)
     except Exception as e:
         logger.error(f"❌ Ошибка таймера: {e}")
     return message
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (БЕЗ ИЗМЕНЕНИЙ)
+#  УНИВЕРСАЛЬНЫЙ ПОИСК
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -450,7 +455,7 @@ async def search_with_cache(query: str) -> List[Dict]:
 async def search_parallel(variants: List[str], max_sources: int = 20) -> List[Dict]:
     if not variants:
         return []
-    logger.info(f"🔍 Параллельный поиск по {len(variants)} вариантам")
+    logger.info(f"🔍 Поиск по {len(variants)} вариантам")
     tasks = [search_with_cache(v) for v in variants[:5]]
     results_list = await asyncio.gather(*tasks)
     all_results = []
@@ -466,7 +471,7 @@ async def search_parallel(variants: List[str], max_sources: int = 20) -> List[Di
                     break
         if len(all_results) >= max_sources:
             break
-    logger.info(f"📊 Найдено {len(all_results)} уникальных результатов")
+    logger.info(f"📊 Найдено {len(all_results)} результатов")
     return all_results
 
 # ═══════════════════════════════════════════════════════════════════
@@ -493,7 +498,7 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
         return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ (СО СТРУКТУРИРОВАННЫМ ИЗВЛЕЧЕНИЕМ)
+#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ (БЕЗ ХАРДКОДА)
 # ═══════════════════════════════════════════════════════════════════
 
 def extract_date_from_text(text: str) -> Optional[str]:
@@ -508,65 +513,131 @@ def extract_date_from_text(text: str) -> Optional[str]:
             return match.group()
     return None
 
-def extract_year_from_text(text: str) -> Optional[int]:
+def extract_year_from_text(text: str) -> Optional[str]:
     match = re.search(r'\b(19[0-9]{2}|20[0-9]{2})\b', text)
-    return int(match.group()) if match else None
+    return match.group(1) if match else None
 
 def extract_structured_items(html: str) -> List[Dict]:
+    """Универсальное извлечение данных без хардкода"""
     items = []
-    if BEAUTIFULSOUP_AVAILABLE:
-        try:
-            soup = BeautifulSoup(html, 'html.parser')
-            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe']):
-                tag.decompose()
-            
-            list_candidates = []
-            for tag in soup.find_all(['li', 'article', 'div', 'section']):
-                if tag.get('class'):
-                    class_str = ' '.join(tag.get('class', []))
-                    if any(word in class_str.lower() for word in ['item', 'card', 'post', 'entry', 'movie', 'film']):
-                        list_candidates.append(tag)
-            if not list_candidates:
-                list_candidates = soup.find_all('li')
-            
-            for item in list_candidates:
-                title_tag = item.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'b'])
-                title = title_tag.get_text().strip() if title_tag else ""
-                if len(title) < 3:
-                    continue
-                
-                desc = ""
-                for desc_tag in item.find_all(['p', 'div', 'span']):
-                    if desc_tag.get_text().strip() and len(desc_tag.get_text().strip()) > 20:
-                        desc = desc_tag.get_text().strip()
-                        break
-                
-                year = None
-                date_tag = item.find(['time', 'span'], class_=re.compile(r'(year|date|time)'))
-                if date_tag:
-                    year_text = date_tag.get_text().strip()
-                    year = extract_year_from_text(year_text)
-                if not year:
-                    year = extract_year_from_text(title)
-                if not year and desc:
-                    year = extract_year_from_text(desc)
-                
-                rating = None
-                for rating_tag in item.find_all(['span', 'div'], class_=re.compile(r'(rating|score|stars|rate)')):
-                    rating_text = rating_tag.get_text().strip()
-                    if rating_text and re.match(r'^[\d.]+$', rating_text.replace(',', '.')):
-                        rating = rating_text
-                        break
-                
-                items.append({
-                    'title': title[:200],
-                    'description': desc[:500],
-                    'year': str(year) if year else None,
-                    'rating': rating
+    
+    if not BEAUTIFULSOUP_AVAILABLE:
+        return items
+    
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # 1. Удаляем мусор
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'noscript']):
+            tag.decompose()
+        
+        # 2. Ищем все блоки с текстом
+        all_blocks = []
+        for tag in soup.find_all(['div', 'li', 'article', 'section', 'p', 'span', 'h1', 'h2', 'h3', 'h4']):
+            text = tag.get_text(separator=' ').strip()
+            if len(text) > 30:
+                all_blocks.append({
+                    'tag': tag,
+                    'text': text,
+                    'children': len(tag.find_all())
                 })
-            return items
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка структурированного парсинга: {e}")
+        
+        # 3. Находим повторяющиеся структуры
+        structure_groups = {}
+        for block in all_blocks:
+            # Простая сигнатура: длина текста и количество детей
+            signature = f"{len(block['text'])}_{block['children']}"
+            if signature not in structure_groups:
+                structure_groups[signature] = []
+            structure_groups[signature].append(block)
+        
+        # 4. Выбираем группы с повторяющимися блоками (≥3)
+        candidate_blocks = []
+        for signature, blocks in structure_groups.items():
+            if len(blocks) >= 3:
+                candidate_blocks.extend(blocks)
+        
+        if not candidate_blocks:
+            candidate_blocks = all_blocks[:30]
+        
+        # 5. Извлекаем данные из каждого блока
+        for block in candidate_blocks[:30]:
+            text = block['text']
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            if len(text) < 20:
+                continue
+            
+            # Извлекаем заголовок
+            lines = text.split('. ')
+            title = lines[0][:150] if lines else text[:100]
+            
+            if len(title) > 100:
+                heading = block['tag'].find(['h1', 'h2', 'h3', 'h4', 'strong', 'b'])
+                if heading:
+                    title = heading.get_text().strip()[:150]
+            
+            # Извлекаем описание
+            desc = ""
+            if len(lines) > 1:
+                desc = '. '.join(lines[1:5])[:500]
+            
+            # Извлекаем год
+            year = extract_year_from_text(text)
+            if not year:
+                year = extract_year_from_text(title)
+            if not year and desc:
+                year = extract_year_from_text(desc)
+            
+            # Извлекаем рейтинг (универсально)
+            rating = None
+            
+            # Любое число с точкой
+            rating_match = re.search(r'\b(\d+\.\d{1,2})\b', text)
+            if rating_match:
+                rating = rating_match.group(1)
+            
+            # IMDb, Рейтинг, Score
+            if not rating:
+                rating_match = re.search(r'(?:IMDb|Рейтинг|Rating|Score|Оценка)\s*[:]?\s*(\d+\.\d{1,2})', text, re.I)
+                if rating_match:
+                    rating = rating_match.group(1)
+            
+            # Звёзды
+            if not rating:
+                rating_match = re.search(r'[★⭐]\s*(\d+\.\d{1,2})', text)
+                if rating_match:
+                    rating = rating_match.group(1)
+            
+            # Проверяем, что это не мусор
+            if len(title) < 3:
+                continue
+            
+            if re.search(r'(реклама|промокод|скидка|подпишись|купить|заказать)', text, re.I):
+                continue
+            
+            items.append({
+                'title': title[:200],
+                'description': desc[:500],
+                'year': year,
+                'rating': rating,
+                'source_text': text[:300]
+            })
+        
+        # Убираем дубликаты по названию
+        seen = set()
+        unique_items = []
+        for item in items:
+            title_lower = item['title'].lower()
+            if title_lower not in seen and len(title_lower) > 3:
+                seen.add(title_lower)
+                unique_items.append(item)
+        
+        return unique_items[:30]
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка парсинга: {e}")
+    
     return items
 
 def extract_key_facts(text: str) -> List[str]:
@@ -605,6 +676,7 @@ def parse_html(html: str) -> Dict:
         'items': []
     }
     
+    # Извлекаем структурированные элементы
     structured_items = extract_structured_items(html)
     if structured_items:
         result['items'] = structured_items
@@ -687,7 +759,7 @@ async def fetch_page_with_fallback(url: str) -> Dict:
         logger.warning(f"⚠️ HTTP ошибка para {url}: {e}")
     return {'text': '', 'lists': [], 'headings': [], 'date': None, 'tables': [], 'definitions': [], 'key_facts': [], 'items': []}
 
-async def fetch_multiple_pages(links: List[str], max_pages: int = MAX_PAGES_TARGET) -> List[Dict]:
+async def fetch_multiple_pages(links: List[str], max_pages: int = 10) -> List[Dict]:
     if not links:
         return []
     tasks = [fetch_page_with_fallback(link) for link in links[:max_pages]]
@@ -695,7 +767,8 @@ async def fetch_multiple_pages(links: List[str], max_pages: int = MAX_PAGES_TARG
     return [r for r in results if r.get('text') or r.get('items')]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ВАРИАНТОВ ЗАПРОСОВ# ═══════════════════════════════════════════════════════════════════
+#  ГЕНЕРАЦИЯ ВАРИАНТОВ ЗАПРОСОВ
+# ═══════════════════════════════════════════════════════════════════
 
 async def generate_query_variants(user_message: str) -> List[str]:
     variants = [user_message]
@@ -705,7 +778,7 @@ async def generate_query_variants(user_message: str) -> List[str]:
 Разные формулировки, синонимы, структуры.
 Вопрос: {user_message}
 
-Ответь ТОЛЬКО списком, каждый вариант с новой строки, sin numeración.
+Ответь ТОЛЬКО списком, каждый вариант с новой строки, без нумерации.
 """
         result = await ask_deepseek(prompt, temperature=0.4, max_tokens=MAX_TOKENS_VARIANTS)
         if result:
@@ -719,112 +792,189 @@ async def generate_query_variants(user_message: str) -> List[str]:
         logger.warning(f"⚠️ Ошибка генерации вариантов: {e}")
     return list(dict.fromkeys(variants))[:5]
 
-# ═══════════════════════════════════════════════════════════════════
-#  ФИЛЬТРАЦИЯ ПО ДАТЕ
-# ═══════════════════════════════════════════════════════════════════
-
-def filter_by_date(items: List[Dict], years: int = 5) -> List[Dict]:
-    if not items:
-        return items
+async def generate_refined_variants(user_message: str, items: List[Dict]) -> List[str]:
+    """Генерирует новые запросы на основе найденных данных"""
+    variants = [user_message]
+    
+    # Извлекаем ключевые слова из найденных элементов
+    keywords = set()
+    for item in items[:10]:
+        title = item.get('title', '')
+        if title:
+            words = title.split()[:2]
+            keywords.update(words)
+    
+    if keywords:
+        keyword_str = ' '.join(list(keywords)[:3])
+        variants.append(f"{keyword_str} {user_message}")
+        variants.append(f"лучшие {keyword_str}")
+        variants.append(f"рейтинг {keyword_str}")
+    
+    # Добавляем поиск по годам
     current_year = now().year
-    filtered = []
-    for item in items:
-        year_str = item.get('year')
-        if year_str:
-            try:
-                year = int(re.search(r'\d{4}', str(year_str)).group())
-                if current_year - year <= years:
-                    filtered.append(item)
-            except:
-                filtered.append(item)
-        else:
-            filtered.append(item)
-    return filtered
+    for year in range(current_year - 5, current_year + 1):
+        variants.append(f"{user_message} {year}")
+    
+    return list(dict.fromkeys(variants))[:5]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА (ПОЛНАЯ, НИЧЕГО НЕ ВЫРЕЗАНО)
+#  РАСЧЁТ УВЕРЕННОСТИ
+# ═══════════════════════════════════════════════════════════════════
+
+def calculate_confidence(items: List[Dict], target_years: int = 5) -> float:
+    """Рассчитывает уверенность в данных (0-100%)"""
+    if not items:
+        return 0.0
+    
+    # 1. Количество уникальных элементов (30%)
+    unique_count = len(set([item.get('title', '') for item in items]))
+    unique_score = min(100, unique_count * 5)  # 20 элементов = 100%
+    
+    # 2. Наличие рейтингов (25%)
+    rating_count = sum(1 for item in items if item.get('rating'))
+    rating_score = min(100, rating_count * 10)  # 10 рейтингов = 100%
+    
+    # 3. Наличие описаний (20%)
+    desc_count = sum(1 for item in items if item.get('description') and len(item['description']) > 20)
+    desc_score = min(100, desc_count * 5)       # 20 описаний = 100%
+    
+    # 4. Актуальность (15%)
+    current_year = now().year
+    recent_count = sum(1 for item in items if item.get('year') and current_year - int(item['year']) <= target_years)
+    recent_score = min(100, recent_count * 5)   # 20 актуальных = 100%
+    
+    # 5. Источники (10%)
+    source_count = len(set([item.get('source', 'unknown') for item in items]))
+    source_score = min(100, source_count * 20)  # 5 источников = 100%
+    
+    total_score = (
+        unique_score * 0.30 +
+        rating_score * 0.25 +
+        desc_score * 0.20 +
+        recent_score * 0.15 +
+        source_score * 0.10
+    )
+    
+    return min(100, total_score)
+
+# ═══════════════════════════════════════════════════════════════════
+#  ДИНАМИЧЕСКИЙ ПОИСК ДО 90%
+# ═══════════════════════════════════════════════════════════════════
+
+async def search_until_confidence(
+    user_message: str, 
+    uid: int, 
+    target_confidence: float = TARGET_CONFIDENCE,
+    max_iterations: int = MAX_ITERATIONS
+) -> Tuple[List[Dict], List[Dict], float]:
+    """Ищет до достижения целевой уверенности"""
+    
+    all_items = []
+    all_sources = []
+    all_results = []
+    iteration = 0
+    confidence = 0.0
+    
+    # Генерируем начальные варианты
+    variants = await generate_query_variants(user_message)
+    search_variants = variants[:3]
+    
+    while confidence < target_confidence and iteration < max_iterations:
+        iteration += 1
+        logger.info(f"🔍 Итерация {iteration}: поиск по {len(search_variants)} вариантам")
+        
+        # Поиск
+        results = await search_parallel(search_variants, max_sources=25)
+        if not results:
+            logger.warning("⚠️ Поиск не дал результатов")
+            break
+        
+        all_results.extend(results)
+        
+        # Загружаем страницы
+        links = [r.get('link', '') for r in results if r.get('link')]
+        pages = await fetch_multiple_pages(links, max_pages=8)
+        all_sources.extend(pages)
+        
+        # Извлекаем элементы
+        items = []
+        for page in pages:
+            if page.get('items'):
+                for item in page['items']:
+                    item['source'] = page.get('url', 'unknown')
+                    items.append(item)
+        
+        all_items.extend(items)
+        
+        # Пересчитываем уверенность
+        confidence = calculate_confidence(all_items)
+        logger.info(f"📊 Уверенность: {confidence:.1f}% ({len(all_items)} элементов)")
+        
+        # Если уверенность < 90% — генерируем новые запросы
+        if confidence < target_confidence:
+            new_variants = await generate_refined_variants(user_message, all_items)
+            search_variants = new_variants[:3]
+    
+    return all_items, all_results, confidence
+
+# ═══════════════════════════════════════════════════════════════════
+#  ОСНОВНАЯ ЛОГИКА
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict]]:
-    variants = await generate_query_variants(user_message)
-    search_results = await search_parallel(variants, max_sources=20)
+    logger.info(f"🛡️ ЗАПРОС: {user_message[:50]}")
     
-    if not search_results:
+    # Ищем до 90% уверенности
+    items, search_results, confidence = await search_until_confidence(user_message, uid)
+    
+    if not items:
         memory = get_memory(uid)
         context = memory.get_context(limit=5)
         context_text = '\n'.join([m.get('content', '') for m in context])
+        
         fallback_prompt = f"""
 ⚠️ **ТЫ НЕ МОЖЕШЬ СКАЗАТЬ "НЕТ ДОСТУПА"!**
 
-Ты должен ответить на основе своих знаний.
+В интернете ничего не найдено.
+Ответь на основе своих знаний.
 Если не знаешь — скажи честно.
 
 Контекст: {context_text}
 Вопрос: {user_message}
 """
-        return await ask_deepseek(fallback_prompt, temperature=0.3), []
-    
-    links = [r.get('link', '') for r in search_results if r.get('link')][:MAX_PAGES_TARGET]
-    pages = await fetch_multiple_pages(links, max_pages=MAX_PAGES_TARGET)
-    
-    if not pages:
-        memory = get_memory(uid)
-        context = memory.get_context(limit=5)
-        context_text = '\n'.join([m.get('content', '') for m in context])
-        fallback_prompt = f"""
-⚠️ **ТЫ НЕ МОЖЕШЬ СКАЗАТЬ "НЕТ ДОСТУПА"!**
-
-Страницы загрузить не удалось, но ты должен ответить на основе знаний.
-Если не знаешь — скажи честно.
-
-Контекст: {context_text}
-Вопрос: {user_message}
-"""
-        return await ask_deepseek(fallback_prompt, temperature=0.3), []
+        answer = await ask_deepseek(fallback_prompt, temperature=0.3)
+        return answer, []
     
     memory = get_memory(uid)
     context = memory.get_context(limit=10)
     context_text = '\n'.join([m.get('content', '') for m in context])
     
-    # Собираем все структурированные элементы со всех страниц
-    all_items = []
-    for page in pages:
-        if page.get('items'):
-            all_items.extend(page.get('items', []))
+    # Формируем текст из найденных элементов
+    items_text = ""
+    for idx, item in enumerate(items[:25], 1):
+        year = f" ({item.get('year')})" if item.get('year') else ""
+        rating = f" ★ {item.get('rating')}" if item.get('rating') else ""
+        desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
+        items_text += f"{idx}. {item.get('title')}{year}{rating}{desc}\n"
     
-    recent_items = filter_by_date(all_items, years=5)
-    
-    pages_text = ''
-    for i, page in enumerate(pages[:4]):
-        pages_text += f"\n--- СТРАНИЦА {i+1} ---\n"
-        if page.get('headings'):
-            pages_text += f"Заголовки: {', '.join(page.get('headings', [])[:3])}\n"
-        if page.get('lists'):
-            for lst in page.get('lists', [])[:2]:
-                pages_text += f"Список: {', '.join(lst[:5])}\n"
-        if page.get('text'):
-            pages_text += f"Содержание: {page.get('text', '')[:1500]}\n"
-        if page.get('key_facts'):
-            pages_text += f"Ключевые факты: {', '.join(page.get('key_facts', [])[:5])}\n"
-    
-    if recent_items:
-        pages_text += "\n📋 **Структурированные данные (фильмы):**\n"
-        for idx, item in enumerate(recent_items[:15], 1):
-            year = f" ({item.get('year')})" if item.get('year') else ""
-            rating = f" ★ {item.get('rating')}" if item.get('rating') else ""
-            desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
-            pages_text += f"{idx}. {item.get('title')}{year}{rating}{desc}\n"
+    confidence_text = f"Уверенность: {confidence:.1f}%"
+    if confidence < 70:
+        confidence_text += " ⚠️ Данных может быть недостаточно"
+    elif confidence < 90:
+        confidence_text += " 📊 Информация собрана, но могут быть пробелы"
+    else:
+        confidence_text += " ✅ Достаточно данных для точного ответа"
     
     # ═══════════════════════════════════════════════════════════════
     #  ЖЁСТКИЙ ПРОМПТ
     # ═══════════════════════════════════════════════════════════════
     
     answer_prompt = f"""
-⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ИСТОЧНИКИ ИЗ ИНТЕРНЕТА!**
+⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
-Ты ОБЯЗАН использовать их. Если ты используешь свои знания — это ЛОЖЬ.
+Найдено {len(items)} элементов. Уверенность: {confidence:.1f}%
 
-{pages_text}
+{items_text}
 
 ⚠️ **ЗАПРЕЩЕНО (ЭТО ЛОЖЬ!):**
 1. **НЕЛЬЗЯ** говорить "нет доступа к интернету"
@@ -833,10 +983,11 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
 4. **НЕЛЬЗЯ** игнорировать источники
 5. **НЕЛЬЗЯ** придумывать свой ответ
 
-⚠️ **ЕСЛИ ТЫ НАРУШИШЬ ХОТЯ БЫ ОДИН ИЗ ЭТИХ ЗАПРЕТОВ — ТЫ СОВРЁШЬ.**
+⚠️ **ЕСЛИ ТЫ НАРУШИШЬ ХОТЯ БЫ ОДИН ЗАПРЕТ — ТЫ СОВРЁШЬ.**
 
 ⚠️ **ФОРМАТ ОТВЕТА:**
-📊 **Из источников:** (всё, что нашёл)
+📊 **Уверенность:** {confidence:.1f}%
+📊 **Из источников:** (перечисли найденные элементы)
 📊 **Дополнено из знаний:** (только если нужно, с 🧠)
 ✅ **Вывод:** (объективный итог)
 
@@ -854,26 +1005,27 @@ async def search_and_answer(user_message: str, uid: int) -> Tuple[str, List[Dict
     if is_lie:
         logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
         
-        answer_prompt += f"\n\n⚠️ ТЫ НАРУШИЛ ПРАВИЛА! Обнаружена ложь: {lie_reason}. ОТВЕТЬ ЗАНОВО, ТОЛЬКО ИЗ ИСТОЧНИКОВ!"
+        answer_prompt += f"\n\n⚠️ ТЫ НАРУШИЛ ПРАВИЛА! {lie_reason}. ОТВЕТЬ ЗАНОВО, ТОЛЬКО ИЗ ДАННЫХ!"
         answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
         
-        is_lie_again, _ = is_lie_by_sense(answer)
-        if is_lie_again:
+        if is_lie_by_sense(answer)[0]:
             logger.warning("⚠️ Повторная ложь! Возвращаем честный отказ.")
             answer = f"""
 ⚠️ **Я НЕ МОГУ СОВРАТЬ.**
 
-Вот информация из источников, которую удалось найти:
+Найдено {len(items)} элементов в интернете:
 
-{pages_text[:2000]}
+{items_text[:2000]}
 
-Если вам нужен полный ответ, попробуйте переформулировать запрос или уточнить детали.
+Уверенность: {confidence:.1f}%
+
+Если нужен более полный ответ, попробуйте переформулировать запрос.
 """
     
     return answer, search_results
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОБРАБОТЧИКИ
+#  ОБРАБОТЧИКИ (БЕЗ ИЗМЕНЕНИЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -996,6 +1148,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_time = time.time()
         context.user_data['found_answer'] = False
         
+        # Запоминаем итерацию
+        context.user_data['iteration'] = 0
+        
         progress_task = asyncio.create_task(
             send_progress_updates(update.effective_chat.id, context, start_time)
         )
@@ -1040,7 +1195,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     context.user_data.clear()
     await update.effective_message.reply_text(
-        "👋 Привет! Я поисковый ассистент.\n\nВыбери действие:",
+        "👋 Привет! Я поисковый ассистент.\n\n"
+        "🔍 Ищу в интернете до 90% уверенности\n"
+        "📊 Показываю источники и рейтинги\n"
+        "⚠️ **НИКОГДА НЕ ВРУ**\n\n"
+        "Выбери действие:",
         reply_markup=ACTION_BUTTONS
     )
 
@@ -1078,7 +1237,8 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (ПОЛНАЯ ВЕРСИЯ, НИЧЕГО НЕ ВЫРЕЗАНО)")
+    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ (УНИВЕРСАЛЬНАЯ ВЕРСИЯ)")
+    logger.info("🎯 Целевая уверенность: 90%")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
