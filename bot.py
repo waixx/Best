@@ -1,8 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — УНИВЕРСАЛЬНАЯ ВЕРСИЯ
-#  DEEPSEEK ГЕНЕРИРУЕТ ЗАПРОСЫ С УТОЧНЕНИЕМ "СТАТЬЯ/ТЕКСТ"
-#  ДОБИРАЕТ ДО 5 РЕЛЕВАНТНЫХ ИСТОЧНИКОВ
-#  ВСЁ ОСТАЛЬНОЕ СОХРАНЕНО
+#  BROWAIX BOT — ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ
+#  APISERPENT ОСНОВНОЙ, SERPER РЕЗЕРВ
+#  BROWSERLESS ДЛЯ JS-СТРАНИЦ, DEEPSEEK ПАРСИНГ СТРУКТУР
+#  ДОБИРАЕТ ДО 7 РЕЛЕВАНТНЫХ ТЕКСТОВЫХ ИСТОЧНИКОВ
+#  ПАМЯТЬ, ТОЧНОСТЬ, ПРОВЕРКА НА ЛОЖЬ, ТАЙМЕР, КНОПКИ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -26,6 +27,13 @@ try:
 except ImportError:
     BEAUTIFULSOUP_AVAILABLE = False
 
+# Browserless (Playwright)
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -39,6 +47,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
@@ -62,7 +71,8 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     logger.error("❌ TELEGRAM_TOKEN или DEEPSEEK_API_KEY не заданы")
     sys.exit(1)
 
-logger.info("🚀 УНИВЕРСАЛЬНАЯ ВЕРСИЯ (С ДОБОРОМ ДО 5 ИСТОЧНИКОВ)")
+logger.info("🚀 ФИНАЛЬНАЯ УНИВЕРСАЛЬНАЯ ВЕРСИЯ")
+logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
 
 # ═══════════════════════════════════════════════════════════════════
 #  HTTP
@@ -277,7 +287,7 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК
+#  ПОИСК (APISerpent → Serper)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -342,8 +352,45 @@ async def search_with_cache(query: str) -> List[Dict]:
     logger.warning(f"⚠️ Поиск не дал результатов для: {query[:40]}...")
     return []
 
+async def search_all(variants: List[str]) -> List[Dict]:
+    all_results = []
+    seen_urls = set()
+    for v in variants[:10]:
+        results = await search_with_cache(v)
+        if results:
+            for r in results:
+                url = r.get('link', '')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_results.append(r)
+        if len(all_results) >= MAX_PAGES * 3:
+            break
+    logger.info(f"📊 Найдено {len(all_results)} результатов")
+    return all_results[:MAX_PAGES * 3]
+
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ
+#  BROWSERLESS ДЛЯ JS-СТРАНИЦ
+# ═══════════════════════════════════════════════════════════════════
+
+async def fetch_with_browserless(url: str) -> Optional[str]:
+    """Загружает страницу через Browserless (Playwright)"""
+    if not PLAYWRIGHT_AVAILABLE or not BROWSERLESS_WS_ENDPOINT:
+        return None
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = await context.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+            html = await page.content()
+            await page.close()
+            return html
+    except Exception as e:
+        logger.warning(f"⚠️ Browserless ошибка {url[:50]}: {e}")
+    return None
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПАРСИНГ (BEAUTIFULSOUP)
 # ═══════════════════════════════════════════════════════════════════
 
 def parse_html(html: str) -> Dict:
@@ -378,27 +425,137 @@ def parse_html(html: str) -> Dict:
     sentences = re.findall(r'[А-Яа-яA-Za-z][^.!?]{10,150}[.!?]', text)
     return {'text': ' '.join(sentences[:25])[:4000], 'lists': [], 'headings': []}
 
-async def fetch_page(url: str) -> Optional[Dict]:
+# ═══════════════════════════════════════════════════════════════════
+#  ИЗВЛЕЧЕНИЕ СТРУКТУР ЧЕРЕЗ DEEPSEEK
+# ═══════════════════════════════════════════════════════════════════
+
+async def extract_structures_with_deepseek(text: str, query: str) -> Dict:
+    """DeepSeek извлекает структуры из текста"""
+    if len(text) > 4000:
+        text = text[:4000]
+    prompt = f"""
+⚠️ **Извлеки структурированную информацию из текста.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **ТЕКСТ:**
+{text}
+
+⚠️ **ИЗВЛЕКИ:**
+1. Списки (нумерованные, маркированные)
+2. Шаги, алгоритмы
+3. Вопросы
+4. Цифры, цены
+5. Определения
+6. Примеры
+7. Рекомендации
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{
+  "lists": ["пункт 1", "пункт 2"],
+  "steps": ["шаг 1", "шаг 2"],
+  "questions": ["вопрос 1"],
+  "prices": ["цена 1"],
+  "definitions": ["определение 1"],
+  "examples": ["пример 1"],
+  "recommendations": ["рекомендация 1"]
+}}
+
+⚠️ **ЕСЛИ ЧЕГО-ТО НЕТ — оставляй пустой массив. НЕ ВЫДУМЫВАЙ.**
+"""
+    try:
+        answer = await ask_deepseek(prompt, temperature=0.1, max_tokens=800)
+        json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception as e:
+        logger.error(f"❌ Ошибка извлечения структур: {e}")
+    return {}
+
+# ═══════════════════════════════════════════════════════════════════
+#  ГИБРИДНАЯ ЗАГРУЗКА СТРАНИЦ (HTTP → Browserless)
+# ═══════════════════════════════════════════════════════════════════
+
+async def fetch_page(url: str, query: str = "") -> Optional[Dict]:
+    """Загружает страницу: сначала HTTP, если мало данных — Browserless"""
+    # 1. Простой HTTP
     try:
         session = await get_session()
         async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=PAGE_TIMEOUT) as r:
             if r.status == 200:
                 html = await r.text()
-                return parse_html(html)
+                parsed = parse_html(html)
+                # Если текста достаточно — возвращаем
+                if parsed['text'] and len(parsed['text']) > 500:
+                    structures = await extract_structures_with_deepseek(parsed['text'], query)
+                    parsed['structures'] = structures
+                    return parsed
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка загрузки {url[:50]}: {e}")
+        logger.warning(f"⚠️ HTTP ошибка {url[:50]}: {e}")
+    
+    # 2. Если HTTP не дал результата — используем Browserless
+    if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
+        logger.info(f"🌐 Используем Browserless для {url[:50]}...")
+        html = await fetch_with_browserless(url)
+        if html:
+            parsed = parse_html(html)
+            if parsed['text'] and len(parsed['text']) > 100:
+                structures = await extract_structures_with_deepseek(parsed['text'], query)
+                parsed['structures'] = structures
+                return parsed
+    
     return None
 
-async def fetch_pages(results: List[Dict]) -> List[Dict]:
+async def fetch_pages(results: List[Dict], query: str) -> List[Dict]:
     pages = []
     for r in results[:MAX_PAGES]:
         url = r.get('link', '')
         if url:
-            parsed = await fetch_page(url)
-            if parsed and parsed['text']:
-                pages.append({'url': url, 'title': r.get('title', ''), 'parsed': parsed})
-    logger.info(f"✅ Загружено {len(pages)} страниц")
+            parsed = await fetch_page(url, query)
+            if parsed and parsed.get('text'):
+                pages.append({
+                    'url': url,
+                    'title': r.get('title', ''),
+                    'parsed': parsed,
+                    'structures': parsed.get('structures', {})
+                })
+    logger.info(f"✅ Загружено {len(pages)} страниц (с Browserless при необходимости)")
     return pages
+
+# ═══════════════════════════════════════════════════════════════════
+#  ФИЛЬТРАЦИЯ РЕЗУЛЬТАТОВ (УМНАЯ)
+# ═══════════════════════════════════════════════════════════════════
+
+def is_good_result(result: Dict) -> bool:
+    """Проверяет, что результат — полезная текстовая статья"""
+    url = result.get('link', '')
+    title = result.get('title', '').lower()
+    snippet = result.get('snippet', '').lower()
+    
+    # 1. Исключаем видео и соцсети
+    bad_domains = ['youtube.com', 'instagram.com', 'facebook.com', 'tiktok.com', 'twitter.com']
+    if any(d in url for d in bad_domains):
+        return False
+    
+    # 2. Проверяем длину сниппета
+    if len(snippet) < 50:
+        return False
+    
+    # 3. Проверяем наличие ключевых слов (предварительная фильтрация)
+    useful_words = ['скрипт', 'пример', 'шаблон', 'вопрос', 'диалог', 'алгоритм', 'шаг', 'техника']
+    if any(w in title or w in snippet for w in useful_words):
+        return True
+    
+    # 4. Проверяем домен: предпочтение авторитетным сайтам
+    good_domains = ['habr.com', 'vc.ru', 'cossa.ru', 'blog', 'wiki', 'guide', 'how-to']
+    if any(d in url for d in good_domains):
+        return True
+    
+    # Если сниппет длинный — пропускаем
+    if len(snippet) > 150:
+        return True
+    
+    return False
 
 # ═══════════════════════════════════════════════════════════════════
 #  ИНДИКАТОР ТОЧНОСТИ
@@ -477,13 +634,19 @@ def check_refusal(answer: str) -> bool:
 async def generate_answer(query: str, pages: List[Dict], memory_context: str = "") -> str:
     context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:2000] for p in pages[:2]])
     
+    # Собираем структуры из страниц
+    all_structures = {'lists': [], 'steps': [], 'questions': [], 'prices': [], 'definitions': [], 'examples': [], 'recommendations': []}
+    for p in pages:
+        structures = p.get('structures', {})
+        for key in all_structures:
+            if structures.get(key):
+                all_structures[key].extend(structures[key])
+    
     structures_text = ""
-    for p in pages[:2]:
-        parsed = p.get('parsed', {})
-        if parsed.get('lists'):
-            structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in parsed['lists'][:5]]) + "\n"
-        if parsed.get('headings'):
-            structures_text += "📌 ЗАГОЛОВКИ:\n" + "\n".join([f"  • {item}" for item in parsed['headings'][:3]]) + "\n"
+    for key, items in all_structures.items():
+        if items:
+            emoji = {"lists": "📋", "steps": "🔄", "questions": "❓", "prices": "💰", "definitions": "📖", "examples": "💡", "recommendations": "💡"}
+            structures_text += f"{emoji.get(key, '•')} {key.upper()}:\n" + "\n".join([f"  • {item}" for item in items[:5]]) + "\n"
     
     prompt = f"""
 ⚠️ **На основе информации из интернета дай структурированный ответ.**
@@ -546,7 +709,7 @@ async def generate_answer(query: str, pages: List[Dict], memory_context: str = "
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА (С ДОБОРОМ ДО 5 ИСТОЧНИКОВ)
+#  ОСНОВНАЯ ЛОГИКА (С ДОБОРОМ ДО 7 ИСТОЧНИКОВ)
 # ═══════════════════════════════════════════════════════════════════
 
 current_stage = "⏳ Запуск"
@@ -558,34 +721,24 @@ def set_stage(stage: str):
 async def process_query(query: str, uid: int) -> str:
     set_stage("🧠 Анализирую запрос")
     
-    # 1. DeepSeek генерирует варианты с уточнением "статья/текст"
+    # 1. DeepSeek генерирует варианты с фокусом на практические статьи
     analyze_prompt = f"""
-⚠️ **Ты — аналитик поиска. Сгенерируй поисковые запросы, которые найдут ТЕКСТОВЫЕ статьи, блоги, форумы, а не видео или соцсети.**
+⚠️ **Ты — аналитик поиска. Сгенерируй поисковые запросы для поиска ПРАКТИЧЕСКИХ СТАТЕЙ с примерами.**
 
 ⚠️ **ЗАПРОС ПОЛЬЗОВАТЕЛЯ:** {query}
 
 ⚠️ **ТВОЯ ЗАДАЧА:**
 1. Понять, что на самом деле нужно пользователю
-2. Сгенерировать 8-10 вариантов поисковых запросов
-3. Добавь в запросы уточнения: "статья", "текст", "пример", "скрипт", "шаблон", "как"
+2. Сгенерировать 10-12 вариантов поисковых запросов
+3. Добавь в запросы слова: "скрипт", "пример", "шаблон", "алгоритм", "вопросы", "как"
 4. Используй синонимы и перефразирования
+5. Запросы должны находить статьи с конкретными примерами
 
 ⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
 {{
-  "understanding": "краткое понимание (1-2 предложения)",
-  "variants": [
-    "вариант 1",
-    "вариант 2",
-    "вариант 3",
-    "вариант 4",
-    "вариант 5",
-    "вариант 6",
-    "вариант 7",
-    "вариант 8"
-  ]
+  "understanding": "краткое понимание",
+  "variants": ["вариант 1", "вариант 2", "вариант 3", "вариант 4", "вариант 5", "вариант 6", "вариант 7", "вариант 8", "вариант 9", "вариант 10"]
 }}
-
-⚠️ **ОТВЕЧАЙ ТОЛЬКО JSON. НЕ ВЫДУМЫВАЙ.**
 """
     
     try:
@@ -601,60 +754,111 @@ async def process_query(query: str, uid: int) -> str:
     except:
         variants = [query]
     
-    # Если DeepSeek не дал вариантов — добавляем универсальные с уточнением
+    # Если DeepSeek не дал вариантов — добавляем универсальные
     if len(variants) < 3:
         variants = [
             query,
-            f"скрипт продаж {query} статья",
-            f"как продавать {query} пример",
-            f"вопросы для клиента {query} текст",
-            f"техника продаж {query} шаблон"
+            f"скрипт продаж {query} пример",
+            f"как продавать {query} шаблон",
+            f"вопросы для клиента {query} список",
+            f"техника продаж {query} алгоритм",
+            f"пример диалога {query}",
+            f"скрипт {query} образец"
         ]
     
     logger.info(f"🔍 DeepSeek сгенерировал {len(variants)} вариантов")
     
-    # 2. Ищем и добираем до 5 релевантных источников
+    # 2. Ищем и добираем до 7 релевантных источников
     set_stage("🔍 Ищу в интернете")
     
     all_results = []
     seen_urls = set()
-    target_count = 5
+    target_count = 7
     
     for v in variants[:10]:
         results = await search_with_cache(v)
         if results:
-            # Фильтруем мусор: исключаем видео и соцсети
-            filtered = []
             for r in results:
-                url = r.get('link', '')
-                if url and url not in seen_urls:
-                    # Пропускаем видео-хостинги и соцсети
-                    if any(x in url for x in ['youtube.com', 'instagram.com', 'facebook.com', 'tiktok.com', 'twitter.com']):
-                        continue
-                    seen_urls.add(url)
-                    filtered.append(r)
-            all_results.extend(filtered)
-            logger.info(f"   Найдено {len(filtered)} текстовых результатов по запросу '{v[:40]}...'")
-        
-        # Если набрали 5 — выходим
-        if len(all_results) >= target_count:
-            break
+                if is_good_result(r) and r.get('link') not in seen_urls:
+                    seen_urls.add(r.get('link'))
+                    all_results.append(r)
+            if len(all_results) >= target_count:
+                break
+    
+    # Если меньше 5 — расширяем поиск
+    if len(all_results) < 5:
+        broad_variants = [
+            f"пример скрипта {query}",
+            f"шаблон продаж {query}",
+            f"как продавать {query} пример"
+        ]
+        for v in broad_variants:
+            results = await search_with_cache(v)
+            if results:
+                for r in results:
+                    if is_good_result(r) and r.get('link') not in seen_urls:
+                        seen_urls.add(r.get('link'))
+                        all_results.append(r)
+                if len(all_results) >= target_count:
+                    break
     
     if not all_results:
-        return "⚠️ В интернете не нашлось текстовых источников. Попробуй переформулировать запрос."
+        return "⚠️ В интернете не нашлось полезных статей. Попробуй переформулировать запрос."
     
-    # Ограничиваем до 5
     all_results = all_results[:target_count]
-    logger.info(f"📊 Найдено {len(all_results)} текстовых источников")
+    logger.info(f"📊 Найдено {len(all_results)} релевантных источников")
     
-    # 3. Загружаем страницы
+    # 3. Ранжирование через DeepSeek
+    set_stage("📊 Оцениваю релевантность")
+    
+    rank_prompt = f"""
+⚠️ **Оцени релевантность результатов для запроса. Отдавай предпочтение статьям с практическими примерами.**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **РЕЗУЛЬТАТЫ:**
+{chr(10).join([f"{i+1}. {r.get('title', 'Без названия')} — {r.get('link', '')}" for i, r in enumerate(all_results[:15])])}
+
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. Оцени каждый результат по шкале 0-100
+2. Выше оценивай статьи со списками, шагами, примерами
+3. Ниже — общую теорию, новости, рекламу
+4. Верни список оценок
+
+⚠️ **ФОРМАТ (ТОЛЬКО JSON):**
+{{"rankings": [95, 30, 70, ...]}}
+"""
+    
+    try:
+        rank_text = await ask_deepseek(rank_prompt, temperature=0.2, max_tokens=400)
+        json_match = re.search(r'\{.*\}', rank_text, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            rankings = data.get('rankings', [])
+            for i, r in enumerate(all_results[:15]):
+                if i < len(rankings):
+                    r['relevance'] = rankings[i] / 100
+                else:
+                    r['relevance'] = 0.5
+    except:
+        for r in all_results:
+            r['relevance'] = 0.5
+    
+    # Сортируем по релевантности
+    all_results.sort(key=lambda x: x.get('relevance', 0), reverse=True)
+    top_results = all_results[:MAX_PAGES * 2]
+    
+    if not top_results:
+        return "⚠️ Не найдено релевантных источников. Попробуй переформулировать запрос."
+    
+    # 4. Загружаем страницы (гибрид: HTTP + Browserless)
     set_stage("📄 Загружаю страницы")
-    pages = await fetch_pages(all_results)
+    pages = await fetch_pages(top_results, query)
     
     if not pages:
         return "⚠️ Не удалось загрузить страницы. Попробуй позже."
     
-    # 4. Генерируем ответ
+    # 5. Генерируем ответ
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
@@ -792,10 +996,13 @@ def main():
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
+    logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("✅ Память: 5 уровней + граф знаний")
     logger.info("✅ Индикатор точности")
     logger.info("✅ Проверка на ложь и отказ")
-    logger.info("✅ Добор до 5 текстовых источников")
+    logger.info("✅ Добор до 7 текстовых источников")
+    logger.info("✅ Гибридный парсинг (HTTP + Browserless)")
+    logger.info("✅ DeepSeek-извлечение структур")
     
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
