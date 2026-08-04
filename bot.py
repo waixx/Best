@@ -73,6 +73,7 @@
 
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — ФИНАЛЬНАЯ ПОЛНАЯ РАБОЧАЯ ВЕРСИЯ
+#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ APISERPENT (ВСЕ ВОЗМОЖНЫЕ МЕСТА)
 #  ВСЁ НА МЕСТЕ: deep=true + ВСЕ КНОПКИ + ПОЛОСКА + РАЗБИВКА
 #  ВСЕ ФУНКЦИИ ВЫЗЫВАЮТСЯ, НИЧЕГО НЕ ВЫРЕЗАНО
 #  90% ТОЧНОСТЬ, 90-120 СЕК
@@ -583,7 +584,7 @@ async def send_progress_updates(chat_id, context, start_time):
         logger.error(f"❌ Ошибка прогресса: {e}")
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (APISerpent с deep=true + ВСЕМИ БЛОКАМИ)
+#  ПОИСК (APISerpent с УНИВЕРСАЛЬНЫМ ПАРСИНГОМ)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -618,37 +619,80 @@ async def search_apiserpent(query: str) -> List[Dict]:
             
             if r.status == 200:
                 data = json.loads(response_text)
-                logger.info(f"📊 Ключи: {list(data.keys())}")
+                logger.info(f"📊 Ключи верхнего уровня: {list(data.keys())}")
                 results = []
                 
-                # 1. Organic
-                results_data = data.get("results", {})
-                organic = results_data.get("organic", []) or data.get("organic_results", []) or data.get("organic", [])
-                if organic:
-                    logger.info(f"✅ Найдено {len(organic)} organic")
-                for x in organic:
-                    results.append({
-                        "title": x.get("title", ""),
-                        "snippet": x.get("snippet", ""),
-                        "link": x.get("link", ""),
-                        "source": "organic"
-                    })
+                # === УНИВЕРСАЛЬНЫЙ ПОИСК ORGANIC ===
+                organic = []
                 
-                # 2. People Also Ask
+                # 1. data["results"]["organic"]
+                results_data = data.get("results", {})
+                if isinstance(results_data, dict):
+                    organic = results_data.get("organic", [])
+                    if organic:
+                        logger.info(f"✅ Найдено {len(organic)} organic в results.organic")
+                
+                # 2. data["organic_results"]
+                if not organic:
+                    organic = data.get("organic_results", [])
+                    if organic:
+                        logger.info(f"✅ Найдено {len(organic)} organic в organic_results")
+                
+                # 3. data["organic"]
+                if not organic:
+                    organic = data.get("organic", [])
+                    if organic:
+                        logger.info(f"✅ Найдено {len(organic)} organic в organic")
+                
+                # 4. Рекурсивный поиск в любом вложенном объекте
+                if not organic:
+                    def find_organic(obj, path=""):
+                        if isinstance(obj, dict):
+                            if "organic" in obj and isinstance(obj["organic"], list):
+                                return obj["organic"]
+                            for key, value in obj.items():
+                                result = find_organic(value, f"{path}.{key}" if path else key)
+                                if result:
+                                    return result
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                result = find_organic(item, path)
+                                if result:
+                                    return result
+                        return None
+                    
+                    found = find_organic(data)
+                    if found and isinstance(found, list):
+                        organic = found
+                        logger.info(f"✅ Найдено {len(organic)} organic (рекурсивный поиск)")
+                
+                # Обработка organic
+                if organic:
+                    for x in organic:
+                        if isinstance(x, dict):
+                            results.append({
+                                "title": x.get("title", ""),
+                                "snippet": x.get("snippet", ""),
+                                "link": x.get("link", ""),
+                                "source": "organic"
+                            })
+                
+                # === PEOPLE ALSO ASK ===
                 paa = data.get("people_also_ask", [])
                 if paa:
                     logger.info(f"✅ Найдено {len(paa)} PAA")
                 for item in paa:
-                    results.append({
-                        "title": item.get("question", ""),
-                        "snippet": item.get("snippet", ""),
-                        "link": item.get("link", ""),
-                        "source": "paa"
-                    })
+                    if isinstance(item, dict):
+                        results.append({
+                            "title": item.get("question", ""),
+                            "snippet": item.get("snippet", ""),
+                            "link": item.get("link", ""),
+                            "source": "paa"
+                        })
                 
-                # 3. Featured Snippet
+                # === FEATURED SNIPPET ===
                 featured = data.get("featured_snippet", {})
-                if featured:
+                if featured and isinstance(featured, dict):
                     logger.info("✅ Найден featured_snippet")
                     results.append({
                         "title": featured.get("title", ""),
@@ -657,9 +701,9 @@ async def search_apiserpent(query: str) -> List[Dict]:
                         "source": "featured"
                     })
                 
-                # 4. AI Overview
+                # === AI OVERVIEW ===
                 ai_overview = data.get("ai_overview", {})
-                if ai_overview:
+                if ai_overview and isinstance(ai_overview, dict):
                     logger.info("✅ Найден ai_overview")
                     results.append({
                         "title": "AI Overview",
@@ -668,9 +712,9 @@ async def search_apiserpent(query: str) -> List[Dict]:
                         "source": "ai_overview"
                     })
                 
-                # 5. Answer Box
+                # === ANSWER BOX ===
                 answer_box = data.get("answer_box", {})
-                if answer_box:
+                if answer_box and isinstance(answer_box, dict):
                     logger.info("✅ Найден answer_box")
                     results.append({
                         "title": answer_box.get("title", "Answer Box"),
@@ -679,7 +723,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
                         "source": "answer_box"
                     })
                 
-                logger.info(f"📊 Всего: {len(results)} результатов")
+                logger.info(f"📊 ВСЕГО собрано результатов: {len(results)}")
                 return results
             else:
                 logger.warning(f"⚠️ HTTP {r.status}")
@@ -709,12 +753,13 @@ async def search_serper(query: str) -> List[Dict]:
                 data = await r.json()
                 results = []
                 for x in data.get("organic", []):
-                    results.append({
-                        "title": x.get("title", ""),
-                        "snippet": x.get("snippet", ""),
-                        "link": x.get("link", ""),
-                        "source": "organic"
-                    })
+                    if isinstance(x, dict):
+                        results.append({
+                            "title": x.get("title", ""),
+                            "snippet": x.get("snippet", ""),
+                            "link": x.get("link", ""),
+                            "source": "organic"
+                        })
                 logger.info(f"✅ Serper нашёл {len(results)} результатов")
                 return results
     except Exception as e:
@@ -1375,9 +1420,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     memory = get_memory(user_id)
 
-    # ──────────────────────────────────────────────────────────────
-    # 🔍 ПОИСК (С ВЫЗОВОМ ВСЕХ ФУНКЦИЙ)
-    # ──────────────────────────────────────────────────────────────
     if action == "action_search":
         pending_text = context.user_data.get('pending_text', '')
         if not pending_text:
@@ -1393,7 +1435,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         start_time = time.time()
         context.user_data['found_answer'] = False
 
-        # ✅ ЗАПУСКАЕМ РАДУЖНУЮ ПОЛОСКУ
         progress_task = asyncio.create_task(
             send_progress_updates(update.effective_chat.id, context, start_time)
         )
@@ -1416,13 +1457,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['last_formatted_answer'] = clean_answer
         
         full_text = f"⏱️ {elapsed} сек\n\n{clean_answer}"
-        
-        # ✅ РАЗБИВАЕМ ДЛИННОЕ СООБЩЕНИЕ
         await send_long_message(update, full_text, ACTION_WITH_SOURCES_BUTTONS)
 
-    # ──────────────────────────────────────────────────────────────
-    # 📝 УТОЧНИТЬ (вызов)
-    # ──────────────────────────────────────────────────────────────
     elif action == "action_clarify":
         last_query = context.user_data.get('last_query', '')
         if not last_query:
@@ -1443,9 +1479,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='Markdown'
         )
 
-    # ──────────────────────────────────────────────────────────────
-    # 💬 БЕСЕДА
-    # ──────────────────────────────────────────────────────────────
     elif action == "action_chat":
         pending_text = context.user_data.get('pending_text', '')
         if not pending_text:
@@ -1489,9 +1522,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=EXIT_CHAT_BUTTON
         )
 
-    # ──────────────────────────────────────────────────────────────
-    # 🔙 ВЫХОД ИЗ БЕСЕДЫ
-    # ──────────────────────────────────────────────────────────────
     elif action == "action_exit_chat":
         context.user_data['mode'] = 'search'
         context.user_data['awaiting_input'] = False
@@ -1503,9 +1533,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=ACTION_BUTTONS
         )
 
-    # ──────────────────────────────────────────────────────────────
-    # 📎 ПОКАЗАТЬ ИСТОЧНИКИ
-    # ──────────────────────────────────────────────────────────────
     elif action == "show_sources":
         sources = context.user_data.get('last_sources', [])
         
@@ -1524,9 +1551,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='Markdown'
         )
 
-    # ──────────────────────────────────────────────────────────────
-    # 🔒 СКРЫТЬ ИСТОЧНИКИ
-    # ──────────────────────────────────────────────────────────────
     elif action == "hide_sources":
         last_answer = context.user_data.get('last_formatted_answer', '')
         if last_answer:
@@ -1552,9 +1576,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     memory = get_memory(user_id)
 
-    # ──────────────────────────────────────────────────────────────
-    # РЕЖИМ БЕСЕДЫ
-    # ──────────────────────────────────────────────────────────────
     if context.user_data.get('mode') == 'chat':
         full_context = memory.get_full_context()
 
@@ -1584,9 +1605,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(update, f"💬 {answer}", EXIT_CHAT_BUTTON)
         return
 
-    # ──────────────────────────────────────────────────────────────
-    # РЕЖИМ УТОЧНЕНИЯ
-    # ──────────────────────────────────────────────────────────────
     if context.user_data.get('mode') == 'clarify':
         last_query = context.user_data.get('last_query', '')
         if not last_query:
@@ -1612,7 +1630,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_time = time.time()
         context.user_data['found_answer'] = False
 
-        # ✅ ЗАПУСКАЕМ РАДУЖНУЮ ПОЛОСКУ
         progress_task = asyncio.create_task(
             send_progress_updates(update.effective_chat.id, context, start_time)
         )
@@ -1634,14 +1651,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['last_formatted_answer'] = clean_answer
         
         full_text = f"⏱️ {elapsed} сек\n\n{clean_answer}"
-        
-        # ✅ РАЗБИВАЕМ ДЛИННОЕ СООБЩЕНИЕ
         await send_long_message(update, full_text, ACTION_WITH_SOURCES_BUTTONS)
         return
 
-    # ──────────────────────────────────────────────────────────────
-    # ОБЫЧНЫЙ РЕЖИМ
-    # ──────────────────────────────────────────────────────────────
     context.user_data['pending_text'] = user_message
     context.user_data['awaiting_input'] = True
 
@@ -1713,20 +1725,21 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК ПОЛНОЙ РАБОЧЕЙ ВЕРСИИ (ВСЁ РАБОТАЕТ)")
+    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ ВЕРСИИ (УНИВЕРСАЛЬНЫЙ ПАРСИНГ)")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
-    logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
+    logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'} (универсальный парсинг)")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
+    logger.info("✅ УНИВЕРСАЛЬНЫЙ ПОИСК ORGANIC (4 способа + рекурсивный)")
     logger.info("✅ deep=true + people_also_ask + featured_snippet + ai_overview + answer_box")
-    logger.info("✅ Радужная анимированная полоска (ВЫЗЫВАЕТСЯ)")
+    logger.info("✅ Радужная анимированная полоска")
     logger.info("✅ Детальные статусы")
     logger.info("✅ Кнопки только после ввода текста")
     logger.info("✅ В беседе постоянная кнопка выхода")
     logger.info("✅ Уточнение с контекстом")
     logger.info("✅ Память 5 уровней + граф знаний")
     logger.info("✅ Защита от обмана")
-    logger.info("✅ РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ (ВЫЗЫВАЕТСЯ)")
+    logger.info("✅ РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ")
     logger.info("✅ Кнопка 'Показать источники'")
     logger.info("✅ Кнопка 'Скрыть источники'")
     logger.info("✅ DeepSeek Pro для ответов, Flash для поиска")
