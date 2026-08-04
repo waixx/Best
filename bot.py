@@ -794,10 +794,20 @@ async def search_with_cache(query: str) -> List[Dict]:
     logger.info(f"🔍 Поиск через APISerpent (основной): {query[:50]}...")
     results = await search_apiserpent(query)
     
+    # Логируем результат
+    if results:
+        logger.info(f"✅ APISerpent нашёл {len(results)} результатов")
+    else:
+        logger.warning("⚠️ APISerpent не вернул результатов")
+    
     # ⭐ ЕСЛИ НЕТ РЕЗУЛЬТАТОВ - РЕЗЕРВНЫЙ Serper
     if not results:
-        logger.warning("⚠️ APISerpent не вернул результатов, пробуем Serper (резерв)...")
+        logger.info("🔄 Пробуем Serper (резерв)...")
         results = await search_serper(query)
+        if results:
+            logger.info(f"✅ Serper нашёл {len(results)} результатов")
+        else:
+            logger.warning("⚠️ Serper тоже не дал результатов")
     
     # Кэшируем результат (даже пустой)
     search_cache[norm] = {'data': results, 'time': time.time()}
@@ -805,8 +815,12 @@ async def search_with_cache(query: str) -> List[Dict]:
     
     return results
 
+# ═══════════════════════════════════════════════════════════════════
+#  ⭐ ИСПРАВЛЕННАЯ ФУНКЦИЯ ПАРАЛЛЕЛЬНОГО ПОИСКА
+# ═══════════════════════════════════════════════════════════════════
+
 async def search_parallel(variants: List[str]) -> List[Dict]:
-    """Параллельный поиск по нескольким вариантам запроса"""
+    """Параллельный поиск по нескольким вариантам запроса (ИСПРАВЛЕНО)"""
     if not variants:
         return []
     
@@ -816,14 +830,30 @@ async def search_parallel(variants: List[str]) -> List[Dict]:
     
     all_results = []
     seen_urls = set()
+    seen_titles = set()
     
-    for results in results_list:
+    for idx, results in enumerate(results_list):
         if results:
+            logger.info(f"📊 Вариант {idx+1}: {len(results)} результатов")
             for r in results:
                 url = r.get('link', '')
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
+                title = r.get('title', '')
+                
+                # ⭐ СОЗДАЁМ УНИКАЛЬНЫЙ КЛЮЧ ДЛЯ ДЕДУПЛИКАЦИИ
+                if url:
+                    key = url
+                elif title:
+                    # Для результатов без ссылки используем заголовок
+                    key = f"title:{title[:50]}"
+                else:
+                    # Если нет ни ссылки ни заголовка - используем сниппет
+                    snippet = r.get('snippet', '')
+                    key = f"snippet:{snippet[:30]}" if snippet else str(r)[:50]
+                
+                if key not in seen_urls:
+                    seen_urls.add(key)
                     all_results.append(r)
+                    logger.debug(f"✅ Добавлен: {title[:50] if title else 'без заголовка'}")
     
     logger.info(f"📊 Всего уникальных результатов: {len(all_results)}")
     return all_results
@@ -889,7 +919,7 @@ def extract_key_facts(text: str) -> List[str]:
     dates = re.findall(r'\b\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}\b', text)
     facts.extend(dates[:3])
     definitions = re.findall(
-        r'([А-Яа-яA-Za-z][^.!?]{5,50})\s+(?:—|–|-|это|является|представляет собой)\s+([^.!?]{5,80})',
+        r'([А-Яа-яA-Za-z][^.!?]{5,60})\s+(?:—|–|-|это|является|представляет собой)\s+([^.!?]{5,80})',
         text, re.IGNORECASE
     )
     for d in definitions:
@@ -1766,7 +1796,7 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.0")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.0 (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
     logger.info("=" * 60)
     
     # Проверка API ключей
@@ -1777,6 +1807,9 @@ def main():
     logger.info(f"   Serper: {'✅' if SERPER_API_KEY else '❌'} (РЕЗЕРВ)")
     logger.info(f"   Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("=" * 60)
+    logger.info("✅ ИСПРАВЛЕНА ДЕДУПЛИКАЦИЯ РЕЗУЛЬТАТОВ")
+    logger.info("✅ УЛУЧШЕНО ЛОГИРОВАНИЕ ПОИСКА")
+    logger.info("✅ СОХРАНЕНЫ ВСЕ ФУНКЦИИ")
     
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN не задан!")
