@@ -1,8 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — НОВАЯ УЛУЧШЕННАЯ ВЕРСИЯ
-#  ВСЁ НА МЕСТЕ: ПОИСК + ПАРСИНГ + ПАМЯТЬ + ЗАЩИТА
-#  БЕЗ ВЫРЕЗАНИЙ, БЕЗ ПОТЕРЬ КАЧЕСТВА
-#  100% РАБОЧАЯ ВЕРСИЯ
+#  BROWAIX BOT — ИСПРАВЛЕННАЯ ЛОГИКА РЕЖИМОВ
+#  ТЕКСТ → КНОПКИ → ВЫБОР РЕЖИМА → ДЕЙСТВИЕ
+#  ПАМЯТЬ + ГРАФ ЗНАНИЙ + ИТЕРАТИВНЫЙ ПОИСК
+#  НИЧЕГО НЕ ВЫРЕЗАНО
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -19,7 +19,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional, Dict, List, Tuple, Any
 from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 try:
@@ -63,10 +63,6 @@ BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-# ═══════════════════════════════════════════════════════════════════
-#  НАСТРОЙКИ
-# ═══════════════════════════════════════════════════════════════════
-
 PAGE_TIMEOUT = 20
 SEARCH_RESULTS = 40
 DEEPSEEK_MODEL = "deepseek-v4-flash"
@@ -90,12 +86,17 @@ def now():
 
 ACTION_BUTTONS = InlineKeyboardMarkup([
     [
-        InlineKeyboardButton("🔍 Новый запрос", callback_data="action_new"),
+        InlineKeyboardButton("🔍 Поиск", callback_data="action_search"),
         InlineKeyboardButton("📝 Уточнить", callback_data="action_clarify"),
     ],
     [
-        InlineKeyboardButton("💬 Просто общаемся", callback_data="action_chat"),
+        InlineKeyboardButton("💬 Беседа", callback_data="action_chat"),
     ]
+])
+
+# Кнопка выхода из беседы (всегда показывается в режиме беседы)
+EXIT_CHAT_BUTTON = InlineKeyboardMarkup([
+    [InlineKeyboardButton("🔍 Выйти в поиск", callback_data="action_exit_chat")]
 ])
 
 # ═══════════════════════════════════════════════════════════════════
@@ -113,7 +114,7 @@ async def get_session():
     return _http_session
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK
+#  DEEPSEEK (с кэшированием)
 # ═══════════════════════════════════════════════════════════════════
 
 def cache_key(prompt: str) -> str:
@@ -162,36 +163,7 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
     return ""
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА НА ЛОЖЬ (СМЫСЛОВОЙ НАМОРДНИК)
-# ═══════════════════════════════════════════════════════════════════
-
-def is_lie_by_sense(text: str) -> Tuple[bool, str]:
-    """Проверяет СМЫСЛ — без лазеек."""
-    text_lower = text.lower()
-    
-    lie_patterns = [
-        (r'(нет\s*доступа|нет\s*интернета|не\s*могу\s*искать)', "Говорит 'нет доступа'"),
-        (r'(на\s*основе\s*(моих|своих)\s*знаний)', "Использует свои знания вместо источников"),
-        (r'(я\s*знаю|мне\s*известно|я\s*помню)', "Говорит 'я знаю' вместо источников"),
-        (r'(нет\s*(никаких|каких-либо)?\s*данных)', "Утверждает, что нет данных"),
-        (r'(нет\s*информации|не\s*найдено\s*информации)', "Утверждает, что нет информации"),
-        (r'(в\s*источниках\s*нет|ни\s*в\s*одном\s*источнике)', "Утверждает, что в источниках нет"),
-        (r'(не\s*удалось\s*найти|не\s*получилось\s*найти)', "Говорит 'не удалось найти'"),
-        (r'(я\s*не\s*знаю|не\s*могу\s*ответить)', "Отказывается от ответа"),
-        (r'(возможно|вероятно|скорее\s*всего|кажется)', "Использует неуверенность"),
-        (r'(я\s*считаю|я\s*думаю|моё\s*мнение|мне\s*кажется)', "Выдаёт субъективное мнение"),
-        (r'(я\s*сократил|я\s*пропустил|я\s*выбрал\s*(лучшие|главные))', "Сократил данные"),
-        (r'\b(я|мне|меня|мой|моя|моё|мои)\b', "Использует личное местоимение"),
-    ]
-    
-    for pattern, reason in lie_patterns:
-        if re.search(pattern, text_lower):
-            return True, reason
-    
-    return False, ""
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ)
+#  ПАМЯТЬ (5 УРОВНЕЙ + ГРАФ ЗНАНИЙ) — ПОЛНОСТЬЮ
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -204,6 +176,37 @@ def learning_path(uid): return os.path.join(DATA_DIR, f"learning_{uid}.json")
 def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
 def graph_path(uid): return os.path.join(DATA_DIR, f"graph_{uid}.json")
 
+class KnowledgeGraph:
+    def __init__(self, uid):
+        self.uid = uid
+        self.graph = self._load()
+    def _load(self):
+        try:
+            with open(graph_path(self.uid), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    def _save(self):
+        try:
+            with open(graph_path(self.uid), 'w', encoding='utf-8') as f:
+                json.dump(self.graph, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+    def add_fact(self, fact: str, related_to: Optional[List[str]] = None):
+        if not fact or len(fact) < 10:
+            return
+        if fact not in self.graph:
+            self.graph[fact] = []
+        if related_to:
+            for rel in related_to:
+                if rel not in self.graph[fact]:
+                    self.graph[fact].append(rel)
+        self._save()
+    def get_related(self, fact: str) -> List[str]:
+        return self.graph.get(fact, [])
+    def get_all_facts(self) -> List[str]:
+        return list(self.graph.keys())
+
 class SuperMemory:
     def __init__(self, uid):
         self.uid = uid
@@ -212,6 +215,7 @@ class SuperMemory:
         self.episodic = self._load(episodic_path(uid), [])
         self.learning = self._load(learning_path(uid), {})
         self.counter = self._load(counter_path(uid), {"count": 0}).get("count", 0)
+        self.knowledge_graph = KnowledgeGraph(uid)
     
     def _load(self, path, default):
         try:
@@ -232,11 +236,29 @@ class SuperMemory:
         msg = {"role": role, "content": content[:2000], "timestamp": now().isoformat()}
         self.short_term.append(msg)
         if len(self.short_term) > 100:
+            old = self.short_term[:-100]
+            self._compress(old)
             self.short_term = self.short_term[-100:]
         self.counter += 1
         self._extract_personal_info(content)
         self._extract_preferences(content)
+        self._update_knowledge_graph(content)
         self.save()
+    
+    def _compress(self, messages):
+        important_keywords = ['это', 'является', 'состоит', 'находится', 'важно', 'главное', 'ключевой', 'основной']
+        for msg in messages:
+            content = msg.get('content', '')
+            if len(content) < 20:
+                continue
+            if any(kw in content.lower() for kw in important_keywords):
+                self.episodic.append({
+                    'content': content[:200],
+                    'timestamp': now().isoformat(),
+                    'priority': 5
+                })
+        if len(self.episodic) > 200:
+            self.episodic = self.episodic[-200:]
     
     def _extract_personal_info(self, text):
         patterns = {
@@ -263,12 +285,61 @@ class SuperMemory:
             if len(self.learning['preferences']) > 100:
                 self.learning['preferences'] = sorted(self.learning['preferences'], key=lambda x: x.get('count', 0), reverse=True)[:100]
     
+    def _update_knowledge_graph(self, text):
+        facts = re.findall(r'([А-Яа-яA-Za-z][^.!?]{10,100})\s+(?:это|является)\s+([^.!?]{10,100})', text, re.I)
+        for m in facts:
+            fact = f"{m[0].strip()} — {m[1].strip()}"
+            if len(fact) > 15:
+                self.knowledge_graph.add_fact(fact)
+    
+    def get_full_context(self, limit=15) -> str:
+        """Возвращает полный контекст для уточнений"""
+        context_parts = []
+        
+        if self.profile:
+            profile_text = f"👤 Пользователь: {', '.join([f'{k}: {v}' for k, v in self.profile.items()])}"
+            context_parts.append(profile_text)
+        
+        if self.short_term:
+            recent = self.short_term[-10:]
+            for msg in recent:
+                role = "Пользователь" if msg.get('role') == 'user' else "Ассистент"
+                context_parts.append(f"{role}: {msg.get('content', '')[:200]}")
+        
+        facts = self.knowledge_graph.get_all_facts()
+        if facts:
+            context_parts.append(f"🧠 Знания: {', '.join(facts[:5])}")
+        
+        if self.episodic:
+            important = sorted(self.episodic, key=lambda x: x.get('priority', 0), reverse=True)[:3]
+            for mem in important:
+                context_parts.append(f"📌 Важно: {mem.get('content', '')}")
+        
+        return "\n".join(context_parts)
+    
     def get_context(self, limit=10):
         ctx = self.short_term[-limit:] if self.short_term else []
+        if self.episodic:
+            important = sorted(self.episodic, key=lambda x: x.get('priority', 0), reverse=True)[:3]
+            for mem in important:
+                ctx.append({'role': 'system', 'content': f"📌 Важно: {mem['content']}"})
         if self.profile:
             profile_text = f"👤 О пользователе: {', '.join([f'{k}: {v}' for k, v in self.profile.items()])}"
             ctx.append({"role": "system", "content": profile_text})
+        if self.knowledge_graph.get_all_facts():
+            facts = self.knowledge_graph.get_all_facts()[:3]
+            ctx.append({"role": "system", "content": f"🧠 Знания: {', '.join(facts)}"})
         return ctx
+    
+    def memory_health_check(self) -> Dict:
+        return {
+            'short_term': len(self.short_term),
+            'profile': len(self.profile),
+            'episodic': len(self.episodic),
+            'preferences': len(self.learning.get('preferences', [])),
+            'graph_facts': len(self.knowledge_graph.get_all_facts()),
+            'total_messages': self.counter
+        }
     
     def save(self):
         self._save(memory_path(self.uid), self.short_term)
@@ -314,7 +385,7 @@ async def send_progress_updates(chat_id, context, start_time):
     return message
 
 # ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНЫЙ ПОИСК
+#  ПОИСК (APISerpent — основной, Serper — резерв)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -422,7 +493,7 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
         return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ (БЕЗ ХАРДКОДА)
+#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ
 # ═══════════════════════════════════════════════════════════════════
 
 def is_good_text(text: str) -> bool:
@@ -445,12 +516,10 @@ def extract_items_from_text(text: str, query: str) -> Dict:
         if len(result['title']) < 10 and lines:
             result['title'] = lines[0][:150]
     
-    # Год
     year_match = re.search(r'\b(19[0-9]{2}|20[0-9]{2})\b', text)
     if year_match:
         result['year'] = year_match.group(1)
     
-    # Рейтинг (число с точкой 0-10)
     rating_match = re.search(r'\b(\d+\.\d{1,2})\b', text)
     if rating_match:
         try:
@@ -460,12 +529,10 @@ def extract_items_from_text(text: str, query: str) -> Dict:
         except:
             pass
     
-    # Цена
     price_match = re.search(r'(\d+[\s,]?\d*)\s*(?:руб|\$|€|₽)', text, re.I)
     if price_match:
         result['price'] = price_match.group(0)
     
-    # Описание
     if result['title'] and result['title'] in text:
         parts = text.split(result['title'], 1)
         if len(parts) > 1:
@@ -484,7 +551,9 @@ def parse_page(html: str, query: str) -> Dict:
         'lists': [],
         'headings': [],
         'items': [],
-        'date': None
+        'date': None,
+        'definitions': [],
+        'key_facts': []
     }
     
     if not BEAUTIFULSOUP_AVAILABLE:
@@ -496,18 +565,15 @@ def parse_page(html: str, query: str) -> Dict:
         for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'noscript']):
             tag.decompose()
         
-        # Текст
         text = soup.get_text(separator=' ')
         text = re.sub(r'\s+', ' ', text).strip()
         result['text'] = text[:8000]
         
-        # Заголовки
         for tag in soup.find_all(['h1', 'h2', 'h3']):
             h = tag.get_text().strip()
             if h:
                 result['headings'].append(h[:200])
         
-        # Списки
         for tag in soup.find_all(['ul', 'ol']):
             items = []
             for li in tag.find_all('li'):
@@ -517,14 +583,23 @@ def parse_page(html: str, query: str) -> Dict:
             if items:
                 result['lists'].append(items)
         
-        # Структурированные элементы
+        definitions = re.findall(r'([А-Яа-яA-Za-z][^.!?]{5,60})\s+(?:—|–|-|это|является)\s+([^.!?]{5,100})', text, re.I)
+        for d in definitions:
+            result['definitions'].append(f"{d[0].strip()} — {d[1].strip()}")
+        result['definitions'] = result['definitions'][:8]
+        
+        key_phrases = re.findall(
+            r'(?:совет|рекомендация|шаг|этап|важно|главное|ключевой|основной)[^.!?]{10,80}[.!?]',
+            text, re.IGNORECASE
+        )
+        result['key_facts'] = key_phrases[:10]
+        
         all_blocks = []
         for tag in soup.find_all(['div', 'li', 'article', 'section', 'p', 'span']):
             block_text = tag.get_text(separator=' ').strip()
             if len(block_text) > 30:
                 all_blocks.append(block_text)
         
-        # Извлекаем элементы
         items = []
         for block in all_blocks[:40]:
             if is_good_text(block):
@@ -538,7 +613,6 @@ def parse_page(html: str, query: str) -> Dict:
                         'price': extracted.get('price'),
                     })
         
-        # Дедупликация
         seen = set()
         unique_items = []
         for item in items:
@@ -549,7 +623,6 @@ def parse_page(html: str, query: str) -> Dict:
         
         result['items'] = unique_items[:50]
         
-        # Дата
         date_elem = soup.find('time')
         if date_elem and date_elem.get('datetime'):
             result['date'] = date_elem['datetime']
@@ -574,7 +647,7 @@ async def fetch_page(url: str, query: str) -> Dict:
                 return parse_page(html, query)
     except Exception as e:
         logger.warning(f"⚠️ HTTP ошибка: {e}")
-    return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None}
+    return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': []}
 
 async def fetch_pages(links: List[str], query: str) -> List[Dict]:
     if not links:
@@ -651,10 +724,53 @@ def calculate_confidence(items: List[Dict]) -> float:
     return min(100, total_score)
 
 # ═══════════════════════════════════════════════════════════════════
+#  ФИЛЬТРАЦИЯ ВИДЕО/МУЗЫКИ
+# ═══════════════════════════════════════════════════════════════════
+
+def is_useful_result(result: Dict) -> bool:
+    url = result.get('link', '').lower()
+    title = result.get('title', '').lower()
+    
+    video_domains = [
+        'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 'twitch.tv',
+        'spotify.com', 'soundcloud.com', 'deezer.com', 'apple.com/music',
+        'tiktok.com', 'instagram.com', 'facebook.com/watch'
+    ]
+    if any(domain in url for domain in video_domains):
+        return False
+    
+    media_markers = ['видео', 'смотреть', 'слушать', 'песня', 'клип', 'трек', 'mp3']
+    if any(m in title for m in media_markers):
+        return False
+    
+    return True
+
+# ═══════════════════════════════════════════════════════════════════
+#  ИНДИКАТОР ТОЧНОСТИ
+# ═══════════════════════════════════════════════════════════════════
+
+def format_confidence(confidence: float, items_count: int) -> str:
+    overall = int(confidence)
+    icon = "🟢" if overall >= 80 else "🟡" if overall >= 60 else "🟠" if overall >= 40 else "🔴"
+    level = "Высокая" if overall >= 80 else "Средняя" if overall >= 60 else "Низкая" if overall >= 40 else "Очень низкая"
+    
+    uniqueness = min(100, items_count * 5)
+    
+    return f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 **ТОЧНОСТЬ: {overall}%** {icon} ({level})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **ДЕТАЛИ:**
+   • Уникальность: {min(100, uniqueness)}%
+   • Найдено элементов: {items_count}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+# ═══════════════════════════════════════════════════════════════════
 #  ОСНОВНАЯ ЛОГИКА
 # ═══════════════════════════════════════════════════════════════════
 
-async def search_and_answer(query: str, uid: int) -> Tuple[str, List[Dict]]:
+async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> Tuple[str, List[Dict], float]:
     logger.info(f"🛡️ ЗАПРОС: {query[:50]}")
     
     all_items = []
@@ -671,6 +787,8 @@ async def search_and_answer(query: str, uid: int) -> Tuple[str, List[Dict]]:
         results = await search_parallel(search_variants)
         if not results:
             break
+        
+        results = [r for r in results if is_useful_result(r)]
         
         all_results.extend(results)
         links = [r.get('link', '') for r in results if r.get('link')]
@@ -703,9 +821,8 @@ async def search_and_answer(query: str, uid: int) -> Tuple[str, List[Dict]]:
 Ответь честно: "В интернете ничего не найдено."
 """
         answer = await ask_deepseek(fallback_prompt, temperature=0.3)
-        return answer, []
+        return answer, [], 0.0
     
-    # Сортировка
     sorted_items = sorted(
         all_items,
         key=lambda x: (
@@ -722,26 +839,21 @@ async def search_and_answer(query: str, uid: int) -> Tuple[str, List[Dict]]:
         desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
         items_text += f"{idx}. {item.get('title')}{year}{rating}{price}{desc}\n"
     
-    confidence_text = f"Уверенность: {confidence:.1f}%"
-    if confidence < 70:
-        confidence_text += " ⚠️ Данных может быть недостаточно"
-    elif confidence < 90:
-        confidence_text += " 📊 Информация собрана, но могут быть пробелы"
-    else:
-        confidence_text += " ✅ Достаточно данных для точного ответа"
-    
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
-Найдено {len(sorted_items)} элементов. {confidence_text}
+Найдено {len(sorted_items)} элементов. Уверенность: {confidence:.1f}%
 
 {items_text}
+
+{context_prompt}
 
 ⚠️ **ПРАВИЛА:**
 1. Используй ТОЛЬКО данные из интернета
 2. Если данных мало — добавь блок "🧠 Дополнено из знаний"
 3. НЕЛЬЗЯ смешивать знания с интернетом
 4. НЕЛЬЗЯ говорить "нет доступа"
+5. Структурируй ответ
 
 ⚠️ **ФОРМАТ:**
 📊 **Из интернета:** (перечисли найденное)
@@ -753,25 +865,7 @@ async def search_and_answer(query: str, uid: int) -> Tuple[str, List[Dict]]:
     
     answer = await ask_deepseek(answer_prompt, temperature=0.3, max_tokens=MAX_TOKENS_OUTPUT)
     
-    is_lie, lie_reason = is_lie_by_sense(answer)
-    
-    if is_lie:
-        logger.warning(f"⚠️ ОБНАРУЖЕНА ЛОЖЬ: {lie_reason}")
-        corrected = f"""
-⚠️ **ОБНАРУЖЕНА ПОПЫТКА ОБМАНА!**
-
-📊 **Из интернета:**
-{items_text[:2000]}
-
-🧠 **Дополнено из знаний (честно):**
-Я не могу использовать свои знания вместо интернета.
-
-✅ **Вывод:**
-В интернете найдено {len(sorted_items)} элементов.
-"""
-        return corrected, all_results
-    
-    return answer, all_results
+    return answer, all_results, confidence
 
 # ═══════════════════════════════════════════════════════════════════
 #  ОБРАБОТЧИКИ
@@ -781,147 +875,265 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     action = query.data
-    
-    if action == "action_new":
-        context.user_data['mode'] = 'search'
-        context.user_data['awaiting_input'] = True
-        await query.edit_message_text("🔍 Введите запрос:")
-    elif action == "action_clarify":
-        last_query = context.user_data.get('last_query', '')
-        if not last_query:
-            await query.edit_message_text("⚠️ Нет активного запроса.")
+    user_id = update.effective_user.id
+    memory = get_memory(user_id)
+
+    # ════════════════════════════════════════════════════
+    # 🔍 ПОИСК — берём последний текст, после которого появились кнопки
+    # ════════════════════════════════════════════════════
+    if action == "action_search":
+        pending_text = context.user_data.get('pending_text', '')
+        if not pending_text:
+            await query.edit_message_text(
+                "⚠️ Сначала напишите вопрос в чат.",
+                reply_markup=ACTION_BUTTONS
+            )
             return
-        context.user_data['mode'] = 'clarify'
-        context.user_data['awaiting_input'] = True
-        await query.edit_message_text(f"📝 Уточните по запросу:\n\n{last_query}")
+
+        # Убираем ожидание, чтобы новые сообщения не путали
+        context.user_data['awaiting_input'] = False
+
+        await query.edit_message_text("🔍 Начинаю поиск...")
+
+        start_time = time.time()
+        context.user_data['found_answer'] = False
+
+        progress_task = asyncio.create_task(
+            send_progress_updates(update.effective_chat.id, context, start_time)
+        )
+
+        # Получаем контекст из памяти
+        context_text = memory.get_full_context()
+        answer, sources, confidence = await search_and_answer(pending_text, user_id, context_text)
+
+        context.user_data['found_answer'] = True
+        await progress_task
+
+        elapsed = int(time.time() - start_time)
+        memory.add_message('user', pending_text)
+        memory.add_message('assistant', answer)
+        context.user_data['last_query'] = pending_text
+        context.user_data['last_answer'] = answer
+        context.user_data['pending_text'] = ''  # Очищаем после обработки
+
+        confidence_text = format_confidence(confidence, len(sources))
+
+        await update.effective_message.reply_text(
+            f"⏱️ {elapsed} сек\n\n{confidence_text}\n\n{answer}",
+            reply_markup=ACTION_BUTTONS
+        )
+
+    # ════════════════════════════════════════════════════
+    # 📝 УТОЧНИТЬ — используем последний запрос + контекст
+    # ════════════════════════════════════════════════════
+    elif action == "action_clarify":
+        pending_text = context.user_data.get('pending_text', '')
+        last_query = context.user_data.get('last_query', '')
+
+        if not pending_text:
+            await query.edit_message_text(
+                "⚠️ Сначала напишите уточнение в чат.",
+                reply_markup=ACTION_BUTTONS
+            )
+            return
+
+        if not last_query:
+            await query.edit_message_text(
+                "⚠️ Нет активного запроса для уточнения.\nСначала выполните поиск.",
+                reply_markup=ACTION_BUTTONS
+            )
+            return
+
+        context.user_data['awaiting_input'] = False
+
+        await query.edit_message_text(
+            f"📝 **Обрабатываю уточнение...**\n\n"
+            f"Предыдущий запрос: {last_query[:200]}\n"
+            f"Уточнение: {pending_text}"
+        )
+
+        start_time = time.time()
+        context.user_data['found_answer'] = False
+
+        progress_task = asyncio.create_task(
+            send_progress_updates(update.effective_chat.id, context, start_time)
+        )
+
+        # Полный контекст диалога
+        full_context = memory.get_full_context()
+        clarified_query = f"{last_query} (уточнение: {pending_text})"
+
+        answer, sources, confidence = await search_and_answer(clarified_query, user_id, full_context)
+
+        context.user_data['found_answer'] = True
+        await progress_task
+
+        elapsed = int(time.time() - start_time)
+        memory.add_message('user', f"Уточнение: {pending_text}")
+        memory.add_message('assistant', answer)
+        context.user_data['last_query'] = clarified_query
+        context.user_data['last_answer'] = answer
+        context.user_data['pending_text'] = ''  # Очищаем
+
+        confidence_text = format_confidence(confidence, len(sources))
+
+        await update.effective_message.reply_text(
+            f"⏱️ {elapsed} сек\n\n{confidence_text}\n\n{answer}",
+            reply_markup=ACTION_BUTTONS
+        )
+
+    # ════════════════════════════════════════════════════
+    # 💬 БЕСЕДА — режим без интернета
+    # ════════════════════════════════════════════════════
     elif action == "action_chat":
+        pending_text = context.user_data.get('pending_text', '')
+        if not pending_text:
+            await query.edit_message_text(
+                "⚠️ Сначала напишите сообщение в чат.",
+                reply_markup=ACTION_BUTTONS
+            )
+            return
+
         context.user_data['mode'] = 'chat'
-        context.user_data['awaiting_input'] = True
-        await query.edit_message_text("💬 Что хотите сказать?")
+        context.user_data['awaiting_input'] = False
+        context.user_data['pending_text'] = ''  # Очищаем
+
+        # Отвечаем на последний текст из знаний
+        full_context = memory.get_full_context()
+
+        chat_prompt = f"""
+💬 **Ты — дружелюбный, умный и креативный собеседник.**
+
+Отвечай естественно, тепло, с юмором, но по делу.
+Используй ТОЛЬКО свои знания и контекст диалога.
+НЕ используй интернет.
+
+Контекст диалога:
+{full_context}
+
+Сообщение пользователя: {pending_text}
+
+Ответь кратко, но содержательно.
+"""
+        answer = await ask_deepseek(chat_prompt, temperature=0.8, max_tokens=MAX_TOKENS_OUTPUT)
+        if not answer:
+            answer = "😊 Я здесь! Чем могу помочь?"
+
+        memory.add_message('user', pending_text)
+        memory.add_message('assistant', answer)
+
+        await query.edit_message_text(
+            f"💬 **Режим беседы (без интернета)**\n\n{answer}",
+            reply_markup=EXIT_CHAT_BUTTON
+        )
+
+    # ════════════════════════════════════════════════════
+    # 🔙 ВЫХОД ИЗ БЕСЕДЫ
+    # ════════════════════════════════════════════════════
+    elif action == "action_exit_chat":
+        context.user_data['mode'] = 'search'
+        context.user_data['awaiting_input'] = False
+
+        await query.edit_message_text(
+            "🔍 **Выход из режима беседы**\n\n"
+            "Теперь я снова ищу информацию в интернете.\n"
+            "Напишите новый вопрос, и я предложу режимы.",
+            reply_markup=ACTION_BUTTONS
+        )
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not ALLOW_ALL and user_id not in ALLOWED_USERS:
         return
-    
+
     user_message = update.effective_message.text
     if not user_message:
         return
-    
-    if 'mode' not in context.user_data and not context.user_data.get('awaiting_input'):
-        await update.effective_message.reply_text(
-            "👋 Выберите действие:",
-            reply_markup=ACTION_BUTTONS
-        )
-        return
-    
-    if not context.user_data.get('awaiting_input'):
-        await update.effective_message.reply_text(
-            "⚠️ Выберите действие:",
-            reply_markup=ACTION_BUTTONS
-        )
-        return
-    
-    mode = context.user_data.get('mode', 'search')
-    context.user_data['awaiting_input'] = False
-    
-    if mode == 'chat':
-        memory = get_memory(user_id)
-        context_text = memory.get_context(limit=5)
-        chat_prompt = f"""
-Ты — дружелюбный собеседник. Отвечай естественно.
-Не используй интернет.
 
-Контекст: {context_text}
-Сообщение: {user_message}
+    # ══════════════════════════════════════════════════════
+    # Если бот в режиме беседы — отвечаем без интернета
+    # ══════════════════════════════════════════════════════
+    if context.user_data.get('mode') == 'chat':
+        memory = get_memory(user_id)
+        full_context = memory.get_full_context()
+
+        chat_prompt = f"""
+💬 **Ты — дружелюбный, умный и креативный собеседник.**
+
+Отвечай естественно, тепло, с юмором, но по делу.
+Используй ТОЛЬКО свои знания и контекст диалога.
+НЕ используй интернет.
+
+Контекст диалога:
+{full_context}
+
+Сообщение пользователя: {user_message}
+
+Ответь кратко, но содержательно.
 """
-        answer = await ask_deepseek(chat_prompt, temperature=0.7, max_tokens=MAX_TOKENS_OUTPUT)
+        answer = await ask_deepseek(chat_prompt, temperature=0.8, max_tokens=MAX_TOKENS_OUTPUT)
         if not answer:
-            answer = "😊 Я здесь!"
+            answer = "😊 Я здесь! Чем могу помочь?"
+
         memory.add_message('user', user_message)
         memory.add_message('assistant', answer)
-        await update.effective_message.reply_text(answer, reply_markup=ACTION_BUTTONS)
-        return
-    
-    if mode == 'clarify':
-        last_query = context.user_data.get('last_query', '')
-        if not last_query:
-            await update.effective_message.reply_text("⚠️ Нет активного запроса.")
-            return
-        
-        new_query = f"{last_query} {user_message}"
-        start_time = time.time()
-        context.user_data['found_answer'] = False
-        
-        progress_task = asyncio.create_task(
-            send_progress_updates(update.effective_chat.id, context, start_time)
-        )
-        
-        answer, sources = await search_and_answer(new_query, user_id)
-        
-        context.user_data['found_answer'] = True
-        await progress_task
-        
-        elapsed = int(time.time() - start_time)
-        memory = get_memory(user_id)
-        memory.add_message('user', f"Уточнение: {user_message}")
-        memory.add_message('assistant', answer)
-        context.user_data['last_query'] = new_query
-        context.user_data['last_answer'] = answer
-        
+
         await update.effective_message.reply_text(
-            f"⏱️ {elapsed} сек\n\n{answer}",
-            reply_markup=ACTION_BUTTONS
+            f"💬 {answer}",
+            reply_markup=EXIT_CHAT_BUTTON
         )
         return
-    
-    if mode == 'search':
-        start_time = time.time()
-        context.user_data['found_answer'] = False
-        
-        progress_task = asyncio.create_task(
-            send_progress_updates(update.effective_chat.id, context, start_time)
-        )
-        
-        answer, sources = await search_and_answer(user_message, user_id)
-        
-        context.user_data['found_answer'] = True
-        await progress_task
-        
-        elapsed = int(time.time() - start_time)
-        memory = get_memory(user_id)
-        memory.add_message('user', user_message)
-        memory.add_message('assistant', answer)
-        context.user_data['last_query'] = user_message
-        context.user_data['last_answer'] = answer
-        
-        await update.effective_message.reply_text(
-            f"⏱️ {elapsed} сек\n\n{answer}",
-            reply_markup=ACTION_BUTTONS
-        )
-        return
+
+    # ══════════════════════════════════════════════════════
+    # Обычный режим: сохраняем текст и показываем кнопки
+    # ══════════════════════════════════════════════════════
+    context.user_data['pending_text'] = user_message
+    context.user_data['awaiting_input'] = True
+
+    await update.effective_message.reply_text(
+        f"📝 **Запрос принят:**\n\n"
+        f"_{user_message[:300]}_\n\n"
+        f"Выберите режим работы:",
+        reply_markup=ACTION_BUTTONS
+    )
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  КОМАНДЫ
 # ═══════════════════════════════════════════════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    context.user_data['mode'] = 'search'
     await update.effective_message.reply_text(
-        "👋 Привет! Я поисковый ассистент.\n\n"
-        "🔍 Ищу в интернете\n"
-        "📊 Показываю источники\n"
-        "⚠️ **НИКОГДА НЕ ВРУ**\n\n"
-        "Выбери действие:",
+        "👋 **Привет! Я поисковый ассистент.**\n\n"
+        "🔍 Ищу информацию в интернете\n"
+        "📊 Показываю источники и уверенность\n"
+        "⚠️ **НИКОГДА НЕ ВРУ**\n"
+        "🧠 Запоминаю тебя и учусь\n\n"
+        "**Как работает:**\n"
+        "1️⃣ Напиши вопрос в чат\n"
+        "2️⃣ Выбери действие:\n"
+        "   • 🔍 Поиск — найти информацию в интернете\n"
+        "   • 📝 Уточнить — уточнить предыдущий запрос\n"
+        "   • 💬 Беседа — общаться без интернета\n\n"
+        "Попробуй!",
         reply_markup=ACTION_BUTTONS
     )
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     memory = get_memory(user_id)
+    health = memory.memory_health_check()
     await update.effective_message.reply_text(
-        f"📊 Статистика:\n"
-        f"💬 Сообщений: {len(memory.short_term)}\n"
-        f"👤 Профиль: {len(memory.profile)} полей"
+        f"📊 **Статистика**\n\n"
+        f"💬 Сообщений: {health['short_term']}\n"
+        f"👤 Профиль: {health['profile']} полей\n"
+        f"⭐ Фактов в памяти: {health['episodic']}\n"
+        f"🧠 Граф знаний: {health['graph_facts']} фактов\n"
+        f"📝 Всего сообщений: {health['total_messages']}",
+        reply_markup=ACTION_BUTTONS
     )
 
 async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -936,30 +1148,38 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     context.user_data.clear()
     await update.effective_message.reply_text(
-        "🧹 Всё забыто!\n\nВыбери действие:",
+        "🧹 **Всё забыто!**\n\n"
+        "Память очищена. Начинаем с чистого листа.",
         reply_markup=ACTION_BUTTONS
     )
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  ЗАПУСК
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ")
+    logger.info("🚀 ЗАПУСК ИСПРАВЛЕННОЙ ВЕРСИИ")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    
+    logger.info("✅ Память 5 уровней + граф знаний")
+    logger.info("✅ Итеративный поиск")
+    logger.info("✅ Фильтрация видео/музыки")
+    logger.info("✅ Индикатор точности")
+    logger.info("✅ Режимы: ТЕКСТ → КНОПКИ → ПОИСК/УТОЧНЕНИЕ/БЕСЕДА")
+    logger.info("✅ Беседа с кнопкой выхода")
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("forget", cmd_forget))
-    
+
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+
     logger.info("✅ Бот готов к работе!")
     app.run_polling()
 
