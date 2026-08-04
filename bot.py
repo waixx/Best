@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.4
-#  УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ (БЕЗ ХАРДКОДА)
-#  ИСПРАВЛЕН ПАРСИНГ (ЗАПОЛНЯЕТ items)
+#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.5
+#  ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ (ФИЛЬТРАЦИЯ + СИНТЕЗ)
+#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ (СОБИРАЕТ ВСЁ)
 #  БЕЗ ЛАЗЕЕК ДЛЯ ВРАНЬЯ И ЛЕНИ
 #  ВСЁ В КОНФИГЕ ЧЕРЕЗ .env
 # ═══════════════════════════════════════════════════════════════════
@@ -953,13 +953,13 @@ async def fetch_http(url: str) -> Optional[str]:
     return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ СТРАНИЦ (ИСПРАВЛЕННЫЙ)
+#  ПАРСИНГ СТРАНИЦ (УНИВЕРСАЛЬНЫЙ - СОБИРАЕТ ВСЁ)
 # ═══════════════════════════════════════════════════════════════════
 
 def parse_page(html: str, query: str) -> Dict:
     """
-    УНИВЕРСАЛЬНЫЙ ПАРСИНГ СТРАНИЦ
-    Извлекает: текст, списки, заголовки, пункты (items)
+    УНИВЕРСАЛЬНЫЙ ПАРСИНГ СТРАНИЦ - СОБИРАЕТ ВСЁ
+    Фильтрацию делает DeepSeek
     """
     result = {
         'text': '',
@@ -977,93 +977,86 @@ def parse_page(html: str, query: str) -> Dict:
     try:
         soup = BeautifulSoup(html, 'html.parser')
         
-        # Удаляем мусор
-        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'noscript']):
+        # Удаляем только явный мусор
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
             tag.decompose()
         
-        # 1. ОСНОВНОЙ ТЕКСТ
+        # 1. ВЕСЬ текст
         text = soup.get_text(separator=' ')
         text = re.sub(r'\s+', ' ', text).strip()
-        result['text'] = text[:4000]
+        result['text'] = text[:8000]
         
-        # 2. ЗАГОЛОВКИ
-        for tag in soup.find_all(['h1', 'h2', 'h3']):
+        # 2. ВСЕ заголовки
+        for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5']):
             h = tag.get_text().strip()
-            if h and len(h) > 5:
+            if h and len(h) > 3:
                 result['headings'].append(h[:200])
-        result['headings'] = result['headings'][:5]
+        result['headings'] = result['headings'][:15]
         
-        # 3. ИЗВЛЕКАЕМ ITEMS ИЗ СПИСКОВ
-        seen = set()
+        # 3. ВСЕ пункты списков
         for tag in soup.find_all(['ul', 'ol']):
             for li in tag.find_all('li'):
                 li_text = li.get_text().strip()
-                if 10 < len(li_text) < 500:
-                    key = li_text[:40].lower()
-                    if key not in seen:
-                        seen.add(key)
-                        result['lists'].append(li_text[:200])
+                if li_text and len(li_text) > 5:
+                    result['lists'].append(li_text[:300])
+        result['lists'] = result['lists'][:30]
+        
+        # 4. ВСЕ параграфы (для контекста)
+        for p in soup.find_all('p'):
+            p_text = p.get_text().strip()
+            if 20 < len(p_text) < 800:
+                result['items'].append({
+                    'title': p_text[:200],
+                    'description': p_text[:400],
+                    'year': None,
+                    'rating': None,
+                    'price': None
+                })
+        result['items'] = result['items'][:50]
+        
+        # 5. ВСЕ ссылки с текстом
+        for a in soup.find_all('a'):
+            a_text = a.get_text().strip()
+            if 10 < len(a_text) < 200:
+                result['items'].append({
+                    'title': a_text[:200],
+                    'description': '',
+                    'year': None,
+                    'rating': None,
+                    'price': None
+                })
+        result['items'] = result['items'][:100]
+        
+        # 6. ВСЕ таблицы
+        for table in soup.find_all('table'):
+            for row in table.find_all('tr')[:20]:
+                cells = row.find_all(['td', 'th'])
+                if cells:
+                    row_text = ' '.join([c.get_text().strip() for c in cells if c.get_text().strip()])
+                    if 20 < len(row_text) < 500:
                         result['items'].append({
-                            'title': li_text[:200],
+                            'title': row_text[:200],
                             'description': '',
                             'year': None,
                             'rating': None,
                             'price': None
                         })
+        result['items'] = result['items'][:100]
         
-        # 4. ИЗВЛЕКАЕМ ITEMS ИЗ ПАРАГРАФОВ С ЦИФРАМИ
-        for p in soup.find_all('p'):
-            p_text = p.get_text().strip()
-            if 30 < len(p_text) < 600:
-                has_data = bool(re.search(r'\d+', p_text))
-                if has_data:
-                    key = p_text[:40].lower()
-                    if key not in seen:
-                        seen.add(key)
-                        year_match = re.search(r'\b(19[0-9]{2}|20[0-9]{2})\b', p_text)
-                        year = year_match.group(1) if year_match else None
-                        result['items'].append({
-                            'title': p_text[:150],
-                            'description': p_text[:300],
-                            'year': year,
-                            'rating': None,
-                            'price': None
-                        })
-        
-        # 5. ИЗВЛЕКАЕМ ITEMS ИЗ ТАБЛИЦ
-        for table in soup.find_all('table'):
-            for row in table.find_all('tr')[:15]:
-                cells = row.find_all(['td', 'th'])
-                if cells:
-                    row_text = ' '.join([c.get_text().strip() for c in cells if c.get_text().strip()])
-                    if 20 < len(row_text) < 400:
-                        key = row_text[:40].lower()
-                        if key not in seen:
-                            seen.add(key)
-                            result['items'].append({
-                                'title': row_text[:200],
-                                'description': '',
-                                'year': None,
-                                'rating': None,
-                                'price': None
-                            })
-        
-        # 6. ОГРАНИЧИВАЕМ
-        result['items'] = result['items'][:30]
-        result['lists'] = result['lists'][:10]
-        
-        # 7. ИЗВЛЕКАЕМ ОПРЕДЕЛЕНИЯ
-        definitions = re.findall(
-            r'([А-Яа-яA-Za-z][^.!?]{10,60})\s+(?:—|–|-|это|является)\s+([^.!?]{10,80})',
-            text, re.IGNORECASE
-        )
-        for d in definitions[:5]:
-            result['definitions'].append(f"{d[0].strip()} — {d[1].strip()}")
-        
-        # 8. ДАТА
-        date_match = re.search(r'\b\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}\b', text)
-        if date_match:
-            result['date'] = date_match.group()
+        # 7. ВСЕ блоки div с текстом
+        for div in soup.find_all('div'):
+            div_text = div.get_text().strip()
+            if 30 < len(div_text) < 500:
+                children = [c for c in div.children if c.name and c.get_text().strip()]
+                if len(children) > 2:
+                    result['items'].append({
+                        'title': div_text[:200],
+                        'description': div_text[:400],
+                        'year': None,
+                        'rating': None,
+                        'price': None
+                    })
+        result['items'] = result['items'][:100]
         
         return result
         
@@ -1240,112 +1233,175 @@ def is_useful_result(result: Dict, query: str = "") -> bool:
     return True
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ОТВЕТА (БЕЗ ЛАЗЕЕК)
+#  ГЕНЕРАЦИЯ ОТВЕТА (ДВУХЭТАПНАЯ: ФИЛЬТРАЦИЯ + СИНТЕЗ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_answer_strict(query: str, pages: List[Dict], memory_context: str = "") -> str:
-    """Генерация ответа БЕЗ возможности выдумывать"""
-    context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:3000] for p in pages[:2]])
+    """
+    ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ ОТВЕТА:
+    1. DeepSeek Flash - фильтрация и извлечение релевантных данных
+    2. DeepSeek Pro - синтез развернутого ответа
+    """
+    logger.info("📊 ЭТАП 1: Сбор и подготовка данных")
     
-    all_lists = []
-    for p in pages:
-        all_lists.extend(p.get('parsed', {}).get('lists', []))
-    all_lists = list(set(all_lists))[:10]
+    # ⭐ 1. СОБИРАЕМ ВСЁ СОДЕРЖИМОЕ СТРАНИЦ
+    all_content = []
+    for idx, p in enumerate(pages[:3]):
+        parsed = p.get('parsed', {})
+        text = parsed.get('text', '')
+        headings = parsed.get('headings', [])
+        lists = parsed.get('lists', [])
+        
+        # Формируем структурированный блок
+        content = f"""
+=== ИСТОЧНИК {idx+1}: {p.get('url', 'Нет URL')} ===
+📌 ЗАГОЛОВКИ: {', '.join(headings[:5]) if headings else 'Нет'}
+📋 СПИСКИ: 
+{chr(10).join([f'  • {item}' for item in lists[:10]]) if lists else 'Нет'}
+📄 ТЕКСТ: {text[:3000] if text else 'Нет'}
+"""
+        all_content.append(content)
     
-    structures_text = ""
-    if all_lists:
-        structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in all_lists]) + "\n"
+    full_content = '\n\n' + '═' * 60 + '\n\n'.join(all_content)
     
-    sources_text = "\n".join([f"• {p.get('url', '')}" for p in pages[:3]])
+    # Ограничиваем объем
+    if len(full_content) > 15000:
+        full_content = full_content[:15000] + '\n\n... (данные обрезаны для экономии)'
     
-    prompt = f"""
-⚠️ **ТЫ — АНАЛИТИК. ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
+    logger.info(f"📊 Объем данных: {len(full_content)} символов")
+    logger.info("🧠 ЭТАП 2: DeepSeek Flash - фильтрация и извлечение")
+    
+    # ⭐ 2. ЭТАП ФИЛЬТРАЦИИ (DeepSeek Flash - дешёвый)
+    filter_prompt = f"""
+⚠️ **ТЫ — ИНТЕЛЛЕКТУАЛЬНЫЙ ФИЛЬТР. ТВОЯ ЗАДАЧА — ИЗВЛЕЧЬ ИЗ ДАННЫХ ВСЁ, ЧТО ОТНОСИТСЯ К ЗАПРОСУ.**
 
-⚠️ **ЗАПРОС:** {query}
+⚠️ **ЗАПРОС ПОЛЬЗОВАТЕЛЯ:** {query}
 
-⚠️ **ЕДИНСТВЕННЫЙ ИСТОЧНИК ИНФОРМАЦИИ — ДАННЫЕ НИЖЕ!**
+⚠️ **СЫРЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА:**
+{full_content}
 
-📊 **ДАННЫЕ ИЗ ИНТЕРНЕТА (ТОЛЬКО ОНИ!):**
-{context}
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. **Проанализируй ВСЕ** данные выше
+2. **Извлеки ТОЛЬКО** информацию, которая ОТНОСИТСЯ к запросу
+3. **ОТБРОСЬ**:
+   - Рекламу и призывы к действию
+   - Навигационные элементы
+   - Воду и общие фразы
+   - Не относящиеся к теме абзацы
+4. **СОХРАНИ**:
+   - Конкретные факты, цифры, даты, имена
+   - Прямые ответы на запрос
+   - Цитаты из авторитетных источников
+   - Списки и перечисления
 
-{structures_text}
+⚠️ **ФОРМАТ ОТВЕТА (ТОЛЬКО ДАННЫЕ, БЕЗ ЛИШНЕГО ТЕКСТА):**
+📌 **РЕЛЕВАНТНЫЕ ФАКТЫ:**
+[Список фактов, относящихся к запросу]
+
+📋 **КОНКРЕТНЫЕ ДАННЫЕ:**
+[Цифры, даты, имена, названия]
+
+📝 **ЦИТАТЫ ИЗ ИСТОЧНИКОВ:**
+[Дословные цитаты]
+
+⚠️ **ЕСЛИ В ДАННЫХ НЕТ НУЖНОЙ ИНФОРМАЦИИ - НАПИШИ:**
+"В данных нет информации по запросу"
+"""
+    
+    filtered_data = await ask_deepseek(filter_prompt, temperature=0.1, max_tokens=4000, use_pro=False)
+    
+    if not filtered_data or len(filtered_data) < 50:
+        logger.warning("⚠️ Фильтрация не дала результатов")
+        return f"""
+⚠️ **В НАЙДЕННЫХ ДАННЫХ НЕТ ИНФОРМАЦИИ ПО ВАШЕМУ ЗАПРОСУ**
+
+📋 **ЗАПРОС:** {query}
+
+💡 **ПОПРОБУЙТЕ:**
+• Переформулировать запрос
+• Сделать его более конкретным
+• Задать другой вопрос
+
+⚠️ **Я НЕ ВЫДУМЫВАЮ ФАКТЫ — ЭТО ЧЕСТНЫЙ ОТВЕТ!**
+"""
+    
+    logger.info(f"📊 Отфильтровано данных: {len(filtered_data)} символов")
+    logger.info("🧠 ЭТАП 3: DeepSeek Pro - синтез развернутого ответа")
+    
+    # ⭐ 3. ЭТАП СИНТЕЗА (DeepSeek Pro - качественный)
+    answer_prompt = f"""
+⚠️ **ТЫ — ЭКСПЕРТ-АНАЛИТИК. ТВОЯ ЗАДАЧА — ДАТЬ РАЗВЁРНУТЫЙ, СТРУКТУРИРОВАННЫЙ ОТВЕТ.**
+
+⚠️ **ЗАПРОС ПОЛЬЗОВАТЕЛЯ:** {query}
+
+⚠️ **ОТФИЛЬТРОВАННЫЕ ДАННЫЕ (ТОЛЬКО РЕЛЕВАНТНОЕ):**
+{filtered_data}
 
 {memory_context}
 
-⚠️ **СТРОГИЕ ПРАВИЛА (НАРУШЕНИЕ = ОБМАН):**
+⚠️ **ТВОЯ ЗАДАЧА:**
+1. **Проанализируй** отфильтрованные данные
+2. **Синтезируй** развернутый, информативный ответ
+3. **Структурируй** ответ по смысловым блокам
+4. **Выдели главное** - что действительно важно для пользователя
+5. **Добавь контекст** - объясни, почему это важно
 
-1. **ЗАПРЕЩЕНО ВЫДУМЫВАТЬ!**
-   - НЕЛЬЗЯ добавлять факты, которых нет в данных
-   - НЕЛЬЗЯ обобщать или додумывать
-   - НЕЛЬЗЯ использовать "свои знания"
-
-2. **ЗАПРЕЩЕНЫ СУБЪЕКТИВНЫЕ ФРАЗЫ:**
-   - "по моему мнению", "я считаю", "я думаю"
-   - "возможно", "вероятно", "скорее всего"
-
-3. **ЗАПРЕЩЕНЫ ОТМАЗКИ:**
-   - "не могу найти", "нет доступа", "не удалось"
-
-4. **РАЗРЕШЕНО ТОЛЬКО:**
-   - Пересказывать то, что есть в данных
-   - Цитировать дословно
-   - Делать выводы ТОЛЬКО из предоставленных данных
+⚠️ **СТРОГИЕ ПРАВИЛА:**
+1. **НЕ ВЫДУМЫВАЙ** - бери ТОЛЬКО из отфильтрованных данных
+2. **НЕ ИСПОЛЬЗУЙ** субъективные фразы ("я считаю", "по моему мнению")
+3. **ОТВЕТ ДОЛЖЕН БЫТЬ РАЗВЁРНУТЫМ** (минимум 800 символов)
+4. **УКАЗЫВАЙ ИСТОЧНИКИ** - откуда взята информация
 
 ⚠️ **ФОРМАТ ОТВЕТА:**
-📊 **ФАКТЫ ИЗ ИНТЕРНЕТА:**
-[Только факты из данных, без выдумок]
+📊 **ОСНОВНОЙ ОТВЕТ:**
+[Развернутый ответ на запрос]
 
-📋 **ДОСЛОВНЫЕ ЦИТАТЫ:**
-[Цитаты из источников]
+📋 **КЛЮЧЕВЫЕ ФАКТЫ:**
+[Список важных фактов с источниками]
+
+📝 **ДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ:**
+[Контекст, объяснения, детали]
 
 🔗 **ИСТОЧНИКИ:**
-{sources_text}
+[Ссылки на источники]
 
 ⚠️ **ЕСЛИ ДАННЫХ НЕДОСТАТОЧНО - СКАЖИ ЧЕСТНО:**
-"В найденных данных нет полной информации по вашему запросу."
+"В найденных данных ограниченная информация. Вот что удалось найти..."
 """
     
-    answer = await ask_deepseek(prompt, temperature=0.1, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
+    answer = await ask_deepseek(answer_prompt, temperature=0.2, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
     
+    # ⭐ 4. ПРОВЕРКА КАЧЕСТВА
     is_valid, reason = check_for_lies_and_laziness(answer)
     if not is_valid:
-        logger.warning(f"⚠️ ОТВЕТ ОТКЛОНЁН: {reason}")
+        logger.warning(f"⚠️ Ответ отклонён: {reason}")
         
+        # Повторяем синтез с уточнением
         retry_prompt = f"""
 ⚠️ **ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ОТКЛОНЁН!**
 
 Причина: {reason}
 
-⚠️ **ТЫ ОБЯЗАН ДАТЬ ЧЕСТНЫЙ ОТВЕТ!**
-- Используй ТОЛЬКО данные из интернета
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **ДАННЫЕ:** {filtered_data[:3000]}
+
+⚠️ **ТРЕБОВАНИЯ:**
+- ОТВЕТЬ РАЗВЁРНУТО (минимум 800 символов)
+- ИСПОЛЬЗУЙ ТОЛЬКО данные из интернета
 - НЕ ВЫДУМЫВАЙ факты
 - НЕ ИСПОЛЬЗУЙ субъективные фразы
-
-📊 **ДАННЫЕ:**
-{context[:2000]}
-
-Вопрос: {query}
+- СТРУКТУРИРУЙ ответ
 
 ОТВЕТЬ ЧЕСТНО, БЕЗ ВЫДУМОК!
 """
-        answer = await ask_deepseek(retry_prompt, temperature=0.1, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
-        
-        is_valid, reason = check_for_lies_and_laziness(answer)
-        if not is_valid:
-            return f"""
-⚠️ **НЕ УДАЛОСЬ СФОРМИРОВАТЬ КАЧЕСТВЕННЫЙ ОТВЕТ**
-
-📊 **СЫРЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА:**
-{context[:2000]}
-
-🔗 **ИСТОЧНИКИ:**
-{sources_text}
-"""
+        answer = await ask_deepseek(retry_prompt, temperature=0.2, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
     
+    logger.info("✅ Ответ сгенерирован успешно")
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА (С ЖЁСТКИМИ ПРОВЕРКАМИ)
+#  ОСНОВНАЯ ЛОГИКА
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> Tuple[str, List[Dict], float]:
@@ -1378,7 +1434,6 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         
         items = []
         for page in pages:
-            # ⭐ ТЕПЕРЬ items ЗАПОЛНЕНЫ parse_page
             if page.get('items'):
                 items.extend(page['items'])
             if page.get('lists'):
@@ -1417,23 +1472,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
 ⚠️ **Я НЕ ВЫДУМЫВАЮ ФАКТЫ — ЭТО ЧЕСТНЫЙ ОТВЕТ!**
 """, [], 0.0
     
-    sorted_items = sorted(
-        all_items,
-        key=lambda x: (
-            0 if x.get('rating') else 1,
-            0 if x.get('year') else 2,
-            0 if x.get('price') else 1
-        )
-    )[:30]
-    
-    items_text = ""
-    for idx, item in enumerate(sorted_items[:30], 1):
-        year = f" ({item.get('year')})" if item.get('year') else ""
-        rating = f" ★ {item.get('rating')}" if item.get('rating') else ""
-        price = f" {item.get('price')}" if item.get('price') else ""
-        desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
-        items_text += f"{idx}. {item.get('title')}{year}{rating}{price}{desc}\n"
-    
+    # ⭐ ГЕНЕРИРУЕМ ОТВЕТ ЧЕРЕЗ ДВУХЭТАПНУЮ СИСТЕМУ
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
@@ -1453,8 +1492,8 @@ def format_answer_clean(answer: str, confidence: float, sources_count: int) -> s
     knowledge_block = ""
     conclusion_block = ""
     
-    if "📊 **ФАКТЫ ИЗ ИНТЕРНЕТА**" in answer or "🌐 **Из интернета**" in answer:
-        parts = answer.split("🧠 **Дополнено из знаний**" if "🧠 **Дополнено из знаний**" in answer else "📋 **ДОСЛОВНЫЕ ЦИТАТЫ**")
+    if "📊 **ОСНОВНОЙ ОТВЕТ**" in answer or "🌐 **Из интернета**" in answer:
+        parts = answer.split("🧠 **Дополнено из знаний**" if "🧠 **Дополнено из знаний**" in answer else "📋 **КЛЮЧЕВЫЕ ФАКТЫ**")
         if len(parts) > 0:
             internet_block = parts[0].strip()
         if len(parts) > 1:
@@ -1819,7 +1858,7 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.4 (ИСПРАВЛЕН ПАРСИНГ)")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.5 (ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1830,8 +1869,8 @@ def main():
     logger.info(f"   Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("=" * 60)
     logger.info("✅ ИСПРАВЛЕН ПАРСИНГ APISERPENT (organic_results)")
-    logger.info("✅ ИСПРАВЛЕН ПАРСИНГ СТРАНИЦ (заполняет items)")
-    logger.info("✅ УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ (БЕЗ ХАРДКОДА)")
+    logger.info("✅ УНИВЕРСАЛЬНЫЙ ПАРСИНГ (собирает всё)")
+    logger.info("✅ ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ (Flash → Pro)")
     logger.info("✅ ДОБАВЛЕНА ЖЁСТКАЯ ПРОВЕРКА НА ВРАНЬЁ И ЛЕНЬ")
     logger.info("✅ ВСЕ ПАРАМЕТРЫ В .env (БЕЗ ХАРДКОДА)")
     
