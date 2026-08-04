@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.2
-#  БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК ДЛЯ ВРАНЬЯ И ЛЕНИ
+#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.3
+#  УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ (БЕЗ ХАРДКОДА)
+#  БЕЗ ЛАЗЕЕК ДЛЯ ВРАНЬЯ И ЛЕНИ
 #  ВСЁ В КОНФИГЕ ЧЕРЕЗ .env
 # ═══════════════════════════════════════════════════════════════════
 
@@ -116,7 +117,7 @@ MAX_VARIANTS = int(os.getenv("MAX_VARIANTS", "4"))
 # ⭐ ПАРАМЕТРЫ КАЧЕСТВА ОТВЕТА
 MIN_ANSWER_LENGTH = int(os.getenv("MIN_ANSWER_LENGTH", "800"))
 MIN_CONFIDENCE_EXIT = int(os.getenv("MIN_CONFIDENCE_EXIT", "30"))
-MIN_SNIPPET_LENGTH = int(os.getenv("MIN_SNIPPET_LENGTH", "80"))
+MIN_SNIPPET_LENGTH = int(os.getenv("MIN_SNIPPET_LENGTH", "20"))
 
 # ⭐ ТАЙМАУТЫ
 PAGE_TIMEOUT = int(os.getenv("PAGE_TIMEOUT", "4"))
@@ -1131,52 +1132,55 @@ def format_confidence(confidence: Dict) -> str:
 """
 
 # ═══════════════════════════════════════════════════════════════════
-#  ЖЁСТКАЯ ФИЛЬТРАЦИЯ РЕЗУЛЬТАТОВ
+#  УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ (БЕЗ ХАРДКОДА)
 # ═══════════════════════════════════════════════════════════════════
 
-def is_useful_result(result: Dict) -> bool:
-    """Жёсткая фильтрация результатов"""
+def is_useful_result(result: Dict, query: str = "") -> bool:
+    """
+    УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ (БЕЗ ХАРДКОДА)
+    Пропускает ВСЁ, кроме явного мусора
+    """
     title = result.get('title', '').lower()
     snippet = result.get('snippet', '').lower()
     url = result.get('link', '').lower()
     
-    # Минимальная полезная длина
-    if len(snippet) < MIN_SNIPPET_LENGTH:
+    # ⚠️ 1. БЛОКИРУЕМ ТОЛЬКО ЯВНЫЙ СПАМ
+    spam_domains = [
+        'googleadservices', 'doubleclick', 'facebook.com/tr',
+        'googletagmanager', 'yandex.ru/clck', 'ad.doubleclick'
+    ]
+    if any(d in url for d in spam_domains):
         return False
     
-    # Блокировка спама и рекламы
-    spam_words = ['реклама', 'advertisement', 'sponsored', 'promoted', 'купить', 'заказать']
+    # ⚠️ 2. БЛОКИРУЕМ ТОЛЬКО ЯВНУЮ РЕКЛАМУ
+    spam_words = ['реклама', 'advertisement', 'sponsored', 'promoted']
     if any(w in title or w in snippet for w in spam_words):
         return False
     
-    # Блокировка видеоплатформ
+    # ⚠️ 3. БЛОКИРУЕМ ВИДЕО (не дают текста)
     video_domains = ['youtube.com', 'youtu.be', 'vimeo.com', 'twitch.tv', 'tiktok.com']
     if any(d in url for d in video_domains):
         return False
     
-    # Полезные маркеры (нужно минимум 2)
-    useful_markers = [
-        'как', 'почему', 'что такое', 'пример', 'инструкция',
-        'руководство', 'совет', 'рекомендация', 'обзор',
-        'сравнение', 'список', 'шаг', 'этап', 'алгоритм'
-    ]
-    useful_count = sum(1 for m in useful_markers if m in title or m in snippet)
-    if useful_count < 2:
+    # ⚠️ 4. ЕСЛИ СНИППЕТ СЛИШКОМ КОРОТКИЙ - ПРОПУСКАЕМ
+    if len(snippet) < MIN_SNIPPET_LENGTH:
         return False
     
-    # Надёжные домены
-    trusted_domains = ['.edu', '.gov', 'wikipedia.org', 'habr.com', 'vc.ru', 'cossa.ru']
-    if any(d in url for d in trusted_domains):
-        return True
+    # ⭐ 5. СМЫСЛОВАЯ ПРОВЕРКА (ЕСЛИ ЕСТЬ ЗАПРОС)
+    if query:
+        # Берём все слова из запроса (кроме самых частых стоп-слов)
+        stop_words = ['на', 'в', 'с', 'по', 'для', 'от', 'до', 'из', 'за', 'под', 'над', 'это', 'как']
+        query_words = [w for w in query.lower().split() if len(w) > 2 and w not in stop_words]
+        
+        if query_words:
+            # Проверяем, есть ли в результатах ХОТЯ БЫ ОДНО слово из запроса
+            for word in query_words[:5]:  # Берем 5 самых важных слов
+                if word in title or word in snippet:
+                    return True
     
-    # Длинный сниппет с цифрами или датами
-    if len(snippet) > 200:
-        has_numbers = bool(re.search(r'\d+', snippet))
-        has_dates = bool(re.search(r'\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}', snippet))
-        if has_numbers or has_dates:
-            return True
-    
-    return False
+    # ⭐ 6. ЕСЛИ НЕТ ЗАПРОСА ИЛИ НЕТ СОВПАДЕНИЙ - ПРОПУСКАЕМ ВСЁ
+    # (лучше пропустить лишнее, чем потерять полезное)
+    return True
 
 # ═══════════════════════════════════════════════════════════════════
 #  ГЕНЕРАЦИЯ ОТВЕТА (БЕЗ ЛАЗЕЕК)
@@ -1307,7 +1311,8 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
             logger.info(f"⚠️ Нет результатов в итерации {iteration}")
             break
         
-        results = [r for r in results if is_useful_result(r)]
+        # ⭐ УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ С ПЕРЕДАЧЕЙ ЗАПРОСА
+        results = [r for r in results if is_useful_result(r, query)]
         logger.info(f"📊 После фильтрации: {len(results)} результатов")
         
         all_results.extend(results)
@@ -1756,7 +1761,7 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.2 (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.3 (УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1767,6 +1772,7 @@ def main():
     logger.info(f"   Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("=" * 60)
     logger.info("✅ ИСПРАВЛЕН ПАРСИНГ APISERPENT (organic_results)")
+    logger.info("✅ УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ (БЕЗ ХАРДКОДА)")
     logger.info("✅ ДОБАВЛЕНА ЖЁСТКАЯ ПРОВЕРКА НА ВРАНЬЁ И ЛЕНЬ")
     logger.info("✅ ВСЕ ПАРАМЕТРЫ В .env (БЕЗ ХАРДКОДА)")
     logger.info("✅ СОХРАНЕНЫ ВСЕ ФУНКЦИИ")
