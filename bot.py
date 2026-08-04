@@ -1,10 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
-#  МАКСИМАЛЬНАЯ ТОЧНОСТЬ (85–90%) ЗА 90–120 СЕК
-#  ПАМЯТЬ + ГРАФ ЗНАНИЙ + РЕЖИМЫ + ЗАЩИТА ОТ ОБМАНА
-#  ВИЗУАЛЬНОЕ РАЗДЕЛЕНИЕ: ИНТЕРНЕТ / ЗНАНИЯ
-#  ИСТОЧНИКИ ПОД КНОПКОЙ
-#  НИЧЕГО НЕ ВЫРЕЗАНО, ВСЁ РАБОТАЕТ
+#  BROWAIX BOT — ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
+#  APISERPENT РАБОТАЕТ, БЕГУЩАЯ ПОЛОСКА, ПРОГНОЗ ВРЕМЕНИ
+#  КНОПКИ ТОЛЬКО ПОСЛЕ ВВОДА ТЕКСТА
+#  УТОЧНЕНИЕ С КОНТЕКСТОМ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -88,6 +86,7 @@ def now():
 #  КНОПКИ
 # ═══════════════════════════════════════════════════════════════════
 
+# Кнопки выбора режима (показываются ПОСЛЕ ввода текста)
 ACTION_BUTTONS = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("🔍 Поиск", callback_data="action_search"),
@@ -98,23 +97,14 @@ ACTION_BUTTONS = InlineKeyboardMarkup([
     ]
 ])
 
-ACTION_WITH_SOURCES_BUTTONS = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("🔍 Поиск", callback_data="action_search"),
-        InlineKeyboardButton("📝 Уточнить", callback_data="action_clarify"),
-    ],
-    [
-        InlineKeyboardButton("💬 Беседа", callback_data="action_chat"),
-        InlineKeyboardButton("📎 Показать источники", callback_data="show_sources"),
-    ]
-])
-
+# Кнопка выхода из беседы (показывается ВСЕГДА в режиме беседы)
 EXIT_CHAT_BUTTON = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🔍 Выйти в поиск", callback_data="action_exit_chat")]
+    [InlineKeyboardButton("🔙 Выйти из беседы", callback_data="action_exit_chat")]
 ])
 
-HIDE_SOURCES_BUTTON = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🔒 Скрыть источники", callback_data="hide_sources")]
+# Кнопка для уточнения (показывается ПОСЛЕ ответа)
+CLARIFY_BUTTON = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📝 Уточнить запрос", callback_data="action_clarify")]
 ])
 
 # ═══════════════════════════════════════════════════════════════════
@@ -373,36 +363,90 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ТАЙМЕР
+#  ПРОГРЕСС (БЕГУЩАЯ ПОЛОСКА + ПРОГНОЗ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def send_progress_updates(chat_id, context, start_time):
+    """Отображает бегущую полоску и прогнозируемое время"""
     message = None
     try:
         message = await context.bot.send_message(
             chat_id,
-            "🌐 Ищу информацию...\n\n⏱️ 0 сек"
+            "⏳ Ищу информацию...\n\n"
+            "░░░░░░░░░░ 0%  ⏱️ ~60 сек"
         )
+        
+        # Этапы с весами (в секундах)
+        stages = [
+            {"name": "Анализ запроса", "weight": 0.15, "emoji": "🧠"},
+            {"name": "Поиск в интернете", "weight": 0.35, "emoji": "🔍"},
+            {"name": "Загрузка страниц", "weight": 0.30, "emoji": "📄"},
+            {"name": "Формирование ответа", "weight": 0.20, "emoji": "🤔"},
+        ]
+        
+        estimated_total = 90  # среднее время в секундах
         elapsed = 0
-        while elapsed < 180:
-            await asyncio.sleep(2)
+        current_stage = 0
+        stage_progress = 0
+        
+        while elapsed < estimated_total + 30:
+            await asyncio.sleep(1)
+            elapsed = int(time.time() - start_time)
+            
             if context.user_data.get('found_answer'):
                 try:
-                    await message.edit_text("✅ Информация найдена! Формирую ответ...")
+                    await message.edit_text("✅ **Готово!** Формирую ответ...")
                 except Exception:
                     pass
                 break
-            elapsed = int(time.time() - start_time)
+            
+            # Расчёт прогресса
+            total_progress = 0
+            for i, stage in enumerate(stages):
+                if i < current_stage:
+                    total_progress += stage["weight"]
+                elif i == current_stage:
+                    stage_elapsed = elapsed - sum(s["weight"] * estimated_total for s in stages[:current_stage])
+                    stage_duration = stages[current_stage]["weight"] * estimated_total
+                    stage_progress = min(1, stage_elapsed / max(1, stage_duration))
+                    total_progress += stage["weight"] * stage_progress
+                else:
+                    break
+            
+            # Переход на следующий этап
+            if current_stage < len(stages) - 1 and stage_progress >= 1:
+                current_stage += 1
+                stage_progress = 0
+            
+            progress_percent = min(95, int(total_progress * 100))
+            remaining = max(5, int(estimated_total * (1 - total_progress)))
+            
+            # Бегущая полоска
+            bar_length = 20
+            filled = int(progress_percent / 100 * bar_length)
+            bar = "█" * filled + "░" * (bar_length - filled)
+            
+            stage_name = stages[current_stage]["emoji"] + " " + stages[current_stage]["name"]
+            
+            text = (
+                f"⏳ {stage_name}\n\n"
+                f"`{bar}` {progress_percent}%\n\n"
+                f"⏱️ ~{remaining} сек"
+            )
+            
             try:
-                await message.edit_text(f"🌐 Ищу информацию...\n\n⏱️ {elapsed} сек")
+                await message.edit_text(text, parse_mode='Markdown')
             except Exception:
-                message = await context.bot.send_message(chat_id, f"🌐 Ищу информацию... ⏱️ {elapsed} сек")
+                pass
+            
+            if remaining <= 0:
+                break
+                
     except Exception as e:
         logger.error(f"❌ Ошибка таймера: {e}")
-    return message
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК
+#  ПОИСК (APISerpent — с deep=true и диагностикой)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
@@ -415,25 +459,34 @@ async def search_apiserpent(query: str) -> List[Dict]:
     try:
         session = await get_session()
         logger.info(f"🔍 APISerpent запрос: {query[:50]}...")
+        
+        params = {
+            "q": query,
+            "engine": "google",
+            "num": SEARCH_RESULTS,
+            "deep": "true"
+        }
+        logger.info(f"📤 Параметры: {params}")
+        
         async with session.get(
             "https://apiserpent.com/api/search",
-            params={
-                "q": query,
-                "engine": "google",
-                "num": SEARCH_RESULTS,
-                "deep": "true"
-            },
+            params=params,
             headers={"X-API-Key": APISERPENT_API_KEY},
             timeout=APISERPENT_TIMEOUT
         ) as r:
             logger.info(f"📡 APISerpent статус: {r.status}")
+            
+            response_text = await r.text()
+            logger.info(f"📄 APISerpent тело (первые 500): {response_text[:500]}")
+            
             if r.status == 200:
-                data = await r.json()
+                data = json.loads(response_text)
+                logger.info(f"📊 Ключи: {list(data.keys())}")
                 results = []
                 
-                organic = data.get("organic_results", [])
+                organic = data.get("organic_results", []) or data.get("organic", [])
                 if organic:
-                    logger.info(f"✅ Найдено {len(organic)} organic результатов")
+                    logger.info(f"✅ Найдено {len(organic)} organic")
                 for x in organic:
                     results.append({
                         "title": x.get("title", ""),
@@ -444,7 +497,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 
                 paa = data.get("people_also_ask", [])
                 if paa:
-                    logger.info(f"✅ Найдено {len(paa)} People Also Ask")
+                    logger.info(f"✅ Найдено {len(paa)} PAA")
                 for item in paa:
                     results.append({
                         "title": item.get("question", ""),
@@ -455,7 +508,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 
                 featured = data.get("featured_snippet", {})
                 if featured:
-                    logger.info("✅ Найден Featured Snippet")
+                    logger.info("✅ Найден featured_snippet")
                     results.append({
                         "title": featured.get("title", ""),
                         "snippet": featured.get("snippet", ""),
@@ -465,7 +518,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 
                 ai_overview = data.get("ai_overview", {})
                 if ai_overview:
-                    logger.info("✅ Найден AI Overview")
+                    logger.info("✅ Найден ai_overview")
                     results.append({
                         "title": "AI Overview",
                         "snippet": ai_overview.get("text", ""),
@@ -473,20 +526,28 @@ async def search_apiserpent(query: str) -> List[Dict]:
                         "source": "ai_overview"
                     })
                 
-                logger.info(f"📊 APISerpent всего: {len(results)} результатов")
+                answer_box = data.get("answer_box", {})
+                if answer_box:
+                    logger.info("✅ Найден answer_box")
+                    results.append({
+                        "title": answer_box.get("title", "Answer Box"),
+                        "snippet": answer_box.get("snippet", answer_box.get("answer", "")),
+                        "link": "",
+                        "source": "answer_box"
+                    })
+                
+                logger.info(f"📊 Всего: {len(results)} результатов")
                 return results
             else:
-                logger.warning(f"⚠️ APISerpent HTTP {r.status}")
-                try:
-                    error_text = await r.text()
-                    logger.warning(f"⚠️ APISerpent тело: {error_text[:200]}")
-                except:
-                    pass
+                logger.warning(f"⚠️ HTTP {r.status}")
+                logger.warning(f"⚠️ Тело: {response_text[:500]}")
                 return []
+                
     except asyncio.TimeoutError:
-        logger.warning("⚠️ APISerpent таймаут")
+        logger.warning("⚠️ Таймаут APISerpent")
     except Exception as e:
-        logger.warning(f"⚠️ APISerpent ошибка: {e}")
+        logger.warning(f"⚠️ Ошибка: {e}")
+        logger.warning(f"⚠️ Трассировка: {traceback.format_exc()}")
     return []
 
 async def search_serper(query: str) -> List[Dict]:
@@ -520,7 +581,7 @@ async def search_serper(query: str) -> List[Dict]:
 async def search_with_cache(query: str) -> List[Dict]:
     norm = normalize_query(query)
     if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
-        logger.info(f"♻️ Результаты поиска из кэша для '{query[:30]}...'")
+        logger.info(f"♻️ Из кэша: {query[:30]}...")
         return search_cache[norm]['data']
     
     results = await search_apiserpent(query)
@@ -550,7 +611,7 @@ async def search_parallel(variants: List[str]) -> List[Dict]:
                 if url and url not in seen_urls:
                     seen_urls.add(url)
                     all_results.append(r)
-    logger.info(f"📊 Всего найдено {len(all_results)} уникальных результатов")
+    logger.info(f"📊 Всего: {len(all_results)} уникальных")
     return all_results
 
 # ═══════════════════════════════════════════════════════════════════
@@ -886,11 +947,10 @@ def is_useful_result(result: Dict) -> bool:
     return True
 
 # ═══════════════════════════════════════════════════════════════════
-#  ФОРМАТИРОВАНИЕ ОТВЕТА (ЧИСТЫЙ + ИСТОЧНИКИ ПОД КНОПКОЙ)
+#  ФОРМАТИРОВАНИЕ ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
 
 def format_answer_clean(answer: str, confidence: float, sources_count: int) -> str:
-    """Форматирует ответ без ссылок, с указанием количества источников"""
     internet_block = ""
     knowledge_block = ""
     conclusion_block = ""
@@ -936,7 +996,6 @@ def format_answer_clean(answer: str, confidence: float, sources_count: int) -> s
     return formatted
 
 def format_sources(sources: List[Dict]) -> str:
-    """Форматирует список источников для отображения по кнопке"""
     if not sources:
         return "📎 **ИСТОЧНИКИ:**\n\nНет сохранённых источников."
     
@@ -956,7 +1015,6 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def check_answer_quality(answer: str, min_length: int = 500) -> Tuple[bool, str]:
-    """Проверяет качество ответа перед отправкой"""
     if not answer:
         return False, "Ответ пустой"
     
@@ -1106,7 +1164,6 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
     is_valid, reason = check_answer_quality(answer)
     if not is_valid:
         logger.warning(f"⚠️ Ответ отклонён: {reason}")
-        # Повторная генерация с усиленным промптом
         retry_prompt = f"""
 ⚠️ **ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ОТКЛОНЁН!**
 
@@ -1136,6 +1193,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     memory = get_memory(user_id)
 
+    # ──────────────────────────────────────────────────────────────
+    # 🔍 ПОИСК
+    # ──────────────────────────────────────────────────────────────
     if action == "action_search":
         pending_text = context.user_data.get('pending_text', '')
         if not pending_text:
@@ -1169,27 +1229,22 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['last_answer'] = answer
         context.user_data['pending_text'] = ''
         context.user_data['last_sources'] = sources[:10]
-        context.user_data['last_sources_text'] = ''
 
         clean_answer = format_answer_clean(answer, confidence, len(sources))
         context.user_data['last_formatted_answer'] = clean_answer
 
+        # ⚠️ ВАЖНО: после ответа показываем ТОЛЬКО кнопку "Уточнить"
         await update.effective_message.reply_text(
             f"⏱️ {elapsed} сек\n\n{clean_answer}",
-            reply_markup=ACTION_WITH_SOURCES_BUTTONS
+            reply_markup=CLARIFY_BUTTON
         )
 
+    # ──────────────────────────────────────────────────────────────
+    # 📝 УТОЧНИТЬ (вызов)
+    # ──────────────────────────────────────────────────────────────
     elif action == "action_clarify":
-        pending_text = context.user_data.get('pending_text', '')
+        # Проверяем, есть ли активный запрос
         last_query = context.user_data.get('last_query', '')
-
-        if not pending_text:
-            await query.edit_message_text(
-                "⚠️ Сначала напишите уточнение в чат.",
-                reply_markup=ACTION_BUTTONS
-            )
-            return
-
         if not last_query:
             await query.edit_message_text(
                 "⚠️ Нет активного запроса для уточнения.\nСначала выполните поиск.",
@@ -1197,46 +1252,21 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
-        context.user_data['awaiting_input'] = False
+        # Переводим в режим ожидания уточнения
+        context.user_data['mode'] = 'clarify'
+        context.user_data['awaiting_input'] = True
+        context.user_data['pending_text'] = ''  # Очищаем, чтобы не путать
 
         await query.edit_message_text(
-            f"📝 **Обрабатываю уточнение...**\n\n"
-            f"Предыдущий запрос: {last_query[:200]}\n"
-            f"Уточнение: {pending_text}"
+            f"📝 **Уточните запрос**\n\n"
+            f"Предыдущий запрос: *{last_query[:200]}*\n\n"
+            "Напишите ваше уточнение:",
+            parse_mode='Markdown'
         )
 
-        start_time = time.time()
-        context.user_data['found_answer'] = False
-
-        progress_task = asyncio.create_task(
-            send_progress_updates(update.effective_chat.id, context, start_time)
-        )
-
-        full_context = memory.get_full_context()
-        clarified_query = f"{last_query} (уточнение: {pending_text})"
-
-        answer, sources, confidence = await search_and_answer(clarified_query, user_id, full_context)
-
-        context.user_data['found_answer'] = True
-        await progress_task
-
-        elapsed = int(time.time() - start_time)
-        memory.add_message('user', f"Уточнение: {pending_text}")
-        memory.add_message('assistant', answer)
-        context.user_data['last_query'] = clarified_query
-        context.user_data['last_answer'] = answer
-        context.user_data['pending_text'] = ''
-        context.user_data['last_sources'] = sources[:10]
-        context.user_data['last_sources_text'] = ''
-
-        clean_answer = format_answer_clean(answer, confidence, len(sources))
-        context.user_data['last_formatted_answer'] = clean_answer
-
-        await update.effective_message.reply_text(
-            f"⏱️ {elapsed} сек\n\n{clean_answer}",
-            reply_markup=ACTION_WITH_SOURCES_BUTTONS
-        )
-
+    # ──────────────────────────────────────────────────────────────
+    # 💬 БЕСЕДА
+    # ──────────────────────────────────────────────────────────────
     elif action == "action_chat":
         pending_text = context.user_data.get('pending_text', '')
         if not pending_text:
@@ -1275,11 +1305,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         memory.add_message('user', pending_text)
         memory.add_message('assistant', answer)
 
+        # В режиме беседы — только кнопка выхода
         await query.edit_message_text(
             f"💬 **Режим беседы (без интернета)**\n\n{answer}",
             reply_markup=EXIT_CHAT_BUTTON
         )
 
+    # ──────────────────────────────────────────────────────────────
+    # 🔙 ВЫХОД ИЗ БЕСЕДЫ
+    # ──────────────────────────────────────────────────────────────
     elif action == "action_exit_chat":
         context.user_data['mode'] = 'search'
         context.user_data['awaiting_input'] = False
@@ -1291,37 +1325,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=ACTION_BUTTONS
         )
 
-    elif action == "show_sources":
-        sources = context.user_data.get('last_sources', [])
-        
-        if not sources:
-            await query.edit_message_text(
-                "📎 **ИСТОЧНИКИ:**\n\nНет сохранённых источников.",
-                reply_markup=HIDE_SOURCES_BUTTON
-            )
-            return
-        
-        sources_formatted = format_sources(sources)
-        
-        await query.edit_message_text(
-            sources_formatted,
-            reply_markup=HIDE_SOURCES_BUTTON,
-            parse_mode='Markdown'
-        )
-
-    elif action == "hide_sources":
-        last_answer = context.user_data.get('last_formatted_answer', '')
-        if last_answer:
-            await query.edit_message_text(
-                last_answer,
-                reply_markup=ACTION_WITH_SOURCES_BUTTONS
-            )
-        else:
-            await query.edit_message_text(
-                "⚠️ Основной ответ не найден.",
-                reply_markup=ACTION_BUTTONS
-            )
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1332,8 +1335,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_message:
         return
 
+    memory = get_memory(user_id)
+
+    # ──────────────────────────────────────────────────────────────
+    # РЕЖИМ БЕСЕДЫ — отвечаем без интернета
+    # ──────────────────────────────────────────────────────────────
     if context.user_data.get('mode') == 'chat':
-        memory = get_memory(user_id)
         full_context = memory.get_full_context()
 
         chat_prompt = f"""
@@ -1365,6 +1372,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ──────────────────────────────────────────────────────────────
+    # РЕЖИМ УТОЧНЕНИЯ — пользователь пишет уточнение
+    # ──────────────────────────────────────────────────────────────
+    if context.user_data.get('mode') == 'clarify':
+        last_query = context.user_data.get('last_query', '')
+        if not last_query:
+            context.user_data['mode'] = 'search'
+            await update.effective_message.reply_text(
+                "⚠️ Нет активного запроса для уточнения.",
+                reply_markup=ACTION_BUTTONS
+            )
+            return
+
+        context.user_data['mode'] = 'search'
+        context.user_data['awaiting_input'] = False
+
+        # Сохраняем уточнение как новый текст для поиска
+        clarification = user_message
+        combined_query = f"{last_query} (уточнение: {clarification})"
+
+        await update.effective_message.reply_text(
+            f"📝 **Уточняю запрос...**\n\n"
+            f"Ищу с учётом уточнения: *{clarification[:100]}*",
+            parse_mode='Markdown'
+        )
+
+        start_time = time.time()
+        context.user_data['found_answer'] = False
+
+        progress_task = asyncio.create_task(
+            send_progress_updates(update.effective_chat.id, context, start_time)
+        )
+
+        full_context = memory.get_full_context()
+        answer, sources, confidence = await search_and_answer(combined_query, user_id, full_context)
+
+        context.user_data['found_answer'] = True
+        await progress_task
+
+        elapsed = int(time.time() - start_time)
+        memory.add_message('user', f"Уточнение: {clarification}")
+        memory.add_message('assistant', answer)
+        context.user_data['last_query'] = combined_query
+        context.user_data['last_answer'] = answer
+        context.user_data['last_sources'] = sources[:10]
+
+        clean_answer = format_answer_clean(answer, confidence, len(sources))
+        context.user_data['last_formatted_answer'] = clean_answer
+
+        await update.effective_message.reply_text(
+            f"⏱️ {elapsed} сек\n\n{clean_answer}",
+            reply_markup=CLARIFY_BUTTON
+        )
+        return
+
+    # ──────────────────────────────────────────────────────────────
+    # ОБЫЧНЫЙ РЕЖИМ: сохраняем текст и показываем кнопки выбора
+    # ──────────────────────────────────────────────────────────────
     context.user_data['pending_text'] = user_message
     context.user_data['awaiting_input'] = True
 
@@ -1436,23 +1501,17 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ ВЕРСИИ БОТА")
+    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ ИСПРАВЛЕННОЙ ВЕРСИИ")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info(f"📄 Страниц за итерацию: {MAX_PAGES_PER_ITERATION}")
-    logger.info(f"🎯 Ранний выход при: {EARLY_EXIT_CONFIDENCE}%")
-    logger.info(f"🔄 Максимум итераций: {MAX_ITERATIONS}")
+    logger.info("✅ APISerpent: deep=true + диагностика")
+    logger.info("✅ Бегущая полоска + прогноз времени")
+    logger.info("✅ Кнопки только после ввода текста")
+    logger.info("✅ В беседе постоянная кнопка выхода")
+    logger.info("✅ Уточнение с контекстом")
     logger.info("✅ Память 5 уровней + граф знаний")
-    logger.info("✅ Фильтрация видео/музыки")
-    logger.info("✅ Индикатор точности")
-    logger.info("✅ Режимы: Поиск | Уточнить | Беседа")
-    logger.info("✅ deep=true в APISerpent")
-    logger.info("✅ Защита от обмана (6 правил)")
-    logger.info("✅ Проверка качества ответа")
-    logger.info("✅ Источники под кнопкой")
-    logger.info("✅ Визуальное разделение: Интернет / Знания")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
