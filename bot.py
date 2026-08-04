@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.3
+#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.4
 #  УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ (БЕЗ ХАРДКОДА)
+#  ИСПРАВЛЕН ПАРСИНГ (ЗАПОЛНЯЕТ items)
 #  БЕЗ ЛАЗЕЕК ДЛЯ ВРАНЬЯ И ЛЕНИ
 #  ВСЁ В КОНФИГЕ ЧЕРЕЗ .env
 # ═══════════════════════════════════════════════════════════════════
@@ -952,11 +953,14 @@ async def fetch_http(url: str) -> Optional[str]:
     return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ СТРАНИЦ
+#  ПАРСИНГ СТРАНИЦ (ИСПРАВЛЕННЫЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 def parse_page(html: str, query: str) -> Dict:
-    """Универсальный парсинг страниц"""
+    """
+    УНИВЕРСАЛЬНЫЙ ПАРСИНГ СТРАНИЦ
+    Извлекает: текст, списки, заголовки, пункты (items)
+    """
     result = {
         'text': '',
         'lists': [],
@@ -973,36 +977,93 @@ def parse_page(html: str, query: str) -> Dict:
     try:
         soup = BeautifulSoup(html, 'html.parser')
         
+        # Удаляем мусор
         for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'noscript']):
             tag.decompose()
         
+        # 1. ОСНОВНОЙ ТЕКСТ
         text = soup.get_text(separator=' ')
         text = re.sub(r'\s+', ' ', text).strip()
         result['text'] = text[:4000]
         
+        # 2. ЗАГОЛОВКИ
         for tag in soup.find_all(['h1', 'h2', 'h3']):
             h = tag.get_text().strip()
-            if h:
+            if h and len(h) > 5:
                 result['headings'].append(h[:200])
         result['headings'] = result['headings'][:5]
         
+        # 3. ИЗВЛЕКАЕМ ITEMS ИЗ СПИСКОВ
+        seen = set()
         for tag in soup.find_all(['ul', 'ol']):
-            items = []
             for li in tag.find_all('li'):
                 li_text = li.get_text().strip()
-                if li_text and len(li_text) > 5:
-                    items.append(li_text[:200])
-            if items:
-                result['lists'].append(items)
-        result['lists'] = result['lists'][:5]
+                if 10 < len(li_text) < 500:
+                    key = li_text[:40].lower()
+                    if key not in seen:
+                        seen.add(key)
+                        result['lists'].append(li_text[:200])
+                        result['items'].append({
+                            'title': li_text[:200],
+                            'description': '',
+                            'year': None,
+                            'rating': None,
+                            'price': None
+                        })
         
-        # Извлекаем ключевые факты
-        key_facts = re.findall(
+        # 4. ИЗВЛЕКАЕМ ITEMS ИЗ ПАРАГРАФОВ С ЦИФРАМИ
+        for p in soup.find_all('p'):
+            p_text = p.get_text().strip()
+            if 30 < len(p_text) < 600:
+                has_data = bool(re.search(r'\d+', p_text))
+                if has_data:
+                    key = p_text[:40].lower()
+                    if key not in seen:
+                        seen.add(key)
+                        year_match = re.search(r'\b(19[0-9]{2}|20[0-9]{2})\b', p_text)
+                        year = year_match.group(1) if year_match else None
+                        result['items'].append({
+                            'title': p_text[:150],
+                            'description': p_text[:300],
+                            'year': year,
+                            'rating': None,
+                            'price': None
+                        })
+        
+        # 5. ИЗВЛЕКАЕМ ITEMS ИЗ ТАБЛИЦ
+        for table in soup.find_all('table'):
+            for row in table.find_all('tr')[:15]:
+                cells = row.find_all(['td', 'th'])
+                if cells:
+                    row_text = ' '.join([c.get_text().strip() for c in cells if c.get_text().strip()])
+                    if 20 < len(row_text) < 400:
+                        key = row_text[:40].lower()
+                        if key not in seen:
+                            seen.add(key)
+                            result['items'].append({
+                                'title': row_text[:200],
+                                'description': '',
+                                'year': None,
+                                'rating': None,
+                                'price': None
+                            })
+        
+        # 6. ОГРАНИЧИВАЕМ
+        result['items'] = result['items'][:30]
+        result['lists'] = result['lists'][:10]
+        
+        # 7. ИЗВЛЕКАЕМ ОПРЕДЕЛЕНИЯ
+        definitions = re.findall(
             r'([А-Яа-яA-Za-z][^.!?]{10,60})\s+(?:—|–|-|это|является)\s+([^.!?]{10,80})',
             text, re.IGNORECASE
         )
-        for fact in key_facts[:5]:
-            result['definitions'].append(f"{fact[0].strip()} — {fact[1].strip()}")
+        for d in definitions[:5]:
+            result['definitions'].append(f"{d[0].strip()} — {d[1].strip()}")
+        
+        # 8. ДАТА
+        date_match = re.search(r'\b\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}\b', text)
+        if date_match:
+            result['date'] = date_match.group()
         
         return result
         
@@ -1144,7 +1205,7 @@ def is_useful_result(result: Dict, query: str = "") -> bool:
     snippet = result.get('snippet', '').lower()
     url = result.get('link', '').lower()
     
-    # ⚠️ 1. БЛОКИРУЕМ ТОЛЬКО ЯВНЫЙ СПАМ
+    # БЛОКИРУЕМ ТОЛЬКО ЯВНЫЙ СПАМ
     spam_domains = [
         'googleadservices', 'doubleclick', 'facebook.com/tr',
         'googletagmanager', 'yandex.ru/clck', 'ad.doubleclick'
@@ -1152,34 +1213,30 @@ def is_useful_result(result: Dict, query: str = "") -> bool:
     if any(d in url for d in spam_domains):
         return False
     
-    # ⚠️ 2. БЛОКИРУЕМ ТОЛЬКО ЯВНУЮ РЕКЛАМУ
     spam_words = ['реклама', 'advertisement', 'sponsored', 'promoted']
     if any(w in title or w in snippet for w in spam_words):
         return False
     
-    # ⚠️ 3. БЛОКИРУЕМ ВИДЕО (не дают текста)
+    # БЛОКИРУЕМ ВИДЕО (не дают текста)
     video_domains = ['youtube.com', 'youtu.be', 'vimeo.com', 'twitch.tv', 'tiktok.com']
     if any(d in url for d in video_domains):
         return False
     
-    # ⚠️ 4. ЕСЛИ СНИППЕТ СЛИШКОМ КОРОТКИЙ - ПРОПУСКАЕМ
+    # ЕСЛИ СНИППЕТ СЛИШКОМ КОРОТКИЙ - ПРОПУСКАЕМ
     if len(snippet) < MIN_SNIPPET_LENGTH:
         return False
     
-    # ⭐ 5. СМЫСЛОВАЯ ПРОВЕРКА (ЕСЛИ ЕСТЬ ЗАПРОС)
+    # СМЫСЛОВАЯ ПРОВЕРКА
     if query:
-        # Берём все слова из запроса (кроме самых частых стоп-слов)
         stop_words = ['на', 'в', 'с', 'по', 'для', 'от', 'до', 'из', 'за', 'под', 'над', 'это', 'как']
         query_words = [w for w in query.lower().split() if len(w) > 2 and w not in stop_words]
         
         if query_words:
-            # Проверяем, есть ли в результатах ХОТЯ БЫ ОДНО слово из запроса
-            for word in query_words[:5]:  # Берем 5 самых важных слов
+            for word in query_words[:5]:
                 if word in title or word in snippet:
                     return True
     
-    # ⭐ 6. ЕСЛИ НЕТ ЗАПРОСА ИЛИ НЕТ СОВПАДЕНИЙ - ПРОПУСКАЕМ ВСЁ
-    # (лучше пропустить лишнее, чем потерять полезное)
+    # ЕСЛИ НЕТ СОВПАДЕНИЙ - ПРОПУСКАЕМ ВСЁ
     return True
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1311,7 +1368,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
             logger.info(f"⚠️ Нет результатов в итерации {iteration}")
             break
         
-        # ⭐ УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ С ПЕРЕДАЧЕЙ ЗАПРОСА
+        # УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ С ПЕРЕДАЧЕЙ ЗАПРОСА
         results = [r for r in results if is_useful_result(r, query)]
         logger.info(f"📊 После фильтрации: {len(results)} результатов")
         
@@ -1321,6 +1378,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         
         items = []
         for page in pages:
+            # ⭐ ТЕПЕРЬ items ЗАПОЛНЕНЫ parse_page
             if page.get('items'):
                 items.extend(page['items'])
             if page.get('lists'):
@@ -1761,7 +1819,7 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.3 (УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ)")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.4 (ИСПРАВЛЕН ПАРСИНГ)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1772,10 +1830,10 @@ def main():
     logger.info(f"   Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("=" * 60)
     logger.info("✅ ИСПРАВЛЕН ПАРСИНГ APISERPENT (organic_results)")
+    logger.info("✅ ИСПРАВЛЕН ПАРСИНГ СТРАНИЦ (заполняет items)")
     logger.info("✅ УНИВЕРСАЛЬНАЯ ФИЛЬТРАЦИЯ (БЕЗ ХАРДКОДА)")
     logger.info("✅ ДОБАВЛЕНА ЖЁСТКАЯ ПРОВЕРКА НА ВРАНЬЁ И ЛЕНЬ")
     logger.info("✅ ВСЕ ПАРАМЕТРЫ В .env (БЕЗ ХАРДКОДА)")
-    logger.info("✅ СОХРАНЕНЫ ВСЕ ФУНКЦИИ")
     
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN не задан!")
