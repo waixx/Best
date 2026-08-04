@@ -71,6 +71,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
 #  ВСЁ НА МЕСТЕ: ПОИСК + ПАМЯТЬ + РЕЖИМЫ + РАДУЖНАЯ ПОЛОСКА
+#  КНОПКА "ПОКАЗАТЬ ИСТОЧНИКИ" + РАЗБИВКА ВО ВСЕХ МЕСТАХ
 #  НИЧЕГО НЕ ВЫРЕЗАНО, ВСЁ РАБОТАЕТ
 # ═══════════════════════════════════════════════════════════════════
 
@@ -171,6 +172,26 @@ EXIT_CHAT_BUTTON = InlineKeyboardMarkup([
 
 CLARIFY_BUTTON = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 Уточнить запрос", callback_data="action_clarify")]
+])
+
+# Кнопки для показа/скрытия источников
+SHOW_SOURCES_BUTTON = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📎 Показать источники", callback_data="show_sources")]
+])
+
+HIDE_SOURCES_BUTTON = InlineKeyboardMarkup([
+    [InlineKeyboardButton("🔒 Скрыть источники", callback_data="hide_sources")]
+])
+
+ACTION_WITH_SOURCES_BUTTONS = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("🔍 Поиск", callback_data="action_search"),
+        InlineKeyboardButton("📝 Уточнить", callback_data="action_clarify"),
+    ],
+    [
+        InlineKeyboardButton("💬 Беседа", callback_data="action_chat"),
+        InlineKeyboardButton("📎 Показать источники", callback_data="show_sources"),
+    ]
 ])
 
 # ═══════════════════════════════════════════════════════════════════
@@ -437,36 +458,45 @@ async def send_long_message(update, text: str, reply_markup=None):
     if not text:
         return
     
-    if len(text) <= 4096:
-        await update.effective_message.reply_text(text, reply_markup=reply_markup)
-        return
-    
-    parts = []
-    current = ""
-    
-    for line in text.split("\n"):
-        if len(current) + len(line) + 1 > 4000:
+    try:
+        if len(text) <= 4096:
+            await update.effective_message.reply_text(text, reply_markup=reply_markup)
+            return
+        
+        parts = []
+        current = ""
+        
+        for line in text.split("\n"):
+            if len(current) + len(line) + 1 > 4000:
+                parts.append(current)
+                current = line
+            else:
+                current += "\n" + line if current else line
+        
+        if current:
             parts.append(current)
-            current = line
-        else:
-            current += "\n" + line if current else line
-    
-    if current:
-        parts.append(current)
-    
-    await update.effective_message.reply_text(parts[0], reply_markup=reply_markup)
-    for part in parts[1:]:
-        await update.effective_message.reply_text(part)
+        
+        await update.effective_message.reply_text(parts[0], reply_markup=reply_markup)
+        for part in parts[1:]:
+            await update.effective_message.reply_text(part)
+    except Exception as e:
+        logger.error(f"❌ Ошибка в send_long_message: {e}")
+        try:
+            await update.effective_message.reply_text(
+                text[:3000] + "\n\n... (ответ обрезан из-за ошибки)",
+                reply_markup=reply_markup
+            )
+        except:
+            pass
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОГРЕСС (РАДУЖНАЯ АНИМИРОВАННАЯ ПОЛОСКА + ДЕТАЛЬНЫЕ СТАТУСЫ)
+#  ПРОГРЕСС (РАДУЖНАЯ АНИМИРОВАННАЯ ПОЛОСКА)
 # ═══════════════════════════════════════════════════════════════════
 
 async def send_progress_updates(chat_id, context, start_time):
     """Детальный прогресс с радужной анимированной полоской"""
     message = None
     try:
-        # Этапы с эмодзи, названиями и примерной длительностью
         stages = [
             {"emoji": "🧠", "name": "Анализ запроса (DeepSeek)", "duration": 8},
             {"emoji": "🔍", "name": "Поиск в интернете (APISerpent)", "duration": 15},
@@ -474,7 +504,6 @@ async def send_progress_updates(chat_id, context, start_time):
             {"emoji": "🤔", "name": "Формирование ответа (DeepSeek)", "duration": 12},
         ]
         
-        # Радужные цвета для полоски
         rainbow_colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
         
         message = await context.bot.send_message(
@@ -487,7 +516,6 @@ async def send_progress_updates(chat_id, context, start_time):
         elapsed = 0
         stage_idx = 0
         stage_start = 0
-        last_update = 0
         color_idx = 0
         
         while True:
@@ -510,7 +538,6 @@ async def send_progress_updates(chat_id, context, start_time):
                 stage_elapsed = elapsed - stage_start
                 progress = min(100, int((stage_elapsed / stage["duration"]) * 100))
                 
-                # Радужная анимация: меняем цвет полоски
                 color_idx = (color_idx + 1) % len(rainbow_colors)
                 color = rainbow_colors[color_idx]
                 
@@ -524,14 +551,12 @@ async def send_progress_updates(chat_id, context, start_time):
                     f"⏱️ {elapsed} сек"
                 )
                 
-                # Переход на следующий этап
                 if progress >= 100 and stage_idx < len(stages) - 1:
                     stage_idx += 1
                     stage_start = elapsed
                     color_idx = 0
                     continue
                 
-                # Последний этап — держим на 95%
                 if stage_idx == len(stages) - 1 and progress >= 100:
                     bar = "███████████████████░ 95%"
                     text = (
@@ -545,7 +570,6 @@ async def send_progress_updates(chat_id, context, start_time):
                 except Exception:
                     pass
             
-            # Защита от бесконечного цикла
             if elapsed > 300:
                 break
                 
@@ -1103,6 +1127,25 @@ def format_answer_clean(answer: str, confidence: float, sources_count: int) -> s
     return formatted
 
 # ═══════════════════════════════════════════════════════════════════
+#  ФОРМАТИРОВАНИЕ ИСТОЧНИКОВ
+# ═══════════════════════════════════════════════════════════════════
+
+def format_sources(sources: List[Dict]) -> str:
+    if not sources:
+        return "📎 **ИСТОЧНИКИ:**\n\nНет сохранённых источников."
+    
+    formatted = "📎 **ИСТОЧНИКИ:**\n\n"
+    for idx, s in enumerate(sources[:10], 1):
+        title = s.get('title', 'Источник')[:60]
+        url = s.get('link', '')
+        formatted += f"{idx}. **{title}**\n"
+        if url:
+            formatted += f"   🔗 {url}\n"
+        formatted += "\n"
+    
+    return formatted
+
+# ═══════════════════════════════════════════════════════════════════
 #  ПРОВЕРКА КАЧЕСТВА ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
 
@@ -1325,7 +1368,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['last_formatted_answer'] = clean_answer
         
         full_text = f"⏱️ {elapsed} сек\n\n{clean_answer}"
-        await send_long_message(update, full_text, CLARIFY_BUTTON)
+        await send_long_message(update, full_text, ACTION_WITH_SOURCES_BUTTONS)
 
     # ──────────────────────────────────────────────────────────────
     # 📝 УТОЧНИТЬ (вызов)
@@ -1409,6 +1452,43 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             "Напишите новый вопрос, и я предложу режимы.",
             reply_markup=ACTION_BUTTONS
         )
+
+    # ──────────────────────────────────────────────────────────────
+    # 📎 ПОКАЗАТЬ ИСТОЧНИКИ
+    # ──────────────────────────────────────────────────────────────
+    elif action == "show_sources":
+        sources = context.user_data.get('last_sources', [])
+        
+        if not sources:
+            await query.edit_message_text(
+                "📎 **ИСТОЧНИКИ:**\n\nНет сохранённых источников.",
+                reply_markup=HIDE_SOURCES_BUTTON
+            )
+            return
+        
+        sources_formatted = format_sources(sources)
+        
+        await query.edit_message_text(
+            sources_formatted,
+            reply_markup=HIDE_SOURCES_BUTTON,
+            parse_mode='Markdown'
+        )
+
+    # ──────────────────────────────────────────────────────────────
+    # 🔒 СКРЫТЬ ИСТОЧНИКИ
+    # ──────────────────────────────────────────────────────────────
+    elif action == "hide_sources":
+        last_answer = context.user_data.get('last_formatted_answer', '')
+        if last_answer:
+            await query.edit_message_text(
+                last_answer,
+                reply_markup=ACTION_WITH_SOURCES_BUTTONS
+            )
+        else:
+            await query.edit_message_text(
+                "⚠️ Основной ответ не найден.",
+                reply_markup=ACTION_BUTTONS
+            )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1503,7 +1583,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['last_formatted_answer'] = clean_answer
         
         full_text = f"⏱️ {elapsed} сек\n\n{clean_answer}"
-        await send_long_message(update, full_text, CLARIFY_BUTTON)
+        await send_long_message(update, full_text, ACTION_WITH_SOURCES_BUTTONS)
         return
 
     # ──────────────────────────────────────────────────────────────
@@ -1580,7 +1660,7 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ ВЕРСИИ БОТА")
+    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ ВЕРСИИ (ВСЁ ВКЛЮЧЕНО)")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
@@ -1593,7 +1673,9 @@ def main():
     logger.info("✅ Уточнение с контекстом")
     logger.info("✅ Память 5 уровней + граф знаний")
     logger.info("✅ Защита от обмана")
-    logger.info("✅ Разбивка длинных сообщений")
+    logger.info("✅ РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ (ВО ВСЕХ МЕСТАХ)")
+    logger.info("✅ Кнопка 'Показать источники'")
+    logger.info("✅ Кнопка 'Скрыть источники'")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
