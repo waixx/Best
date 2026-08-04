@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.5
+#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.6
+#  ИСПРАВЛЕНА ОШИБКА С ПУСТЫМИ ITEMS
+#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ + FALLBACK ИЗ ТЕКСТА
 #  ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ (ФИЛЬТРАЦИЯ + СИНТЕЗ)
-#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ (СОБИРАЕТ ВСЁ)
 #  БЕЗ ЛАЗЕЕК ДЛЯ ВРАНЬЯ И ЛЕНИ
 #  ВСЁ В КОНФИГЕ ЧЕРЕЗ .env
 # ═══════════════════════════════════════════════════════════════════
@@ -1085,7 +1086,8 @@ async def fetch_pages(links: List[str], query: str) -> List[Dict]:
         return []
     tasks = [fetch_page(link, query) for link in links[:MAX_PAGES_PER_ITERATION]]
     results = await asyncio.gather(*tasks)
-    return [r for r in results if r.get('text') and len(r.get('text')) > 100]
+    # ⭐ ВОЗВРАЩАЕМ ВСЕ СТРАНИЦЫ, ДАЖЕ С ПУСТЫМ ТЕКСТОМ
+    return results
 
 # ═══════════════════════════════════════════════════════════════════
 #  ГЕНЕРАЦИЯ ВАРИАНТОВ ЗАПРОСОВ
@@ -1401,7 +1403,7 @@ async def generate_answer_strict(query: str, pages: List[Dict], memory_context: 
     return answer
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА
+#  ОСНОВНАЯ ЛОГИКА (С ЖЁСТКИМИ ПРОВЕРКАМИ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> Tuple[str, List[Dict], float]:
@@ -1432,6 +1434,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         links = [r.get('link', '') for r in results if r.get('link')]
         pages = await fetch_pages(links, query)
         
+        # ⭐ СОБИРАЕМ ITEMS ИЗ СТРАНИЦ
         items = []
         for page in pages:
             if page.get('items'):
@@ -1440,6 +1443,26 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
                 for lst in page.get('lists', []):
                     if isinstance(lst, list):
                         items.extend([{'title': item} for item in lst[:5]])
+        
+        # ⭐ ЕСЛИ ITEMS ПУСТЫЕ - ИЗВЛЕКАЕМ ИЗ ТЕКСТА
+        if not items:
+            for page in pages:
+                text = page.get('text', '')
+                if text and len(text) > 200:
+                    # Разбиваем на предложения
+                    sentences = re.split(r'[.!?]+', text)
+                    for sent in sentences[:30]:
+                        sent = sent.strip()
+                        if 30 < len(sent) < 300:
+                            # Ищем цифры (признак данных)
+                            if re.search(r'\d+', sent):
+                                items.append({
+                                    'title': sent[:200],
+                                    'description': '',
+                                    'year': None,
+                                    'rating': None,
+                                    'price': None
+                                })
         
         all_items.extend(items)
         confidence_data = calculate_confidence(pages)
@@ -1472,7 +1495,23 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
 ⚠️ **Я НЕ ВЫДУМЫВАЮ ФАКТЫ — ЭТО ЧЕСТНЫЙ ОТВЕТ!**
 """, [], 0.0
     
-    # ⭐ ГЕНЕРИРУЕМ ОТВЕТ ЧЕРЕЗ ДВУХЭТАПНУЮ СИСТЕМУ
+    sorted_items = sorted(
+        all_items,
+        key=lambda x: (
+            0 if x.get('rating') else 1,
+            0 if x.get('year') else 2,
+            0 if x.get('price') else 1
+        )
+    )[:30]
+    
+    items_text = ""
+    for idx, item in enumerate(sorted_items[:30], 1):
+        year = f" ({item.get('year')})" if item.get('year') else ""
+        rating = f" ★ {item.get('rating')}" if item.get('rating') else ""
+        price = f" {item.get('price')}" if item.get('price') else ""
+        desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
+        items_text += f"{idx}. {item.get('title')}{year}{rating}{price}{desc}\n"
+    
     memory = get_memory(uid)
     memory_context = ""
     if memory.knowledge_graph.get_all_facts():
@@ -1858,7 +1897,7 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.5 (ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ)")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.6 (ИСПРАВЛЕНА ОШИБКА С ITEMS)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1871,6 +1910,7 @@ def main():
     logger.info("✅ ИСПРАВЛЕН ПАРСИНГ APISERPENT (organic_results)")
     logger.info("✅ УНИВЕРСАЛЬНЫЙ ПАРСИНГ (собирает всё)")
     logger.info("✅ ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ (Flash → Pro)")
+    logger.info("✅ ИСПРАВЛЕНА ОШИБКА С ПУСТЫМИ ITEMS (FALLBACK ИЗ ТЕКСТА)")
     logger.info("✅ ДОБАВЛЕНА ЖЁСТКАЯ ПРОВЕРКА НА ВРАНЬЁ И ЛЕНЬ")
     logger.info("✅ ВСЕ ПАРАМЕТРЫ В .env (БЕЗ ХАРДКОДА)")
     
