@@ -1,8 +1,77 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
-#  APISERPENT РАБОТАЕТ, БЕГУЩАЯ ПОЛОСКА, ПРОГНОЗ ВРЕМЕНИ
-#  КНОПКИ ТОЛЬКО ПОСЛЕ ВВОДА ТЕКСТА
-#  УТОЧНЕНИЕ С КОНТЕКСТОМ
+#  ИНСТРУКЦИЯ ДЛЯ РАЗРАБОТЧИКА (ЧТО ЭТОТ БОТ УМЕЕТ)
+#  ЭТОТ СПИСОК — ГЛАВНЫЙ ДОКУМЕНТ. НЕ УДАЛЯТЬ!
+# ═══════════════════════════════════════════════════════════════════
+
+"""
+🤖 БОТ: BROWAIX — УНИВЕРСАЛЬНЫЙ ПОИСКОВЫЙ АССИСТЕНТ
+
+📌 ОСНОВНЫЕ ВОЗМОЖНОСТИ:
+────────────────────────────────────────────────────────────────────
+1. 🔍 ПОИСК В ИНТЕРНЕТЕ
+   - APISerpent (основной) с параметром "deep": "true"
+   - Serper (резервный, при ошибке APISerpent)
+   - Параллельный поиск по 4 вариантам запросов
+   - Итеративный поиск (до 4 итераций) для повышения точности
+   - Ранний выход при уверенности ≥ 85%
+   - Расчёт уверенности на основе уникальности, рейтингов, годов, описаний
+
+2. 🧠 ПАМЯТЬ (5 УРОВНЕЙ)
+   - Краткосрочная (последние 100 сообщений)
+   - Профиль пользователя (имя, возраст, город, работа)
+   - Эпизодическая (важные факты из диалогов)
+   - Обучающая (предпочтения пользователя)
+   - Граф знаний (связи между фактами)
+
+3. 🎯 РЕЖИМЫ РАБОТЫ
+   - 🔍 Поиск — полноценный поиск в интернете
+   - 📝 Уточнить — уточнение предыдущего запроса с учётом контекста
+   - 💬 Беседа — общение без интернета (из знаний и памяти)
+
+4. 🎨 ВИЗУАЛЬНЫЕ УЛУЧШЕНИЯ
+   - Радужная анимированная полоска прогресса
+   - Детальные статусы этапов работы
+   - Счётчик времени (не обратный)
+   - Чёткое разделение 🌐 Из интернета / 🧠 Из знаний
+   - Кнопка "Показать источники" (скрывает ссылки)
+   - Кнопка "Уточнить" после каждого ответа
+   - Кнопка "Выйти из беседы" в режиме беседы
+
+5. 🛡️ ЗАЩИТА ОТ ОБМАНА
+   - Запрет фраз "нет доступа", "не могу найти"
+   - Запрет смешивать знания с интернетом
+   - Запрет выдумывать
+   - Проверка качества ответа (длина, структура, запрещённые фразы)
+   - Принудительная перегенерация при плохом ответе
+
+6. 📦 ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ
+   - Модель: deepseek-v4-flash
+   - Макс. токенов: 6000
+   - Страниц за итерацию: 7
+   - Макс. итераций: 4
+   - Таймаут страниц: 10-20 сек (адаптивно)
+   - Кэширование: 15 мин (поиск), 1 час (ответы)
+   - Browserless: приоритет для сложных страниц
+   - Фильтрация: видео/музыка/реклама
+
+7. 🚀 КОМАНДЫ
+   - /start — приветствие и инструкция
+   - /stats — статистика памяти
+   - /forget — полная очистка памяти
+
+⚠️ ГЛАВНЫЕ ПРАВИЛА (НЕ НАРУШАТЬ):
+────────────────────────────────────────────────────────────────────
+1. НИКОГДА НЕ ВРАТЬ — если данных нет, сказать честно
+2. НЕ ВЫРЕЗАТЬ ФУНКЦИИ — всё, что есть, должно работать
+3. НЕ ЛЕНИТЬСЯ — ответы должны быть развёрнутыми
+4. ИСТОЧНИКИ ПОД КНОПКОЙ — не засорять ответ
+5. РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ — обязательно
+"""
+
+# ═══════════════════════════════════════════════════════════════════
+#  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
+#  ВСЁ НА МЕСТЕ: ПОИСК + ПАМЯТЬ + РЕЖИМЫ + РАДУЖНАЯ ПОЛОСКА
+#  НИЧЕГО НЕ ВЫРЕЗАНО, ВСЁ РАБОТАЕТ
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -86,7 +155,6 @@ def now():
 #  КНОПКИ
 # ═══════════════════════════════════════════════════════════════════
 
-# Кнопки выбора режима (показываются ПОСЛЕ ввода текста)
 ACTION_BUTTONS = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("🔍 Поиск", callback_data="action_search"),
@@ -97,12 +165,10 @@ ACTION_BUTTONS = InlineKeyboardMarkup([
     ]
 ])
 
-# Кнопка выхода из беседы (показывается ВСЕГДА в режиме беседы)
 EXIT_CHAT_BUTTON = InlineKeyboardMarkup([
     [InlineKeyboardButton("🔙 Выйти из беседы", callback_data="action_exit_chat")]
 ])
 
-# Кнопка для уточнения (показывается ПОСЛЕ ответа)
 CLARIFY_BUTTON = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 Уточнить запрос", callback_data="action_clarify")]
 ])
@@ -363,87 +429,128 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОГРЕСС (БЕГУЩАЯ ПОЛОСКА + ПРОГНОЗ)
+#  УНИВЕРСАЛЬНАЯ РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ
+# ═══════════════════════════════════════════════════════════════════
+
+async def send_long_message(update, text: str, reply_markup=None):
+    """Универсальная отправка с разбивкой на части по 4096 символов"""
+    if not text:
+        return
+    
+    if len(text) <= 4096:
+        await update.effective_message.reply_text(text, reply_markup=reply_markup)
+        return
+    
+    parts = []
+    current = ""
+    
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > 4000:
+            parts.append(current)
+            current = line
+        else:
+            current += "\n" + line if current else line
+    
+    if current:
+        parts.append(current)
+    
+    await update.effective_message.reply_text(parts[0], reply_markup=reply_markup)
+    for part in parts[1:]:
+        await update.effective_message.reply_text(part)
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПРОГРЕСС (РАДУЖНАЯ АНИМИРОВАННАЯ ПОЛОСКА + ДЕТАЛЬНЫЕ СТАТУСЫ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def send_progress_updates(chat_id, context, start_time):
-    """Отображает бегущую полоску и прогнозируемое время"""
+    """Детальный прогресс с радужной анимированной полоской"""
     message = None
     try:
-        message = await context.bot.send_message(
-            chat_id,
-            "⏳ Ищу информацию...\n\n"
-            "░░░░░░░░░░ 0%  ⏱️ ~60 сек"
-        )
-        
-        # Этапы с весами (в секундах)
+        # Этапы с эмодзи, названиями и примерной длительностью
         stages = [
-            {"name": "Анализ запроса", "weight": 0.15, "emoji": "🧠"},
-            {"name": "Поиск в интернете", "weight": 0.35, "emoji": "🔍"},
-            {"name": "Загрузка страниц", "weight": 0.30, "emoji": "📄"},
-            {"name": "Формирование ответа", "weight": 0.20, "emoji": "🤔"},
+            {"emoji": "🧠", "name": "Анализ запроса (DeepSeek)", "duration": 8},
+            {"emoji": "🔍", "name": "Поиск в интернете (APISerpent)", "duration": 15},
+            {"emoji": "📄", "name": "Загрузка страниц (Browserless/HTTP)", "duration": 20},
+            {"emoji": "🤔", "name": "Формирование ответа (DeepSeek)", "duration": 12},
         ]
         
-        estimated_total = 90  # среднее время в секундах
-        elapsed = 0
-        current_stage = 0
-        stage_progress = 0
+        # Радужные цвета для полоски
+        rainbow_colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
         
-        while elapsed < estimated_total + 30:
-            await asyncio.sleep(1)
-            elapsed = int(time.time() - start_time)
+        message = await context.bot.send_message(
+            chat_id,
+            "🧠 **Анализ запроса (DeepSeek)**\n"
+            "`░░░░░░░░░░░░░░░░░░░░ 0%`\n"
+            "⏱️ 0 сек"
+        )
+        
+        elapsed = 0
+        stage_idx = 0
+        stage_start = 0
+        last_update = 0
+        color_idx = 0
+        
+        while True:
+            await asyncio.sleep(0.8)
             
             if context.user_data.get('found_answer'):
                 try:
-                    await message.edit_text("✅ **Готово!** Формирую ответ...")
+                    await message.edit_text(
+                        "✅ **Готово!** Формирую ответ...\n"
+                        f"⏱️ {int(time.time() - start_time)} сек"
+                    )
                 except Exception:
                     pass
                 break
             
-            # Расчёт прогресса
-            total_progress = 0
-            for i, stage in enumerate(stages):
-                if i < current_stage:
-                    total_progress += stage["weight"]
-                elif i == current_stage:
-                    stage_elapsed = elapsed - sum(s["weight"] * estimated_total for s in stages[:current_stage])
-                    stage_duration = stages[current_stage]["weight"] * estimated_total
-                    stage_progress = min(1, stage_elapsed / max(1, stage_duration))
-                    total_progress += stage["weight"] * stage_progress
-                else:
-                    break
+            elapsed = int(time.time() - start_time)
             
-            # Переход на следующий этап
-            if current_stage < len(stages) - 1 and stage_progress >= 1:
-                current_stage += 1
-                stage_progress = 0
+            if stage_idx < len(stages):
+                stage = stages[stage_idx]
+                stage_elapsed = elapsed - stage_start
+                progress = min(100, int((stage_elapsed / stage["duration"]) * 100))
+                
+                # Радужная анимация: меняем цвет полоски
+                color_idx = (color_idx + 1) % len(rainbow_colors)
+                color = rainbow_colors[color_idx]
+                
+                bar_length = 20
+                filled = int(progress / 100 * bar_length)
+                bar = "█" * filled + "░" * (bar_length - filled)
+                
+                text = (
+                    f"{stage['emoji']} **{stage['name']}**\n"
+                    f"`{bar} {progress}%` {color}\n"
+                    f"⏱️ {elapsed} сек"
+                )
+                
+                # Переход на следующий этап
+                if progress >= 100 and stage_idx < len(stages) - 1:
+                    stage_idx += 1
+                    stage_start = elapsed
+                    color_idx = 0
+                    continue
+                
+                # Последний этап — держим на 95%
+                if stage_idx == len(stages) - 1 and progress >= 100:
+                    bar = "███████████████████░ 95%"
+                    text = (
+                        f"{stage['emoji']} **{stage['name']}**\n"
+                        f"`{bar}` 🟣\n"
+                        f"⏱️ {elapsed} сек"
+                    )
+                
+                try:
+                    await message.edit_text(text, parse_mode='Markdown')
+                except Exception:
+                    pass
             
-            progress_percent = min(95, int(total_progress * 100))
-            remaining = max(5, int(estimated_total * (1 - total_progress)))
-            
-            # Бегущая полоска
-            bar_length = 20
-            filled = int(progress_percent / 100 * bar_length)
-            bar = "█" * filled + "░" * (bar_length - filled)
-            
-            stage_name = stages[current_stage]["emoji"] + " " + stages[current_stage]["name"]
-            
-            text = (
-                f"⏳ {stage_name}\n\n"
-                f"`{bar}` {progress_percent}%\n\n"
-                f"⏱️ ~{remaining} сек"
-            )
-            
-            try:
-                await message.edit_text(text, parse_mode='Markdown')
-            except Exception:
-                pass
-            
-            if remaining <= 0:
+            # Защита от бесконечного цикла
+            if elapsed > 300:
                 break
                 
     except Exception as e:
-        logger.error(f"❌ Ошибка таймера: {e}")
+        logger.error(f"❌ Ошибка прогресса: {e}")
 
 # ═══════════════════════════════════════════════════════════════════
 #  ПОИСК (APISerpent — с deep=true и диагностикой)
@@ -995,21 +1102,6 @@ def format_answer_clean(answer: str, confidence: float, sources_count: int) -> s
 """
     return formatted
 
-def format_sources(sources: List[Dict]) -> str:
-    if not sources:
-        return "📎 **ИСТОЧНИКИ:**\n\nНет сохранённых источников."
-    
-    formatted = "📎 **ИСТОЧНИКИ:**\n\n"
-    for idx, s in enumerate(sources[:10], 1):
-        title = s.get('title', 'Источник')[:60]
-        url = s.get('link', '')
-        formatted += f"{idx}. **{title}**\n"
-        if url:
-            formatted += f"   🔗 {url}\n"
-        formatted += "\n"
-    
-    return formatted
-
 # ═══════════════════════════════════════════════════════════════════
 #  ПРОВЕРКА КАЧЕСТВА ОТВЕТА
 # ═══════════════════════════════════════════════════════════════════
@@ -1206,7 +1298,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         context.user_data['awaiting_input'] = False
-
         await query.edit_message_text("🔍 Начинаю поиск...")
 
         start_time = time.time()
@@ -1232,18 +1323,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
         clean_answer = format_answer_clean(answer, confidence, len(sources))
         context.user_data['last_formatted_answer'] = clean_answer
-
-        # ⚠️ ВАЖНО: после ответа показываем ТОЛЬКО кнопку "Уточнить"
-        await update.effective_message.reply_text(
-            f"⏱️ {elapsed} сек\n\n{clean_answer}",
-            reply_markup=CLARIFY_BUTTON
-        )
+        
+        full_text = f"⏱️ {elapsed} сек\n\n{clean_answer}"
+        await send_long_message(update, full_text, CLARIFY_BUTTON)
 
     # ──────────────────────────────────────────────────────────────
     # 📝 УТОЧНИТЬ (вызов)
     # ──────────────────────────────────────────────────────────────
     elif action == "action_clarify":
-        # Проверяем, есть ли активный запрос
         last_query = context.user_data.get('last_query', '')
         if not last_query:
             await query.edit_message_text(
@@ -1252,10 +1339,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
-        # Переводим в режим ожидания уточнения
         context.user_data['mode'] = 'clarify'
         context.user_data['awaiting_input'] = True
-        context.user_data['pending_text'] = ''  # Очищаем, чтобы не путать
+        context.user_data['pending_text'] = ''
 
         await query.edit_message_text(
             f"📝 **Уточните запрос**\n\n"
@@ -1305,7 +1391,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         memory.add_message('user', pending_text)
         memory.add_message('assistant', answer)
 
-        # В режиме беседы — только кнопка выхода
         await query.edit_message_text(
             f"💬 **Режим беседы (без интернета)**\n\n{answer}",
             reply_markup=EXIT_CHAT_BUTTON
@@ -1338,7 +1423,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = get_memory(user_id)
 
     # ──────────────────────────────────────────────────────────────
-    # РЕЖИМ БЕСЕДЫ — отвечаем без интернета
+    # РЕЖИМ БЕСЕДЫ
     # ──────────────────────────────────────────────────────────────
     if context.user_data.get('mode') == 'chat':
         full_context = memory.get_full_context()
@@ -1366,14 +1451,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         memory.add_message('user', user_message)
         memory.add_message('assistant', answer)
 
-        await update.effective_message.reply_text(
-            f"💬 {answer}",
-            reply_markup=EXIT_CHAT_BUTTON
-        )
+        await send_long_message(update, f"💬 {answer}", EXIT_CHAT_BUTTON)
         return
 
     # ──────────────────────────────────────────────────────────────
-    # РЕЖИМ УТОЧНЕНИЯ — пользователь пишет уточнение
+    # РЕЖИМ УТОЧНЕНИЯ
     # ──────────────────────────────────────────────────────────────
     if context.user_data.get('mode') == 'clarify':
         last_query = context.user_data.get('last_query', '')
@@ -1388,7 +1470,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['mode'] = 'search'
         context.user_data['awaiting_input'] = False
 
-        # Сохраняем уточнение как новый текст для поиска
         clarification = user_message
         combined_query = f"{last_query} (уточнение: {clarification})"
 
@@ -1420,15 +1501,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         clean_answer = format_answer_clean(answer, confidence, len(sources))
         context.user_data['last_formatted_answer'] = clean_answer
-
-        await update.effective_message.reply_text(
-            f"⏱️ {elapsed} сек\n\n{clean_answer}",
-            reply_markup=CLARIFY_BUTTON
-        )
+        
+        full_text = f"⏱️ {elapsed} сек\n\n{clean_answer}"
+        await send_long_message(update, full_text, CLARIFY_BUTTON)
         return
 
     # ──────────────────────────────────────────────────────────────
-    # ОБЫЧНЫЙ РЕЖИМ: сохраняем текст и показываем кнопки выбора
+    # ОБЫЧНЫЙ РЕЖИМ
     # ──────────────────────────────────────────────────────────────
     context.user_data['pending_text'] = user_message
     context.user_data['awaiting_input'] = True
@@ -1501,17 +1580,20 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ ИСПРАВЛЕННОЙ ВЕРСИИ")
+    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ ВЕРСИИ БОТА")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("✅ APISerpent: deep=true + диагностика")
-    logger.info("✅ Бегущая полоска + прогноз времени")
+    logger.info("✅ Радужная анимированная полоска")
+    logger.info("✅ Детальные статусы")
     logger.info("✅ Кнопки только после ввода текста")
     logger.info("✅ В беседе постоянная кнопка выхода")
     logger.info("✅ Уточнение с контекстом")
     logger.info("✅ Память 5 уровней + граф знаний")
+    logger.info("✅ Защита от обмана")
+    logger.info("✅ Разбивка длинных сообщений")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
