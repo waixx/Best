@@ -69,9 +69,10 @@
 """
 
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ
+#  BROWAIX BOT — ФИНАЛЬНАЯ ВЕРСИЯ (ПОЛНЫЙ КОД)
 #  ВСЁ НА МЕСТЕ: ПОИСК + ПАМЯТЬ + РЕЖИМЫ + РАДУЖНАЯ ПОЛОСКА
 #  КНОПКА "ПОКАЗАТЬ ИСТОЧНИКИ" + РАЗБИВКА ВО ВСЕХ МЕСТАХ
+#  ИСПРАВЛЕН ПАРСИНГ APISERPENT (results.organic)
 #  НИЧЕГО НЕ ВЫРЕЗАНО, ВСЁ РАБОТАЕТ
 # ═══════════════════════════════════════════════════════════════════
 
@@ -174,7 +175,6 @@ CLARIFY_BUTTON = InlineKeyboardMarkup([
     [InlineKeyboardButton("📝 Уточнить запрос", callback_data="action_clarify")]
 ])
 
-# Кнопки для показа/скрытия источников
 SHOW_SOURCES_BUTTON = InlineKeyboardMarkup([
     [InlineKeyboardButton("📎 Показать источники", callback_data="show_sources")]
 ])
@@ -615,7 +615,9 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 logger.info(f"📊 Ключи: {list(data.keys())}")
                 results = []
                 
-                organic = data.get("organic_results", []) or data.get("organic", [])
+                # ✅ ИСПРАВЛЕНО: ищем в results.organic
+                results_data = data.get("results", {})
+                organic = results_data.get("organic", []) or data.get("organic_results", []) or data.get("organic", [])
                 if organic:
                     logger.info(f"✅ Найдено {len(organic)} organic")
                 for x in organic:
@@ -1676,6 +1678,7 @@ def main():
     logger.info("✅ РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ (ВО ВСЕХ МЕСТАХ)")
     logger.info("✅ Кнопка 'Показать источники'")
     logger.info("✅ Кнопка 'Скрыть источники'")
+    logger.info("✅ ИСПРАВЛЕН ПАРСИНГ APISERPENT (results.organic)")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
