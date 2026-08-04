@@ -1214,13 +1214,15 @@ def format_confidence(confidence: Dict) -> str:
 """
 
 # ═══════════════════════════════════════════════════════════════════
-#  ФИЛЬТРАЦИЯ ВИДЕО/МУЗЫКИ
+#  ФИЛЬТРАЦИЯ ВИДЕО/МУЗЫКИ/РЕКЛАМЫ (ИСПРАВЛЕНО)
 # ═══════════════════════════════════════════════════════════════════
 
 def is_useful_result(result: Dict) -> bool:
+    """Фильтрация — блокируем только видео/музыку/рекламу"""
     url = result.get('link', '').lower()
     title = result.get('title', '').lower()
     
+    # Блокируем только видео и музыкальные платформы
     video_domains = [
         'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 'twitch.tv',
         'spotify.com', 'soundcloud.com', 'deezer.com', 'apple.com/music',
@@ -1229,8 +1231,16 @@ def is_useful_result(result: Dict) -> bool:
     if any(domain in url for domain in video_domains):
         return False
     
+    # Блокируем только явные видео/музыкальные маркеры в заголовке
     media_markers = ['видео', 'смотреть', 'слушать', 'песня', 'клип', 'трек', 'mp3']
     if any(m in title for m in media_markers):
+        return False
+    
+    # Блокируем рекламные домены
+    spam_domains = [
+        'googleadservices', 'doubleclick', 'googletagmanager', 'yandex.ru/clck'
+    ]
+    if any(domain in url for domain in spam_domains):
         return False
     
     return True
