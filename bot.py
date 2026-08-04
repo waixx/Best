@@ -42,8 +42,10 @@
 5. 🛡️ ЗАЩИТА ОТ ОБМАНА
    - Запрет фраз "нет доступа", "не могу найти"
    - Запрет смешивать знания с интернетом
-   - Запрет выдумывать
-   - Проверка качества ответа (длина, структура, запрещённые фразы)
+   - Запрет выдумывать (усиленный)
+   - Запрет "по моему мнению", "я считаю", "возможно"
+   - Проверка качества ответа (длина, структура, уникальность)
+   - Проверка кэша перед сохранением
    - Принудительная перегенерация при плохом ответе
 
 6. 📦 ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ
@@ -72,11 +74,9 @@
 """
 
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX BOT — ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
-#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ APISERPENT (ВСЕ ВОЗМОЖНЫЕ МЕСТА)
-#  ВСЁ НА МЕСТЕ: deep=true + ВСЕ КНОПКИ + ПОЛОСКА + РАЗБИВКА
-#  ВСЕ ФУНКЦИИ ВЫЗЫВАЮТСЯ, НИЧЕГО НЕ ВЫРЕЗАНО
-#  90% ТОЧНОСТЬ, 60-90 СЕК
+#  BROWAIX BOT — ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ
+#  УНИВЕРСАЛЬНЫЙ ПАРСИНГ APISERPENT + ЗАЩИТА ОТ ОБМАНА
+#  ВСЁ НА МЕСТЕ, НИЧЕГО НЕ ВЫРЕЗАНО
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -213,17 +213,60 @@ async def get_session():
     return _http_session
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK
+#  DEEPSEEK (С ПРОВЕРКОЙ КЭША)
 # ═══════════════════════════════════════════════════════════════════
 
 def cache_key(prompt: str) -> str:
     return hashlib.md5(prompt.encode('utf-8')).hexdigest()
 
+def check_answer_quality(answer: str, min_length: int = 500) -> Tuple[bool, str]:
+    """Проверяет качество ответа перед кэшированием и отправкой"""
+    if not answer:
+        return False, "Ответ пустой"
+    
+    if len(answer) < min_length:
+        return False, f"Ответ слишком короткий ({len(answer)} символов, нужно {min_length})"
+    
+    # Запрещённые фразы (обман, неуверенность, субъективизм)
+    forbidden = [
+        "нет доступа", "не могу найти", "нет интернета",
+        "я не могу", "нет информации", "не знаю", "не удалось",
+        "по моему мнению", "я считаю", "я думаю", "на мой взгляд",
+        "возможно", "вероятно", "скорее всего",
+        "примерно", "около", "приблизительно",
+        "как мне кажется", "наверное"
+    ]
+    for phrase in forbidden:
+        if phrase in answer.lower():
+            return False, f"Обнаружена запрещённая фраза: '{phrase}'"
+    
+    # Проверка на структуру
+    if not any(marker in answer for marker in ["**", "📊", "✅", "🧠", "🌐", "📋"]):
+        return False, "Ответ не структурирован (нет маркеров)"
+    
+    # Проверка на уникальность (не более 40% повторов)
+    words = answer.split()
+    if len(words) > 50:
+        unique_ratio = len(set(words)) / len(words)
+        if unique_ratio < 0.35:
+            return False, "Ответ содержит слишком много повторов"
+    
+    return True, "OK"
+
 async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = MAX_TOKENS_OUTPUT, use_pro: bool = True) -> str:
+    """Универсальный вызов DeepSeek с проверкой качества"""
     key = cache_key(prompt)
+    
+    # Проверяем кэш с валидацией
     if key in answer_cache and (time.time() - answer_cache[key]['time']) < ANSWER_CACHE_TTL:
-        logger.info("♻️ Ответ DeepSeek из кэша")
-        return answer_cache[key]['data']
+        cached = answer_cache[key]['data']
+        is_valid, _ = check_answer_quality(cached, min_length=200)
+        if is_valid:
+            logger.info("♻️ Ответ DeepSeek из кэша (проверен)")
+            return cached
+        else:
+            logger.info("♻️ Кэшированный ответ отклонён, генерируем новый")
+            del answer_cache[key]
 
     model = DEEPSEEK_MODEL_PRO if use_pro else DEEPSEEK_MODEL_FLASH
     logger.info(f"🧠 DeepSeek: {'Pro' if use_pro else 'Flash'}")
@@ -247,8 +290,16 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
                     data = await r.json()
                     content = data["choices"][0]["message"]["content"]
                     if content and len(content) > 50:
-                        answer_cache[key] = {'data': content, 'time': time.time()}
-                        return content
+                        # Проверяем качество ПЕРЕД кэшированием
+                        is_valid, reason = check_answer_quality(content)
+                        if is_valid:
+                            answer_cache[key] = {'data': content, 'time': time.time()}
+                            return content
+                        else:
+                            logger.warning(f"⚠️ Ответ DeepSeek отклонён: {reason}")
+                            if attempt == 2:
+                                # Последняя попытка — возвращаем как есть, но с пометкой
+                                return f"⚠️ Ответ требует проверки:\n\n{content}"
                 else:
                     logger.warning(f"⚠️ DeepSeek попытка {attempt+1}: HTTP {r.status}")
                     if attempt == 2 and r.status == 429:
@@ -497,7 +548,7 @@ async def send_long_message(update, text: str, reply_markup=None):
             pass
 
 # ═══════════════════════════════════════════════════════════════════
-#  РАДУЖНАЯ ПОЛОСКА + ДЕТАЛЬНЫЕ СТАТУСЫ
+#  РАДУЖНАЯ ПОЛОСКА
 # ═══════════════════════════════════════════════════════════════════
 
 async def send_progress_updates(chat_id, context, start_time):
@@ -591,6 +642,7 @@ def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower()).strip()
 
 async def search_apiserpent(query: str) -> List[Dict]:
+    """Универсальный поиск organic в любом месте ответа"""
     if not APISERPENT_API_KEY:
         logger.warning("⚠️ APISERPENT_API_KEY не задан!")
         return []
@@ -622,10 +674,10 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 logger.info(f"📊 Ключи верхнего уровня: {list(data.keys())}")
                 results = []
                 
-                # === УНИВЕРСАЛЬНЫЙ ПОИСК ORGANIC (ВСЕ ВОЗМОЖНЫЕ МЕСТА) ===
+                # === УНИВЕРСАЛЬНЫЙ ПОИСК ORGANIC ===
                 organic = []
                 
-                # 1. data["results"]["organic"] (основной вариант)
+                # 1. data["results"]["organic"]
                 results_data = data.get("results", {})
                 if isinstance(results_data, dict):
                     organic = results_data.get("organic", [])
@@ -682,7 +734,6 @@ async def search_apiserpent(query: str) -> List[Dict]:
                                 "link": x.get("link", ""),
                                 "source": "organic"
                             })
-                            # Если есть вложенные элементы, тоже добавляем
                             if "items" in x and isinstance(x["items"], list):
                                 for item in x["items"]:
                                     if isinstance(item, dict) and item.get("title"):
@@ -1116,7 +1167,7 @@ def calculate_confidence(pages: List[Dict]) -> Dict:
     total_struct = 0
     for p in pages:
         parsed = p.get('parsed', {})
-        total_struct += len(parsed.get('lists', [])) + len(parsed.get('headings', [])) + len(parsed.get('tables', []))
+        total_struct += len(parsed.get('lists', [])) + len(parsed.get('headings', []))
     confidence['data_completeness'] = min(100, total_struct * 5)
     
     has_recent = any(
@@ -1253,30 +1304,6 @@ def format_sources(sources: List[Dict]) -> str:
     return formatted
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПРОВЕРКА КАЧЕСТВА ОТВЕТА
-# ═══════════════════════════════════════════════════════════════════
-
-def check_answer_quality(answer: str, min_length: int = 500) -> Tuple[bool, str]:
-    if not answer:
-        return False, "Ответ пустой"
-    
-    if len(answer) < min_length:
-        return False, f"Ответ слишком короткий ({len(answer)} символов, нужно {min_length})"
-    
-    forbidden = [
-        "нет доступа", "не могу найти", "нет интернета",
-        "я не могу", "нет информации", "не знаю", "не удалось"
-    ]
-    for phrase in forbidden:
-        if phrase in answer.lower():
-            return False, f"Обнаружена запрещённая фраза: '{phrase}'"
-    
-    if not any(marker in answer for marker in ["**", "📊", "✅", "🧠", "🌐"]):
-        return False, "Ответ не структурирован (нет маркеров)"
-    
-    return True, "OK"
-
-# ═══════════════════════════════════════════════════════════════════
 #  ОСНОВНАЯ ЛОГИКА
 # ═══════════════════════════════════════════════════════════════════
 
@@ -1331,6 +1358,12 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         fallback_prompt = f"""
 ⚠️ **В ИНТЕРНЕТЕ НИЧЕГО НЕ НАЙДЕНО**
 
+⚠️ **ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
+- НЕЛЬЗЯ придумывать факты, цифры, даты.
+- Если не уверен — скажи "Я не уверен".
+- Лучше признаться в незнании, чем выдать ложную информацию.
+- НЕЛЬЗЯ говорить "по моему мнению", "я считаю", "я думаю".
+
 ⚠️ **ЖЁСТКИЕ ПРАВИЛА:**
 1. **НЕЛЬЗЯ говорить "нет доступа"** — это ложь!
    Скажи ЧЕСТНО: "В интернете ничего не найдено по вашему запросу."
@@ -1367,6 +1400,12 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
+⚠️ **ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
+- НЕЛЬЗЯ придумывать факты, цифры, даты.
+- Если не уверен — скажи "Я не уверен".
+- Лучше признаться в незнании, чем выдать ложную информацию.
+- НЕЛЬЗЯ говорить "по моему мнению", "я считаю", "я думаю" — ты не человек.
+
 ⚠️ **ЖЁСТКИЕ ПРАВИЛА (НАРУШЕНИЕ = ОБМАН):**
 
 1. **НЕЛЬЗЯ говорить "нет доступа", "не могу найти", "нет интернета"** — это ложь!
@@ -1399,11 +1438,12 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
 
 Вопрос: {query}
 
-ОТВЕТЬ РАЗВЁРНУТО, НЕ ЛЕНИСЬ!
+ОТВЕТЬ РАЗВЁРНУТО, НЕ ЛЕНИСЬ, НЕ ВРИ!
 """
     
     answer = await ask_deepseek(answer_prompt, temperature=0.2, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
     
+    # Проверка качества (уже есть внутри ask_deepseek, но дублируем)
     is_valid, reason = check_answer_quality(answer)
     if not is_valid:
         logger.warning(f"⚠️ Ответ отклонён: {reason}")
@@ -1412,7 +1452,9 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
 
 Причина: {reason}
 
+⚠️ **ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
 ⚠️ **ТЫ ДОЛЖЕН ДАТЬ РАЗВЁРНУТЫЙ, СТРУКТУРИРОВАННЫЙ ОТВЕТ!**
+⚠️ **НЕ ГОВОРИ "по моему мнению", "я считаю"!**
 
 📊 **ДАННЫЕ ИЗ ИНТЕРНЕТА:**
 {items_text[:2000]}
@@ -1513,6 +1555,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         chat_prompt = f"""
 💬 **Ты — дружелюбный, умный и креативный собеседник.**
 
+⚠️ **ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
+- Если не знаешь — скажи "Я не знаю".
+- НЕЛЬЗЯ выдумывать факты.
+- НЕЛЬЗЯ говорить "по моему мнению", "я считаю", "я думаю" — ты не человек.
+
 ⚠️ **ЖЁСТКИЕ ПРАВИЛА:**
 1. **НЕЛЬЗЯ выдумывать** — если не знаешь, скажи "Я не знаю".
 2. **НЕЛЬЗЯ давать короткие ответы** — отвечай развёрнуто и интересно.
@@ -1597,6 +1644,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         chat_prompt = f"""
 💬 **Ты — дружелюбный, умный и креативный собеседник.**
+
+⚠️ **ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
+- Если не знаешь — скажи "Я не знаю".
+- НЕЛЬЗЯ выдумывать факты.
+- НЕЛЬЗЯ говорить "по моему мнению", "я считаю", "я думаю" — ты не человек.
 
 ⚠️ **ЖЁСТКИЕ ПРАВИЛА:**
 1. **НЕЛЬЗЯ выдумывать** — если не знаешь, скажи "Я не знаю".
@@ -1741,13 +1793,16 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ ИСПРАВЛЕННОЙ ВЕРСИИ")
+    logger.info("🚀 ЗАПУСК ФИНАЛЬНОЙ РАБОЧЕЙ ВЕРСИИ")
     logger.info(f"🔑 DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"🔍 APISerpent: {'✅' if APISERPENT_API_KEY else '❌'} (УНИВЕРСАЛЬНЫЙ ПАРСИНГ)")
     logger.info(f"🔍 Serper: {'✅' if SERPER_API_KEY else '❌'}")
     logger.info(f"🌐 Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
-    logger.info("✅ УНИВЕРСАЛЬНЫЙ ПОИСК ORGANIC (6 способов + рекурсивный)")
+    logger.info("✅ УНИВЕРСАЛЬНЫЙ ПОИСК ORGANIC (6 способов)")
     logger.info("✅ deep=true + people_also_ask + featured_snippet + ai_overview + answer_box")
+    logger.info("✅ УСИЛЕННЫЙ ЗАПРЕТ НА ВЫДУМЫВАНИЕ")
+    logger.info("✅ Запрет 'по моему мнению', 'я считаю', 'возможно'")
+    logger.info("✅ Проверка качества ПЕРЕД кэшированием")
     logger.info("✅ Радужная анимированная полоска")
     logger.info("✅ Детальные статусы")
     logger.info("✅ Кнопки только после ввода текста")
@@ -1758,7 +1813,6 @@ def main():
     logger.info("✅ РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ")
     logger.info("✅ Кнопка 'Показать источники'")
     logger.info("✅ Кнопка 'Скрыть источники'")
-    logger.info("✅ DeepSeek Pro для ответов, Flash для поиска")
     logger.info("✅ 85-90% точность за 60-90 сек")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
