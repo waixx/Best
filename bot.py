@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  ИНСТРУКЦИЯ ДЛЯ РАЗРАБОТЧИКА (ЧТО ЭТОТ БОТ УМЕЕТ)
-#  ЭТОТ СПИСОК — ГЛАВНЫЙ ДОКУМЕНТ. НЕ УДАЛЯТЬ!
+#  BROWAIX BOT — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2.2
+#  БЕЗ ХАРДКОДА, БЕЗ ЛАЗЕЕК ДЛЯ ВРАНЬЯ И ЛЕНИ
+#  ВСЁ В КОНФИГЕ ЧЕРЕЗ .env
 # ═══════════════════════════════════════════════════════════════════
 
 """
@@ -12,7 +13,7 @@
    - APISerpent (ОСНОВНОЙ) с правильным парсингом organic_results
    - Serper (РЕЗЕРВНЫЙ, при ошибке APISerpent)
    - Параллельный поиск по вариантам запросов
-   - Итеративный поиск (до 5 итераций)
+   - Итеративный поиск (до 3 итераций, настраивается)
    - Ранний выход при уверенности ≥ 90%
    - num=15 для оптимальной скорости
 
@@ -28,26 +29,19 @@
    - 📝 Уточнить — уточнение предыдущего запроса
    - 💬 Беседа — общение без интернета (из знаний и памяти)
 
-4. 🎨 ВИЗУАЛЬНЫЕ УЛУЧШЕНИЯ
-   - Радужная анимированная полоска прогресса
-   - Детальные статусы этапов работы
-   - Счётчик времени (не обратный)
-   - Чёткое разделение 🌐 Из интернета / 🧠 Из знаний
-   - Кнопка "Показать источники"
-   - Кнопка "Уточнить" после каждого ответа
+4. 🛡️ ЗАЩИТА ОТ ОБМАНА (УСИЛЕННАЯ)
+   - Полный запрет субъективных фраз ("я считаю", "по моему мнению")
+   - Запрет выдумывать факты без источников
+   - Запрет прогнозов без данных
+   - Запрет коротких ответов (минимум 800 символов)
+   - Жёсткая проверка качества ответа
+   - Принудительная перегенерация при плохом ответе
 
-5. 🛡️ ЗАЩИТА ОТ ОБМАНА
-   - Запрет фраз "нет доступа", "не могу найти"
-   - Запрет смешивать знания с интернетом
-   - Запрет выдумывать (усиленный)
-   - Запрет "по моему мнению", "я считаю", "возможно"
-   - Проверка качества ответа
-
-6. 📦 ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ
+5. 📦 ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ
    - Модель: deepseek-v4-pro и deepseek-v4-flash
    - Макс. токенов: 8000
    - Страниц за итерацию: 3 (оптимизировано)
-   - Макс. итераций: 5
+   - Макс. итераций: 3 (настраивается)
    - Кэширование: 15 мин (поиск), 1 час (ответы)
 """
 
@@ -99,32 +93,50 @@ logging.getLogger("playwright").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНФИГ (ОПТИМИЗИРОВАННЫЙ)
+#  КОНФИГ (ВСЁ В .env, БЕЗ ХАРДКОДА)
 # ═══════════════════════════════════════════════════════════════════
 
+# API ключи
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
+
+# Доступ пользователей
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-PAGE_TIMEOUT = 4  # Оптимизировано
-SEARCH_RESULTS = 15  # Оптимизировано: 15 вместо 50
-DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
-DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"
-CACHE_TTL = 900
-ANSWER_CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 20  # Оптимизировано
-MAX_TOKENS_OUTPUT = 8000
-MAX_TOKENS_VARIANTS = 500
-MAX_ITERATIONS = 5
-TARGET_CONFIDENCE = 95
-EARLY_EXIT_CONFIDENCE = 90
-MAX_PAGES_PER_ITERATION = 3  # Оптимизировано: 3 вместо 10
-MAX_VARIANTS = 4
+# ⭐ ОСНОВНЫЕ ПАРАМЕТРЫ (ВСЁ ЧЕРЕЗ .env)
+SEARCH_RESULTS = int(os.getenv("SEARCH_RESULTS", "15"))
+MAX_PAGES_PER_ITERATION = int(os.getenv("MAX_PAGES_PER_ITERATION", "3"))
+MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "3"))
+MAX_VARIANTS = int(os.getenv("MAX_VARIANTS", "4"))
 
+# ⭐ ПАРАМЕТРЫ КАЧЕСТВА ОТВЕТА
+MIN_ANSWER_LENGTH = int(os.getenv("MIN_ANSWER_LENGTH", "800"))
+MIN_CONFIDENCE_EXIT = int(os.getenv("MIN_CONFIDENCE_EXIT", "30"))
+MIN_SNIPPET_LENGTH = int(os.getenv("MIN_SNIPPET_LENGTH", "80"))
+
+# ⭐ ТАЙМАУТЫ
+PAGE_TIMEOUT = int(os.getenv("PAGE_TIMEOUT", "4"))
+APISERPENT_TIMEOUT = int(os.getenv("APISERPENT_TIMEOUT", "30"))
+CACHE_TTL = int(os.getenv("CACHE_TTL", "900"))
+ANSWER_CACHE_TTL = int(os.getenv("ANSWER_CACHE_TTL", "3600"))
+
+# ⭐ МОДЕЛИ
+DEEPSEEK_MODEL_PRO = os.getenv("DEEPSEEK_MODEL_PRO", "deepseek-v4-pro")
+DEEPSEEK_MODEL_FLASH = os.getenv("DEEPSEEK_MODEL_FLASH", "deepseek-v4-flash")
+
+# ⭐ УВЕРЕННОСТЬ
+TARGET_CONFIDENCE = int(os.getenv("TARGET_CONFIDENCE", "95"))
+EARLY_EXIT_CONFIDENCE = int(os.getenv("EARLY_EXIT_CONFIDENCE", "90"))
+
+# ⭐ ТОКЕНЫ
+MAX_TOKENS_OUTPUT = int(os.getenv("MAX_TOKENS_OUTPUT", "8000"))
+MAX_TOKENS_VARIANTS = int(os.getenv("MAX_TOKENS_VARIANTS", "500"))
+
+# ⭐ ВРЕМЯ
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
 def now():
@@ -186,50 +198,111 @@ async def get_session():
     return _http_session
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK
+#  DEEPSEEK (С ЖЁСТКОЙ ПРОВЕРКОЙ КАЧЕСТВА)
 # ═══════════════════════════════════════════════════════════════════
 
 def cache_key(prompt: str) -> str:
     return hashlib.md5(prompt.encode('utf-8')).hexdigest()
 
-def check_answer_quality(answer: str, min_length: int = 500) -> Tuple[bool, str]:
-    """Проверяет качество ответа перед кэшированием и отправкой"""
+def check_for_lies_and_laziness(answer: str) -> Tuple[bool, str]:
+    """
+    Жёсткая проверка ответа на враньё и лень
+    Возвращает: (is_valid, reason)
+    """
     if not answer:
-        return False, "Ответ пустой"
+        return False, "Ответ пустой - это лень!"
     
-    if len(answer) < min_length:
-        return False, f"Ответ слишком короткий ({len(answer)} символов, нужно {min_length})"
+    # ⚠️ 1. ПРОВЕРКА НА ВРАНЬЁ (выдумывание фактов)
     
-    forbidden = [
-        "нет доступа", "не могу найти", "нет интернета",
-        "я не могу", "нет информации", "не знаю", "не удалось",
+    # Запрещённые фразы-паразиты (субъективизм)
+    subjective_phrases = [
         "по моему мнению", "я считаю", "я думаю", "на мой взгляд",
-        "возможно", "вероятно", "скорее всего",
-        "примерно", "около", "приблизительно",
-        "как мне кажется", "наверное"
+        "мне кажется", "я предполагаю", "я полагаю", "я уверен",
+        "я знаю", "как мне кажется", "я бы сказал"
     ]
-    for phrase in forbidden:
+    for phrase in subjective_phrases:
         if phrase in answer.lower():
-            return False, f"Обнаружена запрещённая фраза: '{phrase}'"
+            return False, f"ОБНАРУЖЕНО СУБЪЕКТИВНОЕ МНЕНИЕ: '{phrase}'"
     
-    if not any(marker in answer for marker in ["**", "📊", "✅", "🧠", "🌐", "📋"]):
-        return False, "Ответ не структурирован (нет маркеров)"
+    # Запрещённые фразы-отмазки (лень)
+    lazy_phrases = [
+        "не могу найти", "нет доступа", "не удалось", "нет информации",
+        "я не могу", "не знаю", "информация отсутствует", "я не нашёл",
+        "нет интернета", "не могу ответить", "не нашлось"
+    ]
+    for phrase in lazy_phrases:
+        if phrase in answer.lower():
+            return False, f"ОБНАРУЖЕНА ЛЕНЬ: '{phrase}'"
     
-    words = answer.split()
-    if len(words) > 50:
-        unique_ratio = len(set(words)) / len(words)
-        if unique_ratio < 0.35:
-            return False, "Ответ содержит слишком много повторов"
+    # Запрещённые фразы-неуверенность
+    uncertain_phrases = [
+        "возможно", "вероятно", "скорее всего", "наверное",
+        "примерно", "около", "приблизительно", "может быть",
+        "наверно", "похоже", "кажется"
+    ]
+    uncertain_count = sum(1 for p in uncertain_phrases if p in answer.lower())
+    if uncertain_count > 2:
+        return False, f"СЛИШКОМ МНОГО НЕУВЕРЕННОСТИ: {uncertain_count} раз"
+    
+    # ⚠️ 2. ПРОВЕРКА НА ЛЕНЬ (короткий ответ)
+    
+    # Убираем форматирование и считаем полезные символы
+    clean_text = re.sub(r'[#*_`\-\s]+', '', answer)
+    if len(clean_text) < MIN_ANSWER_LENGTH:
+        return False, f"ОТВЕТ СЛИШКОМ КОРОТКИЙ ({len(clean_text)} знаков, нужно {MIN_ANSWER_LENGTH})"
+    
+    # Проверка на структуру (лень = нет структуры)
+    required_markers = ['**', '📊', '📋', '🌐', '⚠️']
+    if not any(marker in answer for marker in required_markers):
+        return False, "НЕТ СТРУКТУРЫ ОТВЕТА (лень форматировать)"
+    
+    # ⚠️ 3. ПРОВЕРКА НА ВЫДУМЫВАНИЕ ФАКТОВ
+    
+    # Ищем утверждения без источников
+    fact_pattern = r'([А-Яа-я][^.!?]{10,60})\s+(?:—|–|-|это|является|будет|станет)\s+([^.!?]{10,80})'
+    facts = re.findall(fact_pattern, answer, re.I)
+    
+    # Если есть утверждения, но нет источников - это выдумка!
+    if facts and "источник" not in answer.lower() and "source" not in answer.lower():
+        fact_count = len(facts)
+        if fact_count > 2:
+            return False, f"ОБНАРУЖЕНО {fact_count} УТВЕРЖДЕНИЙ БЕЗ ИСТОЧНИКОВ (выдумка!)"
+    
+    # ⚠️ 4. ПРОВЕРКА НА ПРОГНОЗЫ БЕЗ ОСНОВАНИЙ
+    
+    if re.search(r'(прогноз|предсказание|предположение|будет|станет)', answer, re.I):
+        if "источник" not in answer.lower() and "данные" not in answer.lower():
+            return False, "ПРОГНОЗ БЕЗ УКАЗАНИЯ ИСТОЧНИКА ДАННЫХ (гадание!)"
+    
+    # ⚠️ 5. ПРОВЕРКА НА УНИКАЛЬНОСТЬ (не повторять одно и то же)
+    
+    sentences = re.split(r'[.!?]+', answer)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+    if sentences:
+        unique_ratio = len(set(sentences)) / len(sentences)
+        if unique_ratio < 0.4:
+            return False, f"СЛИШКОМ МНОГО ПОВТОРОВ (уникальность {unique_ratio:.0%})"
+    
+    # ⚠️ 6. ПРОВЕРКА НА ОБЕЩАНИЯ И ГАРАНТИИ
+    
+    promise_patterns = [
+        r'я\s+(обещаю|гарантирую|предсказываю)',
+        r'мы\s+(обещаем|гарантируем|предсказываем)',
+        r'гарантирую', r'обещаю'
+    ]
+    for pattern in promise_patterns:
+        if re.search(pattern, answer, re.I):
+            return False, f"ОБНАРУЖЕНО ОБЕЩАНИЕ/ГАРАНТИЯ (это запрещено!)"
     
     return True, "OK"
 
 async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = MAX_TOKENS_OUTPUT, use_pro: bool = True) -> str:
-    """Универсальный вызов DeepSeek с проверкой качества"""
+    """Универсальный вызов DeepSeek с жёсткой проверкой качества"""
     key = cache_key(prompt)
     
     if key in answer_cache and (time.time() - answer_cache[key]['time']) < ANSWER_CACHE_TTL:
         cached = answer_cache[key]['data']
-        is_valid, _ = check_answer_quality(cached, min_length=200)
+        is_valid, _ = check_for_lies_and_laziness(cached)
         if is_valid:
             logger.info("♻️ Ответ DeepSeek из кэша (проверен)")
             return cached
@@ -259,7 +332,7 @@ async def ask_deepseek(prompt: str, temperature: float = 0.2, max_tokens: int = 
                     data = await r.json()
                     content = data["choices"][0]["message"]["content"]
                     if content and len(content) > 50:
-                        is_valid, reason = check_answer_quality(content)
+                        is_valid, reason = check_for_lies_and_laziness(content)
                         if is_valid:
                             answer_cache[key] = {'data': content, 'time': time.time()}
                             return content
@@ -515,7 +588,7 @@ async def send_long_message(update, text: str, reply_markup=None):
             pass
 
 # ═══════════════════════════════════════════════════════════════════
-#  РАДУЖНАЯ ПОЛОСКА (ОПТИМИЗИРОВАННАЯ)
+#  РАДУЖНАЯ ПОЛОСКА
 # ═══════════════════════════════════════════════════════════════════
 
 async def send_progress_updates(chat_id, context, start_time):
@@ -544,7 +617,7 @@ async def send_progress_updates(chat_id, context, start_time):
         color_idx = 0
         
         while True:
-            await asyncio.sleep(1)  # Оптимизировано: обновление раз в секунду
+            await asyncio.sleep(1)
             
             if context.user_data.get('found_answer'):
                 try:
@@ -602,14 +675,14 @@ async def send_progress_updates(chat_id, context, start_time):
         logger.error(f"❌ Ошибка прогресса: {e}")
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ ИСПРАВЛЕННЫЙ ПОИСК (APISerpent с ПРАВИЛЬНЫМ ПАРСИНГОМ)
+#  ПОИСК (APISerpent с ПРАВИЛЬНЫМ ПАРСИНГОМ)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower()).strip()
 
 async def search_apiserpent(query: str) -> List[Dict]:
-    """Универсальный поиск через APISerpent с правильным парсингом organic_results"""
+    """Универсальный поиск через APISerpent с правильным парсингом"""
     if not APISERPENT_API_KEY:
         logger.error("❌ APISERPENT_API_KEY не задан!")
         return []
@@ -695,7 +768,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
                                 })
                         return results
                 
-                # ⭐ 4. Дополнительные поля (people_also_ask, answer_box, featured_snippet)
+                # ⭐ 4. Дополнительные поля
                 if "people_also_ask" in data:
                     paa = data.get("people_also_ask", [])
                     if paa:
@@ -754,7 +827,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
     return []
 
 async def search_serper(query: str) -> List[Dict]:
-    """Резервный поиск через Serper (ЕСЛИ APISerpent НЕ РАБОТАЕТ)"""
+    """Резервный поиск через Serper"""
     if not SERPER_API_KEY:
         logger.debug("ℹ️ SERPER_API_KEY не задан, пропускаем")
         return []
@@ -795,18 +868,13 @@ async def search_with_cache(query: str) -> List[Dict]:
         logger.info(f"♻️ Из кэша: {query[:30]}...")
         return search_cache[norm]['data']
     
-    # ⭐ ОСНОВНОЙ ПОИСК - APISerpent
     logger.info(f"🔍 Поиск через APISerpent (основной): {query[:50]}...")
     results = await search_apiserpent(query)
     
-    # Логируем результат
     if results:
         logger.info(f"✅ APISerpent нашёл {len(results)} результатов")
     else:
         logger.warning("⚠️ APISerpent не вернул результатов")
-    
-    # ⭐ ЕСЛИ НЕТ РЕЗУЛЬТАТОВ - РЕЗЕРВНЫЙ Serper
-    if not results:
         logger.info("🔄 Пробуем Serper (резерв)...")
         results = await search_serper(query)
         if results:
@@ -814,61 +882,13 @@ async def search_with_cache(query: str) -> List[Dict]:
         else:
             logger.warning("⚠️ Serper тоже не дал результатов")
     
-    # Кэшируем результат (даже пустой)
     search_cache[norm] = {'data': results, 'time': time.time()}
     logger.info(f"📊 ИТОГО результатов: {len(results)}")
     
     return results
 
-# ═══════════════════════════════════════════════════════════════════
-#  ⭐ УПРОЩЁННАЯ ФИЛЬТРАЦИЯ (ИЗ ОПТИМИЗИРОВАННОЙ ВЕРСИИ)
-# ═══════════════════════════════════════════════════════════════════
-
-def is_useful_result(result: Dict) -> bool:
-    """Упрощённая фильтрация только явного мусора"""
-    title = result.get('title', '').lower()
-    snippet = result.get('snippet', '').lower()
-    url = result.get('link', '').lower()
-    
-    # Слишком короткий сниппет - скорее всего бесполезно
-    if len(snippet) < 50:
-        return False
-    
-    # Явный спам и реклама
-    spam_words = ['реклама', 'advertisement', 'sponsored', 'promoted']
-    if any(w in title or w in snippet for w in spam_words):
-        return False
-    
-    # Видео-платформы (обычно не дают текстовой информации)
-    video_domains = ['youtube.com', 'youtu.be', 'vimeo.com', 'twitch.tv', 'tiktok.com']
-    if any(d in url for d in video_domains):
-        return False
-    
-    # Полезные маркеры - оставляем такие результаты
-    useful_markers = [
-        'как', 'почему', 'что такое', 'пример', 'инструкция', 
-        'руководство', 'совет', 'рекомендация', 'обзор', 'сравнение'
-    ]
-    if any(w in title or w in snippet for w in useful_markers):
-        return True
-    
-    # Длинный сниппет - скорее всего полезный
-    if len(snippet) > 150:
-        return True
-    
-    # Надёжные домены
-    good_domains = ['.edu', '.gov', 'wikipedia', 'habr.com', 'vc.ru', 'cossa.ru']
-    if any(d in url for d in good_domains):
-        return True
-    
-    return False
-
-# ═══════════════════════════════════════════════════════════════════
-#  ПАРАЛЛЕЛЬНЫЙ ПОИСК (ОПТИМИЗИРОВАННЫЙ)
-# ═══════════════════════════════════════════════════════════════════
-
 async def search_parallel(variants: List[str]) -> List[Dict]:
-    """Параллельный поиск по вариантам с упрощённой дедупликацией"""
+    """Параллельный поиск по вариантам с дедупликацией"""
     if not variants:
         return []
     
@@ -884,12 +904,10 @@ async def search_parallel(variants: List[str]) -> List[Dict]:
             logger.info(f"📊 Вариант {idx+1}: {len(results)} результатов")
             for r in results:
                 url = r.get('link', '')
-                # Простая дедупликация по URL
                 if url and url not in seen_urls:
                     seen_urls.add(url)
                     all_results.append(r)
                 elif not url:
-                    # Если нет URL, используем заголовок для дедупликации
                     title = r.get('title', '')
                     if title and title not in seen_urls:
                         seen_urls.add(title)
@@ -899,7 +917,7 @@ async def search_parallel(variants: List[str]) -> List[Dict]:
     return all_results
 
 # ═══════════════════════════════════════════════════════════════════
-#  BROWSERLESS (ОПТИМИЗИРОВАННЫЙ)
+#  BROWSERLESS
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_with_browserless(url: str) -> Optional[str]:
@@ -933,11 +951,11 @@ async def fetch_http(url: str) -> Optional[str]:
     return None
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ (ОПТИМИЗИРОВАННЫЙ)
+#  ПАРСИНГ СТРАНИЦ
 # ═══════════════════════════════════════════════════════════════════
 
 def parse_page(html: str, query: str) -> Dict:
-    """Упрощённый парсинг страниц"""
+    """Универсальный парсинг страниц"""
     result = {
         'text': '',
         'lists': [],
@@ -959,7 +977,7 @@ def parse_page(html: str, query: str) -> Dict:
         
         text = soup.get_text(separator=' ')
         text = re.sub(r'\s+', ' ', text).strip()
-        result['text'] = text[:4000]  # Оптимизировано
+        result['text'] = text[:4000]
         
         for tag in soup.find_all(['h1', 'h2', 'h3']):
             h = tag.get_text().strip()
@@ -976,6 +994,14 @@ def parse_page(html: str, query: str) -> Dict:
             if items:
                 result['lists'].append(items)
         result['lists'] = result['lists'][:5]
+        
+        # Извлекаем ключевые факты
+        key_facts = re.findall(
+            r'([А-Яа-яA-Za-z][^.!?]{10,60})\s+(?:—|–|-|это|является)\s+([^.!?]{10,80})',
+            text, re.IGNORECASE
+        )
+        for fact in key_facts[:5]:
+            result['definitions'].append(f"{fact[0].strip()} — {fact[1].strip()}")
         
         return result
         
@@ -1007,7 +1033,7 @@ async def fetch_pages(links: List[str], query: str) -> List[Dict]:
     return [r for r in results if r.get('text') and len(r.get('text')) > 100]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ВАРИАНТОВ (БЕЗ ИЗМЕНЕНИЙ)
+#  ГЕНЕРАЦИЯ ВАРИАНТОВ ЗАПРОСОВ
 # ═══════════════════════════════════════════════════════════════════
 
 async def generate_variants(query: str) -> List[str]:
@@ -1018,6 +1044,8 @@ async def generate_variants(query: str) -> List[str]:
 {query}
 
 Ответь ТОЛЬКО списком, каждый вариант с новой строки, без нумерации.
+НЕ ДОБАВЛЯЙ никаких комментариев, предупреждений или пояснений.
+ТОЛЬКО варианты запросов.
 """
         result = await ask_deepseek(prompt, temperature=0.4, max_tokens=MAX_TOKENS_VARIANTS, use_pro=False)
         if result:
@@ -1025,11 +1053,17 @@ async def generate_variants(query: str) -> List[str]:
                 line = line.strip()
                 if line and not line.startswith('#'):
                     clean = re.sub(r'^[\d\s.)-]+', '', line).strip()
-                    if clean and len(clean) > 5:
+                    if clean and len(clean) > 5 and not clean.startswith('⚠️') and not clean.startswith('Ответ'):
                         variants.append(clean)
     except Exception as e:
         logger.warning(f"⚠️ Ошибка генерации: {e}")
-    return list(dict.fromkeys(variants))[:MAX_VARIANTS]
+    
+    filtered_variants = []
+    for v in variants:
+        if len(v) > 3 and not v.startswith('⚠️') and not v.startswith('Ответ') and not v.startswith('Нет'):
+            filtered_variants.append(v)
+    
+    return list(dict.fromkeys(filtered_variants))[:MAX_VARIANTS]
 
 async def generate_refined_variants(query: str, items: List[Dict]) -> List[str]:
     variants = [query]
@@ -1045,7 +1079,7 @@ async def generate_refined_variants(query: str, items: List[Dict]) -> List[str]:
     return list(dict.fromkeys(variants))[:MAX_VARIANTS]
 
 # ═══════════════════════════════════════════════════════════════════
-#  РАСЧЁТ УВЕРЕННОСТИ (ОПТИМИЗИРОВАННЫЙ)
+#  РАСЧЁТ УВЕРЕННОСТИ
 # ═══════════════════════════════════════════════════════════════════
 
 def calculate_confidence(pages: List[Dict]) -> Dict:
@@ -1054,7 +1088,6 @@ def calculate_confidence(pages: List[Dict]) -> Dict:
     if not pages:
         return confidence
     
-    # Надёжность источников
     reliable_sources = 0
     for p in pages[:3]:
         url = p.get('url', '')
@@ -1064,17 +1097,13 @@ def calculate_confidence(pages: List[Dict]) -> Dict:
             reliable_sources += 0.5
     confidence['source_reliability'] = min(100, (reliable_sources / max(len(pages[:3]), 1)) * 100)
     
-    # Полнота данных
     structure_count = 0
     for p in pages:
         parsed = p.get('parsed', {})
         structure_count += len(parsed.get('lists', [])) + len(parsed.get('headings', []))
     confidence['data_completeness'] = min(100, structure_count * 10)
     
-    # Свежесть
     confidence['recency'] = 50
-    
-    # Согласованность
     confidence['consensus'] = 50
     
     confidence['overall'] = int(
@@ -1102,10 +1131,164 @@ def format_confidence(confidence: Dict) -> str:
 """
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНАЯ ЛОГИКА (БЕЗ ИЗМЕНЕНИЙ)
+#  ЖЁСТКАЯ ФИЛЬТРАЦИЯ РЕЗУЛЬТАТОВ
+# ═══════════════════════════════════════════════════════════════════
+
+def is_useful_result(result: Dict) -> bool:
+    """Жёсткая фильтрация результатов"""
+    title = result.get('title', '').lower()
+    snippet = result.get('snippet', '').lower()
+    url = result.get('link', '').lower()
+    
+    # Минимальная полезная длина
+    if len(snippet) < MIN_SNIPPET_LENGTH:
+        return False
+    
+    # Блокировка спама и рекламы
+    spam_words = ['реклама', 'advertisement', 'sponsored', 'promoted', 'купить', 'заказать']
+    if any(w in title or w in snippet for w in spam_words):
+        return False
+    
+    # Блокировка видеоплатформ
+    video_domains = ['youtube.com', 'youtu.be', 'vimeo.com', 'twitch.tv', 'tiktok.com']
+    if any(d in url for d in video_domains):
+        return False
+    
+    # Полезные маркеры (нужно минимум 2)
+    useful_markers = [
+        'как', 'почему', 'что такое', 'пример', 'инструкция',
+        'руководство', 'совет', 'рекомендация', 'обзор',
+        'сравнение', 'список', 'шаг', 'этап', 'алгоритм'
+    ]
+    useful_count = sum(1 for m in useful_markers if m in title or m in snippet)
+    if useful_count < 2:
+        return False
+    
+    # Надёжные домены
+    trusted_domains = ['.edu', '.gov', 'wikipedia.org', 'habr.com', 'vc.ru', 'cossa.ru']
+    if any(d in url for d in trusted_domains):
+        return True
+    
+    # Длинный сниппет с цифрами или датами
+    if len(snippet) > 200:
+        has_numbers = bool(re.search(r'\d+', snippet))
+        has_dates = bool(re.search(r'\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}', snippet))
+        if has_numbers or has_dates:
+            return True
+    
+    return False
+
+# ═══════════════════════════════════════════════════════════════════
+#  ГЕНЕРАЦИЯ ОТВЕТА (БЕЗ ЛАЗЕЕК)
+# ═══════════════════════════════════════════════════════════════════
+
+async def generate_answer_strict(query: str, pages: List[Dict], memory_context: str = "") -> str:
+    """Генерация ответа БЕЗ возможности выдумывать"""
+    context = "\n\n---\n\n".join([p.get('parsed', {}).get('text', '')[:3000] for p in pages[:2]])
+    
+    all_lists = []
+    for p in pages:
+        all_lists.extend(p.get('parsed', {}).get('lists', []))
+    all_lists = list(set(all_lists))[:10]
+    
+    structures_text = ""
+    if all_lists:
+        structures_text += "📋 СПИСКИ:\n" + "\n".join([f"  • {item}" for item in all_lists]) + "\n"
+    
+    sources_text = "\n".join([f"• {p.get('url', '')}" for p in pages[:3]])
+    
+    prompt = f"""
+⚠️ **ТЫ — АНАЛИТИК. ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
+
+⚠️ **ЗАПРОС:** {query}
+
+⚠️ **ЕДИНСТВЕННЫЙ ИСТОЧНИК ИНФОРМАЦИИ — ДАННЫЕ НИЖЕ!**
+
+📊 **ДАННЫЕ ИЗ ИНТЕРНЕТА (ТОЛЬКО ОНИ!):**
+{context}
+
+{structures_text}
+
+{memory_context}
+
+⚠️ **СТРОГИЕ ПРАВИЛА (НАРУШЕНИЕ = ОБМАН):**
+
+1. **ЗАПРЕЩЕНО ВЫДУМЫВАТЬ!**
+   - НЕЛЬЗЯ добавлять факты, которых нет в данных
+   - НЕЛЬЗЯ обобщать или додумывать
+   - НЕЛЬЗЯ использовать "свои знания"
+
+2. **ЗАПРЕЩЕНЫ СУБЪЕКТИВНЫЕ ФРАЗЫ:**
+   - "по моему мнению", "я считаю", "я думаю"
+   - "возможно", "вероятно", "скорее всего"
+
+3. **ЗАПРЕЩЕНЫ ОТМАЗКИ:**
+   - "не могу найти", "нет доступа", "не удалось"
+
+4. **РАЗРЕШЕНО ТОЛЬКО:**
+   - Пересказывать то, что есть в данных
+   - Цитировать дословно
+   - Делать выводы ТОЛЬКО из предоставленных данных
+
+⚠️ **ФОРМАТ ОТВЕТА:**
+📊 **ФАКТЫ ИЗ ИНТЕРНЕТА:**
+[Только факты из данных, без выдумок]
+
+📋 **ДОСЛОВНЫЕ ЦИТАТЫ:**
+[Цитаты из источников]
+
+🔗 **ИСТОЧНИКИ:**
+{sources_text}
+
+⚠️ **ЕСЛИ ДАННЫХ НЕДОСТАТОЧНО - СКАЖИ ЧЕСТНО:**
+"В найденных данных нет полной информации по вашему запросу."
+"""
+    
+    answer = await ask_deepseek(prompt, temperature=0.1, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
+    
+    is_valid, reason = check_for_lies_and_laziness(answer)
+    if not is_valid:
+        logger.warning(f"⚠️ ОТВЕТ ОТКЛОНЁН: {reason}")
+        
+        retry_prompt = f"""
+⚠️ **ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ОТКЛОНЁН!**
+
+Причина: {reason}
+
+⚠️ **ТЫ ОБЯЗАН ДАТЬ ЧЕСТНЫЙ ОТВЕТ!**
+- Используй ТОЛЬКО данные из интернета
+- НЕ ВЫДУМЫВАЙ факты
+- НЕ ИСПОЛЬЗУЙ субъективные фразы
+
+📊 **ДАННЫЕ:**
+{context[:2000]}
+
+Вопрос: {query}
+
+ОТВЕТЬ ЧЕСТНО, БЕЗ ВЫДУМОК!
+"""
+        answer = await ask_deepseek(retry_prompt, temperature=0.1, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
+        
+        is_valid, reason = check_for_lies_and_laziness(answer)
+        if not is_valid:
+            return f"""
+⚠️ **НЕ УДАЛОСЬ СФОРМИРОВАТЬ КАЧЕСТВЕННЫЙ ОТВЕТ**
+
+📊 **СЫРЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА:**
+{context[:2000]}
+
+🔗 **ИСТОЧНИКИ:**
+{sources_text}
+"""
+    
+    return answer
+
+# ═══════════════════════════════════════════════════════════════════
+#  ОСНОВНАЯ ЛОГИКА (С ЖЁСТКИМИ ПРОВЕРКАМИ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> Tuple[str, List[Dict], float]:
+    """Основная логика с жёсткими проверками на враньё и лень"""
     logger.info(f"🛡️ ЗАПРОС: {query[:50]}")
     
     all_items = []
@@ -1124,7 +1307,6 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
             logger.info(f"⚠️ Нет результатов в итерации {iteration}")
             break
         
-        # Применяем упрощённую фильтрацию
         results = [r for r in results if is_useful_result(r)]
         logger.info(f"📊 После фильтрации: {len(results)} результатов")
         
@@ -1150,40 +1332,27 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
             logger.info(f"✅ Ранний выход: уверенность {confidence:.1f}% >= {EARLY_EXIT_CONFIDENCE}%")
             break
         
-        if confidence < TARGET_CONFIDENCE and iteration < MAX_ITERATIONS - 1:
+        if iteration > 1 and confidence < MIN_CONFIDENCE_EXIT:
+            logger.info(f"⏹️ Останавливаемся: уверенность {confidence:.1f}% < {MIN_CONFIDENCE_EXIT}%")
+            break
+        
+        if confidence < TARGET_CONFIDENCE and iteration < MAX_ITERATIONS:
             new_variants = await generate_refined_variants(query, all_items)
-            search_variants = new_variants[:3]
+            search_variants = new_variants[:2]
     
     if not all_items:
-        memory = get_memory(uid)
-        context = memory.get_context(limit=5)
-        context_text = '\n'.join([m.get('content', '') for m in context])
-        
-        fallback_prompt = f"""
-⚠️ **СИСТЕМА ПОИСКА НЕ ВЕРНУЛА РЕЗУЛЬТАТОВ — ЭТО ФАКТ, ПРОВЕРЕННЫЙ СИСТЕМОЙ**
+        return f"""
+⚠️ **ПО ВАШЕМУ ЗАПРОСУ НИЧЕГО НЕ НАЙДЕНО В ИНТЕРНЕТЕ**
 
-⚠️ **ТЫ ОБЯЗАН ПРИЗНАТЬ ЭТОТ ФАКТ!**
-- НЕЛЬЗЯ говорить "я не нашёл" — это ложь, потому что ты вообще не искал!
-- Скажи ЧЕСТНО: "По вашему запросу ничего не найдено в интернете."
-- НЕЛЬЗЯ говорить "возможно", "вероятно", "скорее всего" — это обман!
-- НЕЛЬЗЯ давать прогнозы, предположения или догадки.
-- НЕЛЬЗЯ выдумывать факты, цифры, даты.
+📋 **ЗАПРОС:** {query}
 
-⚠️ **РАЗРЕШЕНО ТОЛЬКО:**
-1. Признать, что результатов нет
-2. Предложить уточнить запрос
-3. Спросить, что именно искал пользователь
+💡 **ПОПРОБУЙТЕ:**
+• Переформулировать запрос
+• Сделать его более конкретным
+• Задать другой вопрос
 
-⚠️ **ПРИМЕР ЧЕСТНОГО ОТВЕТА:**
-"По вашему запросу '{query}' в интернете ничего не найдено. Попробуйте уточнить запрос или задать другой вопрос."
-
-Вопрос: {query}
-Контекст: {context_text}
-
-ОТВЕТЬ КРАТКО, ЧЕСТНО, БЕЗ ВЫДУМОК!
-"""
-        answer = await ask_deepseek(fallback_prompt, temperature=0.3, use_pro=False)
-        return answer, [], 0.0
+⚠️ **Я НЕ ВЫДУМЫВАЮ ФАКТЫ — ЭТО ЧЕСТНЫЙ ОТВЕТ!**
+""", [], 0.0
     
     sorted_items = sorted(
         all_items,
@@ -1192,7 +1361,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
             0 if x.get('year') else 2,
             0 if x.get('price') else 1
         )
-    )[:30]  # Оптимизировано
+    )[:30]
     
     items_text = ""
     for idx, item in enumerate(sorted_items[:30], 1):
@@ -1202,77 +1371,65 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
         items_text += f"{idx}. {item.get('title')}{year}{rating}{price}{desc}\n"
     
-    answer_prompt = f"""
-⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
-
-⚠️ **ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
-- НЕЛЬЗЯ придумывать факты, цифры, даты.
-- Если не уверен — скажи "Я не уверен".
-- Лучше признаться в незнании, чем выдать ложную информацию.
-- НЕЛЬЗЯ говорить "по моему мнению", "я считаю", "я думаю" — ты не человек.
-
-⚠️ **ЖЁСТКИЕ ПРАВИЛА (НАРУШЕНИЕ = ОБМАН):**
-
-1. **НЕЛЬЗЯ говорить "нет доступа", "не могу найти", "нет интернета"** — это ложь!
-   Если данных нет — скажи ЧЕСТНО: "В интернете ничего не найдено по вашему запросу."
-
-2. **НЕЛЬЗЯ использовать свои знания вместо данных из интернета** — это подмена!
-   Если данных мало — добавь блок "🧠 Дополнено из знаний" и ЧЕСТНО отметь это.
-
-3. **НЕЛЬЗЯ выдумывать, додумывать или обобщать** — это обман!
-   Используй ТОЛЬКО то, что есть в данных.
-
-4. **НЕЛЬЗЯ давать короткий ответ** — это лень!
-   Дай развёрнутый, структурированный ответ с примерами и пояснениями.
-
-5. **ЕСЛИ данные противоречивы** — укажи это явно.
-
-6. **УКАЗЫВАЙ источник** — откуда взята информация.
-
-Найдено {len(sorted_items)} элементов. Уверенность: {confidence:.1f}%
-
-📊 **ДАННЫЕ ИЗ ИНТЕРНЕТА:**
-{items_text}
-
-{context_prompt}
-
-⚠️ **ФОРМАТ ОТВЕТА (СТРОГО!):**
-📊 **Из интернета:** (перечисли найденное с указанием источников)
-🧠 **Дополнено из знаний:** (только если данных мало, честно отметь)
-✅ **Вывод:** (краткий итог)
-
-Вопрос: {query}
-
-ОТВЕТЬ РАЗВЁРНУТО, НЕ ЛЕНИСЬ, НЕ ВРИ!
-"""
+    memory = get_memory(uid)
+    memory_context = ""
+    if memory.knowledge_graph.get_all_facts():
+        facts = memory.knowledge_graph.get_all_facts()[:3]
+        memory_context = f"🧠 **Из памяти:** {', '.join(facts)}\n"
     
-    answer = await ask_deepseek(answer_prompt, temperature=0.2, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
-    
-    is_valid, reason = check_answer_quality(answer)
-    if not is_valid:
-        logger.warning(f"⚠️ Ответ отклонён: {reason}")
-        retry_prompt = f"""
-⚠️ **ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ОТКЛОНЁН!**
-
-Причина: {reason}
-
-⚠️ **ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
-⚠️ **ТЫ ДОЛЖЕН ДАТЬ РАЗВЁРНУТЫЙ, СТРУКТУРИРОВАННЫЙ ОТВЕТ!**
-⚠️ **НЕ ГОВОРИ "по моему мнению", "я считаю"!**
-
-📊 **ДАННЫЕ ИЗ ИНТЕРНЕТА:**
-{items_text[:2000]}
-
-Вопрос: {query}
-
-ОТВЕТЬ РАЗВЁРНУТО, НЕ ЛЕНИСЬ, НЕ ВРИ!
-"""
-        answer = await ask_deepseek(retry_prompt, temperature=0.2, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
+    answer = await generate_answer_strict(query, pages, memory_context)
     
     return answer, all_results, confidence
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОБРАБОТЧИКИ (БЕЗ ИЗМЕНЕНИЙ)
+#  ФОРМАТИРОВАНИЕ ОТВЕТА
+# ═══════════════════════════════════════════════════════════════════
+
+def format_answer_clean(answer: str, confidence: float, sources_count: int) -> str:
+    internet_block = ""
+    knowledge_block = ""
+    conclusion_block = ""
+    
+    if "📊 **ФАКТЫ ИЗ ИНТЕРНЕТА**" in answer or "🌐 **Из интернета**" in answer:
+        parts = answer.split("🧠 **Дополнено из знаний**" if "🧠 **Дополнено из знаний**" in answer else "📋 **ДОСЛОВНЫЕ ЦИТАТЫ**")
+        if len(parts) > 0:
+            internet_block = parts[0].strip()
+        if len(parts) > 1:
+            knowledge_block = parts[1].strip()
+    else:
+        internet_block = answer
+    
+    sources_label = "источник" if sources_count == 1 else "источника" if sources_count < 5 else "источников"
+    
+    formatted = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌐 **ИЗ ИНТЕРНЕТА** ({sources_count} {sources_label})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{internet_block if internet_block else '• Данные из интернета не найдены'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 **ТОЧНОСТЬ: {int(confidence)}%**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    return formatted
+
+def format_sources(sources: List[Dict]) -> str:
+    if not sources:
+        return "📎 **ИСТОЧНИКИ:**\n\nНет сохранённых источников."
+    
+    formatted = "📎 **ИСТОЧНИКИ:**\n\n"
+    for idx, s in enumerate(sources[:10], 1):
+        title = s.get('title', 'Источник')[:60]
+        url = s.get('link', '')
+        formatted += f"{idx}. **{title}**\n"
+        if url:
+            formatted += f"   🔗 {url}\n"
+        formatted += "\n"
+    
+    return formatted
+
+# ═══════════════════════════════════════════════════════════════════
+#  ОБРАБОТЧИКИ TELEGRAM
 # ═══════════════════════════════════════════════════════════════════
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1363,8 +1520,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 - Если не знаешь — скажи "Я не знаю".
 - НЕЛЬЗЯ выдумывать факты, цифры, даты, имена.
 - НЕЛЬЗЯ говорить "по моему мнению", "я считаю", "я думаю".
-- НЕЛЬЗЯ давать советы в областях, где ты не компетентен (медицина, финансы, право).
-- ЕСЛИ тебя спросили о факте — скажи: "Я не знаю, но могу поискать в интернете."
+- НЕЛЬЗЯ давать советы в областях, где ты не компетентен.
 
 ⚠️ **РАЗРЕШЕНО:**
 - Общаться на общие темы
@@ -1455,8 +1611,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Если не знаешь — скажи "Я не знаю".
 - НЕЛЬЗЯ выдумывать факты, цифры, даты, имена.
 - НЕЛЬЗЯ говорить "по моему мнению", "я считаю", "я думаю".
-- НЕЛЬЗЯ давать советы в областях, где ты не компетентен (медицина, финансы, право).
-- ЕСЛИ тебя спросили о факте — скажи: "Я не знаю, но могу поискать в интернете."
+- НЕЛЬЗЯ давать советы в областях, где ты не компетентен.
 
 ⚠️ **РАЗРЕШЕНО:**
 - Общаться на общие темы
@@ -1597,79 +1752,13 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  ФОРМАТИРОВАНИЕ ОТВЕТА
-# ═══════════════════════════════════════════════════════════════════
-
-def format_answer_clean(answer: str, confidence: float, sources_count: int) -> str:
-    internet_block = ""
-    knowledge_block = ""
-    conclusion_block = ""
-    
-    if "📊 **Из интернета**" in answer or "🌐 **Из интернета**" in answer:
-        parts = answer.split("🧠 **Дополнено из знаний**" if "🧠 **Дополнено из знаний**" in answer else "✅ **Вывод**")
-        if len(parts) > 0:
-            internet_block = parts[0].strip()
-        if len(parts) > 1:
-            knowledge_block = parts[1].strip()
-    elif "✅ **Вывод**" in answer:
-        parts = answer.split("✅ **Вывод**")
-        if len(parts) > 0:
-            internet_block = parts[0].strip()
-        if len(parts) > 1:
-            conclusion_block = parts[1].strip()
-    
-    if not internet_block and not knowledge_block and not conclusion_block:
-        internet_block = answer
-    
-    sources_label = "источник" if sources_count == 1 else "источника" if sources_count < 5 else "источников"
-    
-    formatted = f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌐 **ИЗ ИНТЕРНЕТА** ({sources_count} {sources_label})
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{internet_block if internet_block else '• Данные из интернета не найдены'}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🧠 **ИЗ ЗНАНИЙ** (дополнено)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{knowledge_block if knowledge_block else '• Дополнений из знаний нет'}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ **ВЫВОД**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{conclusion_block if conclusion_block else '• Вывод сформирован на основе данных'}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 **ТОЧНОСТЬ: {int(confidence)}%**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-    return formatted
-
-def format_sources(sources: List[Dict]) -> str:
-    if not sources:
-        return "📎 **ИСТОЧНИКИ:**\n\nНет сохранённых источников."
-    
-    formatted = "📎 **ИСТОЧНИКИ:**\n\n"
-    for idx, s in enumerate(sources[:10], 1):
-        title = s.get('title', 'Источник')[:60]
-        url = s.get('link', '')
-        formatted += f"{idx}. **{title}**\n"
-        if url:
-            formatted += f"   🔗 {url}\n"
-        formatted += "\n"
-    
-    return formatted
-
-
-# ═══════════════════════════════════════════════════════════════════
 #  ЗАПУСК
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.1 (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v2.2 (ИСПРАВЛЕННАЯ ВЕРСИЯ)")
     logger.info("=" * 60)
     
-    # Проверка API ключей
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
     logger.info(f"   DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
@@ -1678,8 +1767,8 @@ def main():
     logger.info(f"   Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("=" * 60)
     logger.info("✅ ИСПРАВЛЕН ПАРСИНГ APISERPENT (organic_results)")
-    logger.info("✅ ОПТИМИЗИРОВАНА СКОРОСТЬ (SEARCH_RESULTS=15, MAX_PAGES=3)")
-    logger.info("✅ УПРОЩЕНА ФИЛЬТРАЦИЯ")
+    logger.info("✅ ДОБАВЛЕНА ЖЁСТКАЯ ПРОВЕРКА НА ВРАНЬЁ И ЛЕНЬ")
+    logger.info("✅ ВСЕ ПАРАМЕТРЫ В .env (БЕЗ ХАРДКОДА)")
     logger.info("✅ СОХРАНЕНЫ ВСЕ ФУНКЦИИ")
     
     if not TELEGRAM_TOKEN:
