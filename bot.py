@@ -12,7 +12,7 @@
    - APISerpent (ОСНОВНОЙ) с универсальным парсингом organic_results
    - Serper (РЕЗЕРВНЫЙ, при ошибке APISerpent)
    - Параллельный поиск по вариантам запросов
-   - Итеративный поиск (до 3 итераций)
+   - Итеративный поиск (до 2 итераций) ⚡
    - Ранний выход при уверенности ≥ 85%
    - num=10 для оптимальной скорости
 
@@ -46,8 +46,8 @@
 6. 📦 ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ
    - Модель: deepseek-v4-pro и deepseek-v4-flash
    - Макс. токенов: 4000 для ответа, 300 для вспомогательных
-   - Страниц за итерацию: 2 (оптимизировано)
-   - Макс. итераций: 3
+   - Страниц за итерацию: 1 (оптимизировано) ⚡
+   - Макс. итераций: 2 (оптимизировано) ⚡
    - Кэширование: 15 мин (поиск), 1 час (ответы)
 """
 
@@ -116,17 +116,19 @@ DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
 DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"
 CACHE_TTL = 900
 ANSWER_CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 15
+
+# ⚡ ОПТИМИЗАЦИЯ: уменьшенные таймауты и лимиты для быстрого тестирования
+APISERPENT_TIMEOUT = 10          # Было 15
 MAX_TOKENS_OUTPUT = 4000
 MAX_TOKENS_VARIANTS = 300
-MAX_ITERATIONS = 3
+MAX_ITERATIONS = 2               # Было 3
 TARGET_CONFIDENCE = 95
 EARLY_EXIT_CONFIDENCE = 85
-MAX_PAGES_PER_ITERATION = 2
-MAX_VARIANTS = 4
-BROWSER_TIMEOUT = 10
+MAX_PAGES_PER_ITERATION = 1      # Было 2
+MAX_VARIANTS = 2                 # Было 4
+BROWSER_TIMEOUT = 5              # Было 10
 
-# ⭐ УНИВЕРСАЛЬНЫЙ REST-ЭНДПОИНТ (Playwright Node.js сервис)
+# REST-эндпоинт Playwright
 BROWSER_WS_ENDPOINT = os.getenv("BROWSER_WS_ENDPOINT", "")
 
 # Семафор для ограничения параллельных запросов к браузеру
@@ -528,17 +530,17 @@ async def send_progress_updates(chat_id, context, start_time):
     message = None
     try:
         stages = [
-            {"emoji": "🧠", "name": "Анализ запроса (DeepSeek Flash)", "duration": 6},
-            {"emoji": "🔍", "name": "Поиск в интернете (APISerpent)", "duration": 10},
-            {"emoji": "📄", "name": "Загрузка страниц (Playwright REST)", "duration": 12},
-            {"emoji": "🤔", "name": "Формирование ответа (DeepSeek Pro)", "duration": 8},
+            {"emoji": "🧠", "name": "Анализ запроса", "duration": 4},       # ⚡ сокращено
+            {"emoji": "🔍", "name": "Поиск в интернете (APISerpent)", "duration": 8},  # ⚡
+            {"emoji": "📄", "name": "Загрузка страниц", "duration": 8},     # ⚡
+            {"emoji": "🤔", "name": "Формирование ответа (DeepSeek Pro)", "duration": 6},  # ⚡
         ]
         
         rainbow_colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
         
         message = await context.bot.send_message(
             chat_id,
-            "🧠 **Анализ запроса (DeepSeek Flash)**\n"
+            "🧠 **Анализ запроса**\n"
             "`░░░░░░░░░░░░░░░░░░░░ 0%`\n"
             "⏱️ 0 сек"
         )
@@ -600,7 +602,7 @@ async def send_progress_updates(chat_id, context, start_time):
                 except Exception:
                     pass
             
-            if elapsed > 300:
+            if elapsed > 180:  # ⚡ сокращён лимит до 3 минут
                 break
                 
     except Exception as e:
@@ -641,7 +643,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 "X-API-Key": APISERPENT_API_KEY,
                 "Accept": "application/json"
             },
-            timeout=APISERPENT_TIMEOUT
+            timeout=APISERPENT_TIMEOUT  # ⚡ 10 секунд
         ) as r:
             logger.info(f"📡 APISerpent статус: {r.status}")
             
@@ -904,7 +906,7 @@ async def fetch_page_cdp(url: str) -> Optional[str]:
                     endpoint,
                     json={"url": url},
                     headers=headers,
-                    timeout=30
+                    timeout=15  # ⚡ сокращён таймаут до 15 секунд
                 ) as r:
                     if r.status == 200:
                         data = await r.json()
@@ -915,13 +917,12 @@ async def fetch_page_cdp(url: str) -> Optional[str]:
                             return html
                         else:
                             logger.debug(f"⚠️ Ответ не содержит HTML: {list(data.keys())}")
-                            # Попробуем следующий эндпоинт, если ответ пустой
                             continue
                     elif r.status == 404:
-                        continue  # эндпоинт не найден
+                        continue
                     else:
                         logger.debug(f"⚠️ Playwright REST ошибка {r.status}: {await r.text()}")
-                        break  # если статус не 404 и не 200, выходим из цикла
+                        break
             except asyncio.TimeoutError:
                 logger.debug(f"⏰ Таймаут REST {endpoint}")
                 continue
@@ -1217,11 +1218,16 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
     all_results = []
     confidence = 0.0
     iteration = 0
-    variants = await generate_variants(query)
-    time_variants = time.time() - time_start
-    logger.info(f"⏱️ Генерация вариантов: {time_variants:.2f} сек")
     
-    search_variants = variants[:3]
+    # ⚡ ОПТИМИЗАЦИЯ: генерируем варианты только если MAX_VARIANTS > 1
+    if MAX_VARIANTS > 1:
+        variants = await generate_variants(query)
+        time_variants = time.time() - time_start
+        logger.info(f"⏱️ Генерация вариантов: {time_variants:.2f} сек")
+        search_variants = variants[:MAX_VARIANTS]
+    else:
+        search_variants = [query]
+        logger.info("⏱️ Генерация вариантов отключена (MAX_VARIANTS=1)")
     
     while confidence < TARGET_CONFIDENCE and iteration < MAX_ITERATIONS:
         iteration += 1
@@ -1292,7 +1298,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         
         if confidence < TARGET_CONFIDENCE and iteration < MAX_ITERATIONS - 1:
             new_variants = await generate_refined_variants(query, all_items)
-            search_variants = new_variants[:3]
+            search_variants = new_variants[:MAX_VARIANTS]
     
     logger.info(f"📊 ИТОГО собрано элементов: {len(all_items)}")
     
@@ -1791,7 +1797,7 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v3.5 (PLAYWRIGHT REST)")
+    logger.info("🚀 ЗАПУСК BROWAIX v3.6 (ОПТИМИЗИРОВАННАЯ ВЕРСИЯ)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1807,11 +1813,14 @@ def main():
         logger.warning("   ⚠️ Playwright REST не задан! Будут использоваться только HTTP-запросы (без JS)")
     
     logger.info("=" * 60)
-    logger.info("✅ ИЗМЕНЕНИЯ v3.5:")
+    logger.info("⚡ ОПТИМИЗАЦИИ:")
+    logger.info(f"   • Итераций: {MAX_ITERATIONS} (было 3)")
+    logger.info(f"   • Страниц за итерацию: {MAX_PAGES_PER_ITERATION} (было 2)")
+    logger.info(f"   • Вариантов запросов: {MAX_VARIANTS} (было 4)")
+    logger.info(f"   • Таймаут APISerpent: {APISERPENT_TIMEOUT} сек (было 15)")
+    logger.info(f"   • Таймаут браузера: {BROWSER_TIMEOUT} сек (было 10)")
     logger.info("   • Полный переход на REST API Playwright Node.js")
-    logger.info("   • Удалена зависимость от CDP/WebSocket")
-    logger.info("   • Автоматический перебор возможных эндпоинтов (/api/scrape, /scrape, и т.д.)")
-    logger.info("   • Fallback на HTTP при недоступности Playwright")
+    logger.info("   • Автоматический fallback на HTTP")
     
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN не задан!")
