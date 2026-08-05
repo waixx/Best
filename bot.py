@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v14.1)
+#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v14.2)
 #  ПОЛНАЯ ВЕРСИЯ: ПЛАНИРОВЩИК + ИСПОЛНИТЕЛЬ + ОЦЕНЩИК + РЕФЛЕКТОР
-#  ФЕТЧ СТРАНИЦ — ВСЕГДА, ПРОГРЕСС-БАР — АКТИВЕН
+#  УНИВЕРСАЛЬНОЕ ИЗВЛЕЧЕНИЕ ФАКТОВ, НЕТ ХАРДКОДА
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -38,7 +38,7 @@ except ImportError:
 load_dotenv()
 
 # ═══════════════════════════════════════════════════════════════════
-#  СИСТЕМНАЯ ИНСТРУКЦИЯ (ЛИЧНОСТЬ)
+#  СИСТЕМНАЯ ИНСТРУКЦИЯ (ЛИЧНОСТЬ + ПРАВИЛА + НАСТОЙЧИВОСТЬ)
 # ═══════════════════════════════════════════════════════════════════
 
 SYSTEM_INSTRUCTION = """
@@ -66,6 +66,16 @@ SYSTEM_INSTRUCTION = """
 9. **Источники** — всегда указываешь, откуда взяты данные.
 
 10. **Ты — партнёр**, цель — сделать жизнь пользователя проще.
+
+11. **Самостоятельный поиск и анализ** — ты не ограничиваешься первыми результатами. Если данных недостаточно, ты:
+    - Генерируешь новые поисковые запросы (синонимы, уточнения).
+    - Открываешь несколько страниц и анализируешь их полный текст.
+    - Ищешь числа, даты, ключевые слова, даже если они не в таблицах.
+    - Не сдаёшься после первой неудачи — пробуешь разные источники.
+    - Если на странице нет таблицы, ты умеешь читать текст и вытаскивать оттуда цифры и даты.
+    - Адаптируешься под запрос, а не используешь готовые шаблоны.
+
+12. **Извлечение фактов из текста** — если данные неструктурированы, ты используешь DeepSeek для извлечения фактов, а затем проверяешь их релевантность.
 """
 
 # ═══════════════════════════════════════════════════════════════════
@@ -92,10 +102,12 @@ PLANNER_PROMPT = """
 
 Правила:
 - Если запрос простой (приветствие, беседа) — верни {{"action": "chat"}}.
-- Для фактологических запросов добавляй подзадачи "search" с вариантами поисковых запросов.
+- Для фактологических запросов добавляй подзадачи "search" с вариантами поисковых запросов (не менее 3 разных формулировок).
 - Если нужно сравнить — добавь подзадачи для каждого объекта.
 - Если запрос требует вычислений — добавь "calculate".
 - Если данные уже есть в контексте — не добавляй поиск.
+- Всегда планируй не менее 3 итераций поиска, если данные не найдены с первого раза.
+- Генерируй разнообразные поисковые запросы (синонимы, уточнения, добавление слов «прогноз», «таблица», «на завтра», «почасовой»).
 
 Отвечай только JSON, без пояснений.
 """
@@ -114,6 +126,13 @@ EVALUATOR_PROMPT = """
   "confidence": 0-100,
   "suggested_search": ["дополнительные запросы"]  // если данных недостаточно
 }}
+
+Критерии оценки:
+- Если в данных есть хотя бы несколько чисел (температура, дата, ветер) — считай их достаточными для ответа (даже если структура неидеальна).
+- Если данных нет, но есть текст, который можно проанализировать — предложи извлечь факты с помощью DeepSeek.
+- Не требуй идеальной структуры — допускай, что данные могут быть в виде обычного текста.
+- Если данные частичные, но релевантные — считай их достаточными с пометкой о неполноте.
+- Если уверенность ниже 60, предложи дополнительные поисковые запросы.
 """
 
 REFLECTOR_PROMPT = """
@@ -127,6 +146,7 @@ REFLECTOR_PROMPT = """
 2. Полнота — отвечает на все аспекты вопроса.
 3. Структура — есть маркеры, разделение по источникам.
 4. Актуальность — указана дата.
+5. Полезность — даже если точных данных нет, ответ должен быть полезным (рекомендации, где искать).
 
 Верни JSON:
 {{
@@ -176,8 +196,8 @@ MAX_TOKENS_PLANNER = 600
 MAX_ITERATIONS = 3
 TARGET_CONFIDENCE = 90
 EARLY_EXIT_CONFIDENCE = 80
-MAX_PAGES_PER_ITERATION = 5   # Увеличено с 3 до 5 для более полного сбора
-MAX_VARIANTS = 3
+MAX_PAGES_PER_ITERATION = 5
+MAX_VARIANTS = 5
 BROWSER_WS_ENDPOINT = os.getenv("BROWSER_WS_ENDPOINT", "")
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
@@ -744,10 +764,10 @@ async def search_apiserpent(query: str) -> List[Dict]:
         logger.error(f"💥 Ошибка APISerpent: {e}")
         return []
 
-async def generate_variants(query: str, count: int = 3) -> List[str]:
-    """Генерирует альтернативные формулировки запроса."""
-    prompt = f"Сгенерируй {count} разных вариантов поискового запроса для:\n{query}\nОтветь списком, каждый с новой строки. Варианты должны быть разнообразными: синонимы, перефразировки, уточнения (например, 'почасовой', 'подробный', 'на завтра')."
-    response = await ask_deepseek(prompt, temperature=0.3, max_tokens=200, use_pro=False)
+async def generate_variants(query: str, count: int = 5) -> List[str]:
+    """Генерирует альтернативные формулировки запроса (5 вариантов)."""
+    prompt = f"Сгенерируй {count} разных вариантов поискового запроса для:\n{query}\nОтветь списком, каждый с новой строки. Варианты должны быть разнообразными: синонимы, перефразировки, уточнения (например, 'почасовой', 'подробный', 'на завтра', 'прогноз')."
+    response = await ask_deepseek(prompt, temperature=0.3, max_tokens=300, use_pro=False)
     variants = [query]
     if response:
         for line in response.strip().split('\n'):
@@ -955,8 +975,8 @@ async def call_planner(query: str, context: str) -> Dict:
             return {"action": "chat"}
         if "subtasks" not in plan:
             plan["subtasks"] = []
-        if "max_iterations" not in plan:
-            plan["max_iterations"] = 3
+        if "max_iterations" not in plan or plan["max_iterations"] < 3:
+            plan["max_iterations"] = 3  # минимум 3
         return plan
     except Exception as e:
         logger.warning(f"⚠️ Ошибка парсинга плана: {e}. Ответ: {response[:200]}")
@@ -969,8 +989,8 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
     
     if action == "search":
         search_query = params.get("query", query)
-        # Генерируем альтернативные запросы
-        variants = await generate_variants(search_query, count=3)
+        # Генерируем альтернативные запросы (5 вариантов)
+        variants = await generate_variants(search_query, count=5)
         logger.info(f"🔍 Варианты запроса: {variants}")
         
         # Параллельный поиск по всем вариантам
@@ -1106,12 +1126,12 @@ async def update_progress_message(context, chat_id, message_id, elapsed, stage, 
         return message_id
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ (С ПРИНУДИТЕЛЬНЫМ FETCH И ПРОГРЕССОМ)
+#  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ (С УНИВЕРСАЛЬНЫМ ИЗВЛЕЧЕНИЕМ ФАКТОВ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, List[Dict], float]:
     """
-    Главный цикл агента с визуальным прогресс-баром и принудительной загрузкой страниц.
+    Главный цикл агента с универсальным извлечением фактов через DeepSeek.
     """
     logger.info(f"🛡️ АГЕНТ: запрос '{query[:50]}...'")
     memory = get_memory(uid)
@@ -1198,7 +1218,6 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                     logger.info(f"📄 Загружена страница: {fetch_sub['params']['url'][:60]}...")
                     if progress_msg_id:
                         elapsed = int(time.time() - start_time)
-                        # обновляем прогресс после каждой загрузки
                         progress_msg_id = await update_progress_message(
                             context=update.effective_message.get_bot(),
                             chat_id=update.effective_chat.id,
@@ -1208,7 +1227,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                             progress=min(progress + 5, 70) if progress_msg_id else 50
                         )
         
-        # Сбор данных для оценщика (теперь с полными текстами)
+        # Сбор данных для оценщика
         data_summary = ""
         for item in all_data:
             if item.get("type") == "search_results":
@@ -1226,9 +1245,52 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         evaluation = await call_evaluator(query, data_summary[:3000])
         logger.info(f"📊 Оценка: sufficient={evaluation.get('is_sufficient')}, confidence={evaluation.get('confidence')}")
         
+        # Если данных достаточно — выходим
         if evaluation.get("is_sufficient", False) or evaluation.get("confidence", 0) >= TARGET_CONFIDENCE:
             break
         
+        # === УНИВЕРСАЛЬНОЕ ИЗВЛЕЧЕНИЕ ФАКТОВ ===
+        # Если оценщик сказал "недостаточно", но есть загруженные страницы — пробуем извлечь факты через DeepSeek
+        if not evaluation.get("is_sufficient", False) and any(item.get("type") == "page_data" for item in all_data):
+            logger.info("🧠 Пробую извлечь факты из загруженных страниц через DeepSeek...")
+            page_texts = []
+            for item in all_data:
+                if item.get("type") == "page_data":
+                    text = item.get("data", {}).get("full_text", "")
+                    if text:
+                        page_texts.append(text[:5000])
+            if page_texts:
+                combined = "\n\n---\n\n".join(page_texts[:3])
+                extract_prompt = f"""
+Проанализируй следующий текст и извлеки из него все факты, относящиеся к запросу: {query}.
+
+Текст:
+{combined}
+
+Извлеки:
+- Числовые значения (температура, ветер, давление, даты)
+- Ключевые слова (облачность, осадки, направление ветра)
+- Любую информацию, которая может ответить на запрос.
+
+Ответь списком фактов, каждый с новой строки. Если фактов нет, напиши "Фактов не найдено".
+"""
+                extracted = await ask_deepseek(extract_prompt, temperature=0.1, max_tokens=1000, use_pro=False)
+                if extracted and "Фактов не найдено" not in extracted:
+                    all_data.append({
+                        "type": "extracted_facts",
+                        "data": {"facts": extracted},
+                        "source": "deepseek_extraction"
+                    })
+                    logger.info(f"✅ Извлечено: {extracted[:200]}...")
+                    # Переоцениваем с извлечёнными фактами
+                    data_summary += f"\nИзвлечённые факты:\n{extracted[:1000]}"
+                    evaluation = await call_evaluator(query, data_summary[:3000])
+                    logger.info(f"📊 Переоценка: sufficient={evaluation.get('is_sufficient')}, confidence={evaluation.get('confidence')}")
+                    if evaluation.get("is_sufficient", False) or evaluation.get("confidence", 0) >= TARGET_CONFIDENCE:
+                        break
+        # ========================================================
+        
+        # Если недостаточно — генерируем новые подзадачи
         if iteration < max_iterations:
             suggested = evaluation.get("suggested_search", [])
             if suggested:
@@ -1263,6 +1325,10 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             full_text = page.get("full_text", "")
             if full_text:
                 sources_text += f"📄 Содержимое страницы:\n{full_text[:3000]}\n\n"
+        elif item.get("type") == "extracted_facts":
+            facts = item.get("data", {}).get("facts", "")
+            if facts:
+                sources_text += f"🧠 Извлечённые факты:\n{facts}\n\n"
         elif item.get("type") == "calculation":
             sources_text += f"🧮 {item.get('expression')} = {item.get('result')}\n"
     
@@ -1326,11 +1392,19 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                     "link": url,
                     "type": "page"
                 })
+        elif item.get("type") == "extracted_facts":
+            sources_for_button.append({
+                "title": "Извлечённые факты (DeepSeek)",
+                "link": "",
+                "type": "extracted"
+            })
     
     unique = {}
     for src in sources_for_button:
         if src["link"] and src["link"] not in unique:
             unique[src["link"]] = src
+        elif not src["link"] and src["title"] not in unique:
+            unique[src["title"]] = src
     sources_for_button = list(unique.values())[:10]
     
     avg_confidence = 0
@@ -1370,7 +1444,8 @@ def format_sources(sources: List[Dict]) -> str:
             'search': '🔍',
             'page': '📄',
             'weather_api': '🌤️',
-            'currency_api': '💱'
+            'currency_api': '💱',
+            'extracted': '🧠'
         }.get(source_type, '📎')
         formatted += f"{idx}. {icon} **{title}**\n"
         if url and url.startswith('http'):
@@ -1565,7 +1640,7 @@ async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v14.1 — АГЕНТНАЯ АРХИТЕКТУРА + FETCH ВСЕГДА")
+    logger.info("🚀 ЗАПУСК BROWAIX v14.2 — АГЕНТНАЯ АРХИТЕКТУРА + УНИВЕРСАЛЬНОЕ ИЗВЛЕЧЕНИЕ")
     logger.info("=" * 60)
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
@@ -1582,6 +1657,7 @@ def main():
     logger.info(f"   • Честные ответы без блокировок: ✅")
     logger.info(f"   • Без стриминга: ✅")
     logger.info(f"   • Принудительная загрузка страниц (до 5 за итерацию): ✅")
+    logger.info(f"   • Универсальное извлечение фактов через DeepSeek: ✅")
     logger.info(f"   • Прогресс-бар с этапами и временем: ✅")
     logger.info("=" * 60)
     
@@ -1609,5 +1685,5 @@ if __name__ == "__main__":
     main()
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНЕЦ ПОЛНОГО КОДА v14.1
+#  КОНЕЦ ПОЛНОГО КОДА v14.2
 #  ═══════════════════════════════════════════════════════════════════
