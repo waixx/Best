@@ -1,7 +1,55 @@
 # ═══════════════════════════════════════════════════════════════════
-#  BROWAIX — УНИВЕРСАЛЬНЫЙ ПОИСКОВЫЙ АССИСТЕНТ
-#  Версия: 8.0 (ТОЧНОСТЬ + СКОРОСТЬ + ЧЕСТНОСТЬ)
+#  ИНСТРУКЦИЯ ДЛЯ РАЗРАБОТЧИКА (ЧТО ЭТОТ БОТ УМЕЕТ)
+#  ЭТОТ СПИСОК — ГЛАВНЫЙ ДОКУМЕНТ. НЕ УДАЛЯТЬ!
 # ═══════════════════════════════════════════════════════════════════
+
+"""
+🤖 БОТ: BROWAIX — УНИВЕРСАЛЬНЫЙ ПОИСКОВЫЙ АССИСТЕНТ
+
+📌 ОСНОВНЫЕ ВОЗМОЖНОСТИ:
+────────────────────────────────────────────────────────────────────
+1. 🔍 ПОИСК В ИНТЕРНЕТЕ
+   - APISerpent (ОСНОВНОЙ) с универсальным парсингом organic_results
+   - Serper (РЕЗЕРВНЫЙ, при ошибке APISerpent)
+   - Параллельный поиск по вариантам запросов
+   - Итеративный поиск (до 3 итераций)
+   - Ранний выход при уверенности ≥ 85%
+   - num=10 для оптимальной скорости
+
+2. 🧠 ПАМЯТЬ (5 УРОВНЕЙ)
+   - Краткосрочная (последние 100 сообщений)
+   - Профиль пользователя (имя, возраст, город, работа)
+   - Эпизодическая (важные факты из диалогов)
+   - Обучающая (предпочтения пользователя)
+   - Граф знаний (связи между фактами)
+
+3. 🎯 РЕЖИМЫ РАБОТЫ
+   - 🔍 Поиск — полноценный поиск в интернете
+   - 📝 Уточнить — уточнение предыдущего запроса
+   - 💬 Беседа — общение без интернета (из знаний и памяти)
+
+4. 🎨 ВИЗУАЛЬНЫЕ УЛУЧШЕНИЯ
+   - Радужная анимированная полоска прогресса
+   - Детальные статусы этапов работы
+   - Счётчик времени (не обратный)
+   - Чёткое разделение 🌐 Из интернета / 🧠 Из знаний
+   - Кнопка "Показать источники"
+   - Кнопка "Уточнить" после каждого ответа
+
+5. 🛡️ ЗАЩИТА ОТ ОБМАНА
+   - Запрет фраз "нет доступа", "не могу найти"
+   - Запрет смешивать знания с интернетом
+   - Запрет выдумывать (усиленный)
+   - Запрет "по моему мнению", "я считаю", "возможно"
+   - Проверка качества ответа
+
+6. 📦 ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ
+   - Модель: deepseek-v4-pro и deepseek-v4-flash
+   - Макс. токенов: 4000 для ответа, 300 для вспомогательных
+   - Страниц за итерацию: 2 (оптимизировано)
+   - Макс. итераций: 3
+   - Кэширование: 15 мин (поиск), 1 час (ответы)
+"""
 
 import logging
 import os
@@ -134,7 +182,7 @@ async def get_session():
     return _http_session
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK (СТРИМИНГ, КЭШ, ГИБКИЙ ПРОМПТ)
+#  DEEPSEEK (СТРИМИНГ — ИСПРАВЛЕННЫЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 def cache_key(prompt: str) -> str:
@@ -205,8 +253,6 @@ async def ask_deepseek_stream(
             ) as r:
                 if r.status == 200:
                     full_content = ""
-                    chunk_counter = 0
-                    last_update_time = time.time()
                     async for line in r.content:
                         line = line.decode('utf-8').strip()
                         if not line or line.startswith(':'):
@@ -222,14 +268,9 @@ async def ask_deepseek_stream(
                                     content = delta.get('content', '')
                                     if content:
                                         full_content += content
-                                        chunk_counter += 1
-                                        if chunk_counter % 20 == 0 or (time.time() - last_update_time) >= 2.0:
-                                            yield content
-                                            last_update_time = time.time()
+                                        yield content
                             except json.JSONDecodeError:
                                 continue
-                    if full_content and chunk_counter % 20 != 0:
-                        yield full_content[-200:]
                     if full_content and len(full_content) > 200:
                         is_valid, _ = check_answer_quality(full_content, min_length=200)
                         if is_valid:
@@ -242,12 +283,12 @@ async def ask_deepseek_stream(
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ DeepSeek таймаут попытка {attempt+1}")
             if attempt == 2:
-                yield "⚠️ Превышено время ожидания ответа от DeepSeek. Попробуйте позже."
+                yield "⚠️ Превышено время ожидания ответа от DeepSeek."
                 return
         except Exception as e:
             logger.warning(f"⚠️ DeepSeek ошибка попытка {attempt+1}: {e}")
             if attempt == 2:
-                yield f"⚠️ Ошибка при получении ответа: {e}"
+                yield f"⚠️ Ошибка: {e}"
                 return
         if attempt < 2:
             await asyncio.sleep(1 + attempt * 2)
@@ -255,7 +296,50 @@ async def ask_deepseek_stream(
     yield "⚠️ Не удалось получить ответ от DeepSeek."
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАМЯТЬ (5 УРОВНЕЙ)
+#  ОТПРАВКА СТРИМИНГ-ОТВЕТА
+# ═══════════════════════════════════════════════════════════════════
+
+async def send_streaming_response(
+    update: Update,
+    generator: AsyncGenerator[str, None],
+    reply_markup=None,
+    prefix: str = ""
+) -> str:
+    full_text = ""
+    message = None
+    
+    async for chunk in generator:
+        if not chunk:
+            continue
+        full_text += chunk
+        try:
+            if message is None:
+                display_text = f"{prefix}{full_text}..."
+                message = await update.effective_message.reply_text(display_text)
+            else:
+                display_text = f"{prefix}{full_text}..."
+                if len(display_text) > 4000:
+                    display_text = display_text[:4000] + "..."
+                await message.edit_text(display_text)
+        except Exception as e:
+            logger.debug(f"⚠️ Ошибка обновления стриминга: {e}")
+            if "Too Many Requests" in str(e):
+                await asyncio.sleep(3)
+            continue
+    
+    if message and full_text:
+        final_text = f"{prefix}{full_text}"
+        if len(final_text) > 4000:
+            final_text = final_text[:4000] + "..."
+        try:
+            await message.edit_text(final_text, reply_markup=reply_markup)
+        except Exception:
+            pass
+    
+    return full_text
+
+# ═══════════════════════════════════════════════════════════════════
+#  ПАМЯТЬ (5 УРОВНЕЙ) — ПОЛНОСТЬЮ
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -440,88 +524,6 @@ def get_memory(uid):
     if uid not in _memory_cache:
         _memory_cache[uid] = SuperMemory(uid)
     return _memory_cache[uid]
-
-# ═══════════════════════════════════════════════════════════════════
-#  ОТПРАВКА СТРИМИНГ-ОТВЕТА (С РАЗРЕЖЕНИЕМ)
-# ═══════════════════════════════════════════════════════════════════
-
-async def send_streaming_response(
-    update: Update,
-    generator: AsyncGenerator[str, None],
-    reply_markup=None,
-    prefix: str = ""
-) -> str:
-    full_text = ""
-    message = None
-    chunk_counter = 0
-    last_update_time = time.time()
-    try:
-        async for chunk in generator:
-            if not chunk:
-                continue
-            full_text += chunk
-            chunk_counter += 1
-            if chunk_counter % 15 == 0 or (time.time() - last_update_time) >= 3.0:
-                try:
-                    if message is None:
-                        display_text = f"{prefix}{full_text}..."
-                        message = await update.effective_message.reply_text(
-                            display_text,
-                            reply_markup=None
-                        )
-                    else:
-                        display_text = f"{prefix}{full_text}..."
-                        if len(display_text) > 4000:
-                            display_text = display_text[:4000] + "..."
-                        await message.edit_text(display_text)
-                    last_update_time = time.time()
-                except Exception as e:
-                    logger.debug(f"⚠️ Ошибка обновления стриминга: {e}")
-                    if "message is too long" in str(e).lower():
-                        if message:
-                            await message.edit_text(f"{prefix}{full_text[:3500]}... (продолжение)")
-                        break
-                    if "Too Many Requests" in str(e):
-                        logger.warning("⏳ Слишком много запросов, ждём 5 секунд...")
-                        await asyncio.sleep(5)
-                    continue
-        if message and full_text:
-            try:
-                is_valid, reason = check_answer_quality(full_text, min_length=200)
-                if not is_valid and len(full_text) < 300:
-                    logger.warning(f"⚠️ Стриминг-ответ отклонён: {reason}")
-                    if "короткий" in reason:
-                        full_text += "\n\n⚠️ Ответ был слишком кратким, но вот что удалось сгенерировать."
-                final_text = f"{prefix}{full_text}"
-                if len(final_text) > 4000:
-                    final_text = final_text[:4000] + "..."
-                await message.edit_text(final_text, reply_markup=reply_markup)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка финализации стриминга: {e}")
-                await message.edit_text(f"{prefix}{full_text[:3000]}... (ответ обрезан)", reply_markup=reply_markup)
-        elif not full_text:
-            fallback = "⚠️ Не удалось получить ответ от DeepSeek. Попробуйте позже."
-            if message:
-                await message.edit_text(f"{prefix}{fallback}", reply_markup=reply_markup)
-            else:
-                await update.effective_message.reply_text(f"{prefix}{fallback}", reply_markup=reply_markup)
-            return fallback
-    except Exception as e:
-        logger.error(f"❌ Ошибка стриминг-отправки: {e}")
-        if full_text:
-            try:
-                await update.effective_message.reply_text(
-                    f"{prefix}{full_text[:3000]}...",
-                    reply_markup=reply_markup
-                )
-            except:
-                pass
-        else:
-            await update.effective_message.reply_text(
-                "⚠️ Ошибка при формировании ответа.",
-                reply_markup=reply_markup
-            )
-    return full_text
 
 # ═══════════════════════════════════════════════════════════════════
 #  РАДУЖНАЯ ПОЛОСКА
@@ -1137,7 +1139,6 @@ async def search_and_answer_stream(
         full_answer = await send_streaming_response(update, generator, reply_markup=ACTION_BUTTONS)
         return full_answer, [], 0.0
     
-    # Формируем универсальный промпт
     text_parts = []
     full_texts = [item for item in all_items if item.get('source') == 'page_full_text']
     other_items = [item for item in all_items if item.get('source') != 'page_full_text']
@@ -1158,7 +1159,6 @@ async def search_and_answer_stream(
     
     items_text = "\n".join(text_parts)
     
-    # ⭐ УНИВЕРСАЛЬНЫЙ ПРОМПТ (БЕЗ ХАРДКОДА)
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
@@ -1236,7 +1236,7 @@ async def search_and_answer_stream(
     return full_answer, all_results, confidence
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОБРАБОТЧИКИ (АДАПТИРОВАНЫ ПОД СТРИМИНГ)
+#  ОБРАБОТЧИКИ
 # ═══════════════════════════════════════════════════════════════════
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1547,7 +1547,7 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v8.0 (ТОЧНОСТЬ + СКОРОСТЬ + ЧЕСТНОСТЬ)")
+    logger.info("🚀 ЗАПУСК BROWAIX v8.1 (ИСПРАВЛЕННЫЙ СТРИМИНГ)")
     logger.info("=" * 60)
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
@@ -1561,7 +1561,7 @@ def main():
     logger.info(f"   • Страниц за итерацию: {MAX_PAGES_PER_ITERATION}")
     logger.info(f"   • Макс. токенов ответа: {MAX_TOKENS_OUTPUT}")
     logger.info(f"   • Вариантов запросов: {MAX_VARIANTS}")
-    logger.info(f"   • Стриминг: ВКЛЮЧЁН (с защитой от спама)")
+    logger.info(f"   • Стриминг: ИСПРАВЛЕН (работает без обрезки)")
     logger.info(f"   • Промпт: универсальный (без хардкода)")
     logger.info("=" * 60)
     
