@@ -1444,7 +1444,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("⚠️ Сначала напишите вопрос в чат.", reply_markup=ACTION_BUTTONS)
             return
         context.user_data['awaiting_input'] = False
-        # Убираем начальное сообщение, чтобы agent_loop сам создал прогресс-бар
         full_context = memory.get_full_context()
         answer, sources, confidence = await agent_loop(pending_text, user_id, update)
         memory.add_message('user', pending_text)
