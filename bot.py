@@ -1079,7 +1079,7 @@ async def call_reflector(query: str, answer: str) -> Dict:
         return {"is_good": True, "feedback": "", "improved_answer": ""}
 
 async def update_progress_message(context, chat_id, message_id, elapsed, stage, progress):
-    """Обновляет сообщение с прогрессом: этап, время, радужная полоска."""
+    """Обновляет сообщение с прогрессом. Если редактирование не удаётся — отправляет новое."""
     colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
     color = colors[elapsed % len(colors)]
     bar_length = 20
@@ -1088,13 +1088,16 @@ async def update_progress_message(context, chat_id, message_id, elapsed, stage, 
     text = f"🧠 **{stage}**\n`{bar} {progress}%` {color}\n⏱️ {elapsed} сек"
     try:
         if message_id:
+            # Пытаемся отредактировать
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
                 parse_mode='Markdown'
             )
+            return message_id
         else:
+            # Отправляем новое
             msg = await context.bot.send_message(
                 chat_id=chat_id,
                 text=text,
@@ -1102,8 +1105,20 @@ async def update_progress_message(context, chat_id, message_id, elapsed, stage, 
             )
             return msg.message_id
     except Exception as e:
-        logger.debug(f"Ошибка обновления прогресса: {e}")
-        return message_id
+        # Если редактирование не удалось, отправляем новое сообщение
+        logger.warning(f"Не удалось отредактировать прогресс: {e}. Отправляю новое.")
+        try:
+            if message_id:
+                # Удаляем старое, чтобы не плодить мусор
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except:
+            pass
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode='Markdown'
+        )
+        return msg.message_id
 
 # ═══════════════════════════════════════════════════════════════════
 #  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ
