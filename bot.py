@@ -89,23 +89,21 @@ ALLOW_ALL = not ALLOWED_USERS
 
 PAGE_TIMEOUT = 3
 SEARCH_RESULTS = 15
-DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"   # Используем Flash для всего
-DEEPSEEK_MODEL_PRO = "deepseek-v4-flash"     # ⚡ Flash для финального ответа (скорость)
+DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"
 CACHE_TTL = 900
 ANSWER_CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 30                      # ⚡ Увеличен до 30
-MAX_TOKENS_OUTPUT = 3000                     # ⚡ Увеличен до 3000
+APISERPENT_TIMEOUT = 30
+MAX_TOKENS_OUTPUT = 3000
 MAX_TOKENS_VARIANTS = 300
 MAX_ITERATIONS = 2
 TARGET_CONFIDENCE = 95
 EARLY_EXIT_CONFIDENCE = 85
-MAX_PAGES_PER_ITERATION = 12                 # ⚡ Увеличено до 12
-MAX_VARIANTS = 5                             # ⚡ Увеличено до 5
+MAX_PAGES_PER_ITERATION = 12
+MAX_VARIANTS = 5
 BROWSER_TIMEOUT = 5
-PAGE_SNIPPET_LENGTH = 3000                   # ⚡ Увеличено до 3000 символов на страницу
-MAX_ITEMS_IN_PROMPT = 50                     # ⚡ Больше элементов для анализа
+PAGE_SNIPPET_LENGTH = 3000
+MAX_ITEMS_IN_PROMPT = 50
 
-# REST-эндпоинт Playwright (если есть)
 BROWSER_WS_ENDPOINT = os.getenv("BROWSER_WS_ENDPOINT", "")
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
@@ -114,7 +112,7 @@ def now():
     return datetime.now(TZ)
 
 # ═══════════════════════════════════════════════════════════════════
-#  КНОПКИ (БЕЗ ИЗМЕНЕНИЙ)
+#  КНОПКИ
 # ═══════════════════════════════════════════════════════════════════
 
 ACTION_BUTTONS = InlineKeyboardMarkup([
@@ -205,14 +203,9 @@ async def ask_deepseek_stream(
     prompt: str,
     temperature: float = 0.2,
     max_tokens: int = MAX_TOKENS_OUTPUT,
-    use_pro: bool = False  # ⚡ Всегда Flash (use_pro игнорируется, оставлено для совместимости)
+    use_pro: bool = False  # Всегда Flash
 ) -> AsyncGenerator[str, None]:
-    """
-    Стриминг-вызов DeepSeek V4 Flash для максимальной скорости.
-    use_pro игнорируется — всегда Flash.
-    """
     key = cache_key(prompt)
-    
     if key in answer_cache and (time.time() - answer_cache[key]['time']) < ANSWER_CACHE_TTL:
         cached = answer_cache[key]['data']
         is_valid, _ = check_answer_quality(cached, min_length=150)
@@ -223,7 +216,7 @@ async def ask_deepseek_stream(
         else:
             del answer_cache[key]
 
-    model = DEEPSEEK_MODEL_FLASH  # Всегда Flash
+    model = DEEPSEEK_MODEL_FLASH
     logger.info(f"🧠 DeepSeek (stream, Flash): {model}")
     logger.debug(f"📝 Промпт (первые 300): {prompt[:300]}...")
 
@@ -288,14 +281,191 @@ async def ask_deepseek_stream(
     yield "⚠️ Не удалось получить ответ от DeepSeek."
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАМЯТЬ (5 УРОВНЕЙ) — БЕЗ ИЗМЕНЕНИЙ (СОКРАЩЕНО ДЛЯ ЭКОНОМИИ МЕСТА)
-#  ПОЛНАЯ ВЕРСИЯ БЫЛА В ПРЕДЫДУЩИХ ВЫПУСКАХ
-#  В ЭТОМ КОДЕ ОНА ПРИСУТСТВУЕТ ПОЛНОСТЬЮ
+#  ПАМЯТЬ (5 УРОВНЕЙ)
 # ═══════════════════════════════════════════════════════════════════
 
-# (Здесь идёт полный код класса SuperMemory и KnowledgeGraph, который мы не меняли.
-#  Я не буду его дублировать для краткости, но он должен быть в финальном файле.
-#  В приложении я дам полный файл.)
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def memory_path(uid): return os.path.join(DATA_DIR, f"memory_{uid}.json")
+def profile_path(uid): return os.path.join(DATA_DIR, f"profile_{uid}.json")
+def episodic_path(uid): return os.path.join(DATA_DIR, f"episodic_{uid}.json")
+def learning_path(uid): return os.path.join(DATA_DIR, f"learning_{uid}.json")
+def counter_path(uid): return os.path.join(DATA_DIR, f"counter_{uid}.json")
+def graph_path(uid): return os.path.join(DATA_DIR, f"graph_{uid}.json")
+
+class KnowledgeGraph:
+    def __init__(self, uid):
+        self.uid = uid
+        self.graph = self._load()
+    def _load(self):
+        try:
+            with open(graph_path(self.uid), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    def _save(self):
+        try:
+            with open(graph_path(self.uid), 'w', encoding='utf-8') as f:
+                json.dump(self.graph, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+    def add_fact(self, fact: str, related_to: Optional[List[str]] = None):
+        if not fact or len(fact) < 10:
+            return
+        if fact not in self.graph:
+            self.graph[fact] = []
+        if related_to:
+            for rel in related_to:
+                if rel not in self.graph[fact]:
+                    self.graph[fact].append(rel)
+        self._save()
+    def get_related(self, fact: str) -> List[str]:
+        return self.graph.get(fact, [])
+    def get_all_facts(self) -> List[str]:
+        return list(self.graph.keys())
+
+class SuperMemory:
+    def __init__(self, uid):
+        self.uid = uid
+        self.short_term = self._load(memory_path(uid), [])
+        self.profile = self._load(profile_path(uid), {})
+        self.episodic = self._load(episodic_path(uid), [])
+        self.learning = self._load(learning_path(uid), {})
+        self.counter = self._load(counter_path(uid), {"count": 0}).get("count", 0)
+        self.knowledge_graph = KnowledgeGraph(uid)
+    
+    def _load(self, path, default):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return default
+    
+    def _save(self, path, data):
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except:
+            return False
+    
+    def add_message(self, role, content):
+        msg = {"role": role, "content": content[:2000], "timestamp": now().isoformat()}
+        self.short_term.append(msg)
+        if len(self.short_term) > 100:
+            old = self.short_term[:-100]
+            self._compress(old)
+            self.short_term = self.short_term[-100:]
+        self.counter += 1
+        self._extract_personal_info(content)
+        self._extract_preferences(content)
+        self._update_knowledge_graph(content)
+        self.save()
+    
+    def _compress(self, messages):
+        important_keywords = ['это', 'является', 'состоит', 'находится', 'важно', 'главное', 'ключевой']
+        for msg in messages:
+            content = msg.get('content', '')
+            if len(content) < 20:
+                continue
+            if any(kw in content.lower() for kw in important_keywords):
+                self.episodic.append({
+                    'content': content[:200],
+                    'timestamp': now().isoformat(),
+                    'priority': 5
+                })
+        if len(self.episodic) > 200:
+            self.episodic = self.episodic[-200:]
+    
+    def _extract_personal_info(self, text):
+        patterns = {
+            'name': r'(?:меня зовут|зовут|я)\s+([А-Яа-яA-Za-z\s]{2,30})',
+            'age': r'(?:мне|возраст)\s+(\d{1,3})\s*(?:лет|года)',
+            'city': r'(?:я живу|живу в|из города)\s+([А-Яа-яA-Za-z\s]{2,30})',
+            'work': r'(?:я работаю|работаю)\s+([А-Яа-яA-Za-z\s]{2,50})',
+        }
+        for key, pattern in patterns.items():
+            if m := re.search(pattern, text, re.IGNORECASE):
+                if not self.profile.get(key):
+                    self.profile[key] = m.group(1).strip()
+    
+    def _extract_preferences(self, text):
+        if 'preferences' not in self.learning:
+            self.learning['preferences'] = []
+        if re.search(r'(?:нравится|люблю|предпочитаю|хочу|ищу)', text, re.I):
+            pref = text.lower()
+            for existing in self.learning['preferences']:
+                if existing.get('text') == pref:
+                    existing['count'] = existing.get('count', 0) + 1
+                    return
+            self.learning['preferences'].append({'text': pref, 'count': 1, 'timestamp': now().isoformat()})
+            if len(self.learning['preferences']) > 100:
+                self.learning['preferences'] = sorted(self.learning['preferences'], key=lambda x: x.get('count', 0), reverse=True)[:100]
+    
+    def _update_knowledge_graph(self, text):
+        facts = re.findall(r'([А-Яа-яA-Za-z][^.!?]{10,100})\s+(?:это|является)\s+([^.!?]{10,100})', text, re.I)
+        for m in facts:
+            fact = f"{m[0].strip()} — {m[1].strip()}"
+            if len(fact) > 15:
+                self.knowledge_graph.add_fact(fact)
+    
+    def get_full_context(self, limit=15) -> str:
+        context_parts = []
+        if self.profile:
+            profile_text = f"👤 Пользователь: {', '.join([f'{k}: {v}' for k, v in self.profile.items()])}"
+            context_parts.append(profile_text)
+        if self.short_term:
+            recent = self.short_term[-10:]
+            for msg in recent:
+                role = "Пользователь" if msg.get('role') == 'user' else "Ассистент"
+                context_parts.append(f"{role}: {msg.get('content', '')[:200]}")
+        facts = self.knowledge_graph.get_all_facts()
+        if facts:
+            context_parts.append(f"🧠 Знания: {', '.join(facts[:5])}")
+        if self.episodic:
+            important = sorted(self.episodic, key=lambda x: x.get('priority', 0), reverse=True)[:3]
+            for mem in important:
+                context_parts.append(f"📌 Важно: {mem.get('content', '')}")
+        return "\n".join(context_parts)
+    
+    def get_context(self, limit=10):
+        ctx = self.short_term[-limit:] if self.short_term else []
+        if self.episodic:
+            important = sorted(self.episodic, key=lambda x: x.get('priority', 0), reverse=True)[:3]
+            for mem in important:
+                ctx.append({'role': 'system', 'content': f"📌 Важно: {mem['content']}"})
+        if self.profile:
+            profile_text = f"👤 О пользователе: {', '.join([f'{k}: {v}' for k, v in self.profile.items()])}"
+            ctx.append({"role": "system", "content": profile_text})
+        if self.knowledge_graph.get_all_facts():
+            facts = self.knowledge_graph.get_all_facts()[:3]
+            ctx.append({"role": "system", "content": f"🧠 Знания: {', '.join(facts)}"})
+        return ctx
+    
+    def memory_health_check(self) -> Dict:
+        return {
+            'short_term': len(self.short_term),
+            'profile': len(self.profile),
+            'episodic': len(self.episodic),
+            'preferences': len(self.learning.get('preferences', [])),
+            'graph_facts': len(self.knowledge_graph.get_all_facts()),
+            'total_messages': self.counter
+        }
+    
+    def save(self):
+        self._save(memory_path(self.uid), self.short_term)
+        self._save(profile_path(self.uid), self.profile)
+        self._save(episodic_path(self.uid), self.episodic)
+        self._save(learning_path(self.uid), self.learning)
+        self._save(counter_path(self.uid), {"count": self.counter})
+
+_memory_cache = {}
+
+def get_memory(uid):
+    if uid not in _memory_cache:
+        _memory_cache[uid] = SuperMemory(uid)
+    return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
 #  ОТПРАВКА СТРИМИНГ-ОТВЕТА В TELEGRAM
@@ -307,9 +477,6 @@ async def send_streaming_response(
     reply_markup=None,
     prefix: str = ""
 ) -> str:
-    """
-    Отправляет ответ по частям в реальном времени.
-    """
     full_text = ""
     message = None
     chunk_counter = 0
@@ -339,7 +506,6 @@ async def send_streaming_response(
                             await message.edit_text(f"{prefix}{full_text[:3500]}... (продолжение)")
                         break
                     continue
-        
         if message and full_text:
             try:
                 is_valid, reason = check_answer_quality(full_text, min_length=100)
@@ -361,7 +527,6 @@ async def send_streaming_response(
             else:
                 await update.effective_message.reply_text(f"{prefix}{fallback}", reply_markup=reply_markup)
             return fallback
-            
     except Exception as e:
         logger.error(f"❌ Ошибка стриминг-отправки: {e}")
         if full_text:
@@ -377,7 +542,6 @@ async def send_streaming_response(
                 "⚠️ Ошибка при формировании ответа.",
                 reply_markup=reply_markup
             )
-    
     return full_text
 
 # ═══════════════════════════════════════════════════════════════════
@@ -455,11 +619,9 @@ async def search_apiserpent(query: str) -> List[Dict]:
     if not APISERPENT_API_KEY:
         logger.error("❌ APISERPENT_API_KEY не задан!")
         return []
-    
     try:
         session = await get_session()
         logger.info(f"🔍 APISerpent: {query[:50]}...")
-        
         params = {
             "q": query,
             "engine": "google",
@@ -468,9 +630,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
             "country": "ru",
             "language": "ru",
         }
-        
         logger.debug(f"📤 Параметры APISerpent (Google): {params}")
-        
         async with session.get(
             "https://apiserpent.com/api/search",
             params=params,
@@ -514,7 +674,6 @@ async def search_apiserpent(query: str) -> List[Dict]:
             else:
                 logger.error(f"❌ APISerpent HTTP {r.status}")
                 return []
-                
     except asyncio.TimeoutError:
         logger.error(f"⏰ Таймаут APISerpent (Google, {APISERPENT_TIMEOUT} сек)")
         logger.info("🔄 Повторная попытка с engine='bing' и без deep...")
@@ -553,7 +712,6 @@ async def search_apiserpent(query: str) -> List[Dict]:
         except Exception as e2:
             logger.error(f"💥 Ошибка Bing fallback: {e2}")
         return []
-        
     except Exception as e:
         logger.error(f"💥 Ошибка APISerpent: {e}")
         logger.error(traceback.format_exc())
@@ -836,18 +994,10 @@ async def generate_refined_variants(query: str, items: List[Dict]) -> List[str]:
 # ═══════════════════════════════════════════════════════════════════
 
 def calculate_confidence(pages: List[Dict], items_count: int, all_items: List[Dict]) -> Dict:
-    """
-    Улучшенный расчёт уверенности:
-    - Надёжность источников
-    - Полнота данных (структура)
-    - Бонус за наличие чисел, дат, единиц измерения (универсальные маркеры)
-    - Бонус за количество элементов
-    """
     confidence = {'overall': 0, 'source_reliability': 0, 'data_completeness': 0, 'recency': 0, 'consensus': 0}
     if not pages and items_count == 0:
         return confidence
     
-    # Надёжность источников
     if pages:
         reliable_sources = 0
         for p in pages[:3]:
@@ -857,8 +1007,6 @@ def calculate_confidence(pages: List[Dict], items_count: int, all_items: List[Di
             elif any(d in url for d in ['.com', '.org', '.net', '.ru']):
                 reliable_sources += 0.5
         confidence['source_reliability'] = min(100, (reliable_sources / max(len(pages[:3]), 1)) * 100)
-        
-        # Полнота данных (структура)
         structure_count = 0
         for p in pages:
             parsed = p.get('parsed', {})
@@ -868,7 +1016,6 @@ def calculate_confidence(pages: List[Dict], items_count: int, all_items: List[Di
         confidence['source_reliability'] = 0
         confidence['data_completeness'] = 0
     
-    # ⚡ УНИВЕРСАЛЬНЫЙ БОНУС: наличие чисел, дат, единиц измерения
     metric_bonus = 0
     date_bonus = 0
     for item in all_items:
@@ -877,22 +1024,18 @@ def calculate_confidence(pages: List[Dict], items_count: int, all_items: List[Di
             metric_bonus += 1
         if re.search(r'\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)', snippet, re.I):
             date_bonus += 1
-    metric_bonus = min(30, metric_bonus * 3)   # до 30%
-    date_bonus = min(20, date_bonus * 5)      # до 20%
+    metric_bonus = min(30, metric_bonus * 3)
+    date_bonus = min(20, date_bonus * 5)
     data_richness_bonus = min(50, metric_bonus + date_bonus)
     
-    # Свежесть (универсально, можем оставить 50)
     confidence['recency'] = 50
     confidence['consensus'] = 50
-    
-    # Базовый overall
     base_overall = int(
         confidence['source_reliability'] * 0.25 +
         confidence['data_completeness'] * 0.20 +
         confidence['recency'] * 0.15 +
         confidence['consensus'] * 0.10
     )
-    # Добавляем бонус за данные
     confidence['overall'] = min(100, base_overall + data_richness_bonus)
     return confidence
 
@@ -1070,7 +1213,6 @@ async def search_and_answer_stream(
 """
     
     t_answer_start = time.time()
-    # ⚡ СТРИМИНГ ФИНАЛЬНОГО ОТВЕТА (Flash)
     generator = ask_deepseek_stream(
         answer_prompt,
         temperature=0.2,
@@ -1086,7 +1228,6 @@ async def search_and_answer_stream(
     time_answer = time.time() - t_answer_start
     logger.info(f"⏱️ Формирование ответа (стриминг, Flash): {time_answer:.2f} сек")
     
-    # Проверка качества
     is_valid, reason = check_answer_quality(full_answer, min_length=150)
     if not is_valid and len(full_answer) < 300:
         logger.warning(f"⚠️ Ответ отклонён: {reason}")
