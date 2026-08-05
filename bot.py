@@ -1,41 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  ИНСТРУКЦИЯ ДЛЯ РАЗРАБОТЧИКА (ЧТО ЭТОТ БОТ УМЕЕТ)
-#  ЭТОТ СПИСОК — ГЛАВНЫЙ ДОКУМЕНТ. НЕ УДАЛЯТЬ!
+#  BROWAIX — УНИВЕРСАЛЬНЫЙ ПОИСКОВЫЙ АССИСТЕНТ
+#  Версия: 8.0 (ТОЧНОСТЬ + СКОРОСТЬ + ЧЕСТНОСТЬ)
 # ═══════════════════════════════════════════════════════════════════
-
-"""
-🤖 БОТ: BROWAIX — УНИВЕРСАЛЬНЫЙ ПОИСКОВЫЙ АССИСТЕНТ
-
-📌 ОСНОВНЫЕ ВОЗМОЖНОСТИ:
-────────────────────────────────────────────────────────────────────
-1. 🔍 ПОИСК В ИНТЕРНЕТЕ
-   - APISerpent (ОСНОВНОЙ И ЕДИНСТВЕННЫЙ) с правильным парсингом
-   - Глубокий поиск (deep=true) с локализацией (ru)
-   - Параллельный поиск по 5 вариантам запросов
-   - Итеративный поиск (до 2 итераций)
-   - Ранний выход при уверенности ≥ 85%
-
-2. 🧠 ПАМЯТЬ (5 УРОВНЕЙ)
-   - Краткосрочная, профиль, эпизодическая, обучающая, граф знаний
-
-3. 🎯 РЕЖИМЫ РАБОТЫ
-   - 🔍 Поиск — полноценный поиск в интернете
-   - 📝 Уточнить — уточнение предыдущего запроса
-   - 💬 Беседа — общение без интернета (из знаний и памяти)
-
-4. 🎨 ВИЗУАЛЬНЫЕ УЛУЧШЕНИЯ
-   - Радужная анимированная полоска прогресса
-   - Детальные статусы этапов работы
-   - Счётчик времени
-   - Кнопка "Показать источники"
-
-5. 🛡️ ЗАЩИТА ОТ ОБМАНА (УСИЛЕННАЯ)
-   - Запрет фраз: "нет доступа", "не могу найти", "нет интернета", "я не могу", "нет информации", "не знаю", "не удалось", "по моему мнению", "я считаю", "я думаю", "возможно", "вероятно", "скорее всего", "примерно", "около", "приблизительно", "как мне кажется", "наверное"
-   - Запрет смешивать знания с интернетом
-   - Запрет выдумывать (усиленный)
-   - Проверка структуры ответа (наличие маркеров)
-   - Проверка уникальности слов
-"""
 
 import logging
 import os
@@ -78,7 +44,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНФИГ (МАКСИМАЛЬНАЯ ТОЧНОСТЬ + СКОРОСТЬ НА FLASH)
+#  КОНФИГ
 # ═══════════════════════════════════════════════════════════════════
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -90,15 +56,16 @@ ALLOW_ALL = not ALLOWED_USERS
 PAGE_TIMEOUT = 3
 SEARCH_RESULTS = 15
 DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"
+DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
 CACHE_TTL = 900
 ANSWER_CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 30
-MAX_TOKENS_OUTPUT = 3000
+APISERPENT_TIMEOUT = 25
+MAX_TOKENS_OUTPUT = 4000
 MAX_TOKENS_VARIANTS = 300
 MAX_ITERATIONS = 2
 TARGET_CONFIDENCE = 95
 EARLY_EXIT_CONFIDENCE = 85
-MAX_PAGES_PER_ITERATION = 12
+MAX_PAGES_PER_ITERATION = 8
 MAX_VARIANTS = 5
 BROWSER_TIMEOUT = 5
 PAGE_SNIPPET_LENGTH = 3000
@@ -167,13 +134,13 @@ async def get_session():
     return _http_session
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK (СТРИМИНГ, КЭШИРОВАНИЕ, FLASH)
+#  DEEPSEEK (СТРИМИНГ, КЭШ, ГИБКИЙ ПРОМПТ)
 # ═══════════════════════════════════════════════════════════════════
 
 def cache_key(prompt: str) -> str:
     return hashlib.md5(prompt.encode('utf-8')).hexdigest()
 
-def check_answer_quality(answer: str, min_length: int = 150) -> Tuple[bool, str]:
+def check_answer_quality(answer: str, min_length: int = 300) -> Tuple[bool, str]:
     if not answer:
         return False, "Ответ пустой"
     if len(answer) < min_length:
@@ -203,12 +170,12 @@ async def ask_deepseek_stream(
     prompt: str,
     temperature: float = 0.2,
     max_tokens: int = MAX_TOKENS_OUTPUT,
-    use_pro: bool = False  # Всегда Flash
+    use_pro: bool = True
 ) -> AsyncGenerator[str, None]:
     key = cache_key(prompt)
     if key in answer_cache and (time.time() - answer_cache[key]['time']) < ANSWER_CACHE_TTL:
         cached = answer_cache[key]['data']
-        is_valid, _ = check_answer_quality(cached, min_length=150)
+        is_valid, _ = check_answer_quality(cached, min_length=200)
         if is_valid:
             logger.info("♻️ Ответ DeepSeek из кэша")
             yield cached
@@ -216,8 +183,8 @@ async def ask_deepseek_stream(
         else:
             del answer_cache[key]
 
-    model = DEEPSEEK_MODEL_FLASH
-    logger.info(f"🧠 DeepSeek (stream, Flash): {model}")
+    model = DEEPSEEK_MODEL_PRO if use_pro else DEEPSEEK_MODEL_FLASH
+    logger.info(f"🧠 DeepSeek (stream, {model})")
     logger.debug(f"📝 Промпт (первые 300): {prompt[:300]}...")
 
     for attempt in range(3):
@@ -234,10 +201,12 @@ async def ask_deepseek_stream(
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
                 json=payload,
-                timeout=45
+                timeout=60
             ) as r:
                 if r.status == 200:
                     full_content = ""
+                    chunk_counter = 0
+                    last_update_time = time.time()
                     async for line in r.content:
                         line = line.decode('utf-8').strip()
                         if not line or line.startswith(':'):
@@ -253,11 +222,16 @@ async def ask_deepseek_stream(
                                     content = delta.get('content', '')
                                     if content:
                                         full_content += content
-                                        yield content
+                                        chunk_counter += 1
+                                        if chunk_counter % 20 == 0 or (time.time() - last_update_time) >= 2.0:
+                                            yield content
+                                            last_update_time = time.time()
                             except json.JSONDecodeError:
                                 continue
-                    if full_content and len(full_content) > 100:
-                        is_valid, _ = check_answer_quality(full_content, min_length=150)
+                    if full_content and chunk_counter % 20 != 0:
+                        yield full_content[-200:]
+                    if full_content and len(full_content) > 200:
+                        is_valid, _ = check_answer_quality(full_content, min_length=200)
                         if is_valid:
                             answer_cache[key] = {'data': full_content, 'time': time.time()}
                     return
@@ -468,7 +442,7 @@ def get_memory(uid):
     return _memory_cache[uid]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОТПРАВКА СТРИМИНГ-ОТВЕТА В TELEGRAM
+#  ОТПРАВКА СТРИМИНГ-ОТВЕТА (С РАЗРЕЖЕНИЕМ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def send_streaming_response(
@@ -480,13 +454,14 @@ async def send_streaming_response(
     full_text = ""
     message = None
     chunk_counter = 0
+    last_update_time = time.time()
     try:
         async for chunk in generator:
             if not chunk:
                 continue
             full_text += chunk
             chunk_counter += 1
-            if chunk_counter % 5 == 0 or len(full_text) < 200:
+            if chunk_counter % 15 == 0 or (time.time() - last_update_time) >= 3.0:
                 try:
                     if message is None:
                         display_text = f"{prefix}{full_text}..."
@@ -499,16 +474,20 @@ async def send_streaming_response(
                         if len(display_text) > 4000:
                             display_text = display_text[:4000] + "..."
                         await message.edit_text(display_text)
+                    last_update_time = time.time()
                 except Exception as e:
                     logger.debug(f"⚠️ Ошибка обновления стриминга: {e}")
                     if "message is too long" in str(e).lower():
                         if message:
                             await message.edit_text(f"{prefix}{full_text[:3500]}... (продолжение)")
                         break
+                    if "Too Many Requests" in str(e):
+                        logger.warning("⏳ Слишком много запросов, ждём 5 секунд...")
+                        await asyncio.sleep(5)
                     continue
         if message and full_text:
             try:
-                is_valid, reason = check_answer_quality(full_text, min_length=100)
+                is_valid, reason = check_answer_quality(full_text, min_length=200)
                 if not is_valid and len(full_text) < 300:
                     logger.warning(f"⚠️ Стриминг-ответ отклонён: {reason}")
                     if "короткий" in reason:
@@ -554,8 +533,8 @@ async def send_progress_updates(chat_id, context, start_time):
         stages = [
             {"emoji": "🧠", "name": "Анализ запроса", "duration": 4},
             {"emoji": "🔍", "name": "Поиск в интернете", "duration": 15},
-            {"emoji": "📄", "name": "Загрузка страниц", "duration": 12},
-            {"emoji": "🤔", "name": "Формирование ответа (Flash)", "duration": 10},
+            {"emoji": "📄", "name": "Загрузка страниц", "duration": 10},
+            {"emoji": "🤔", "name": "Формирование ответа", "duration": 12},
         ]
         rainbow_colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
         message = await context.bot.send_message(
@@ -841,7 +820,7 @@ async def fetch_page(url: str, query: str) -> Dict:
     return empty_page_result()
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ ПАРСИНГ (С ИЗВЛЕЧЕНИЕМ JSON-LD И МЕТРИК)
+#  ПАРСИНГ (УНИВЕРСАЛЬНЫЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 def parse_page(html: str, query: str) -> Dict:
@@ -895,7 +874,6 @@ def parse_page(html: str, query: str) -> Dict:
             if table_text:
                 result['tables'].append('\n'.join(table_text))
         result['tables'] = result['tables'][:5]
-        # Извлечение JSON-LD
         for script in soup.find_all('script', type=['application/ld+json', 'application/json']):
             try:
                 if script.string:
@@ -904,7 +882,6 @@ def parse_page(html: str, query: str) -> Dict:
                         result['json_data'].append(json.dumps(data, ensure_ascii=False)[:1000])
             except:
                 pass
-        # Извлечение метрик (числа с единицами) — универсально
         metric_patterns = [
             r'([-+]?\d{1,4}\s*[°C℃]?)',
             r'([-+]?\d{1,4}\s*м/с|км/ч|mph)',
@@ -990,14 +967,13 @@ async def generate_refined_variants(query: str, items: List[Dict]) -> List[str]:
     return list(dict.fromkeys(variants))[:MAX_VARIANTS]
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ РАСЧЁТ УВЕРЕННОСТИ (УНИВЕРСАЛЬНЫЙ, ПО ДАННЫМ)
+#  РАСЧЁТ УВЕРЕННОСТИ
 # ═══════════════════════════════════════════════════════════════════
 
 def calculate_confidence(pages: List[Dict], items_count: int, all_items: List[Dict]) -> Dict:
     confidence = {'overall': 0, 'source_reliability': 0, 'data_completeness': 0, 'recency': 0, 'consensus': 0}
     if not pages and items_count == 0:
         return confidence
-    
     if pages:
         reliable_sources = 0
         for p in pages[:3]:
@@ -1015,7 +991,6 @@ def calculate_confidence(pages: List[Dict], items_count: int, all_items: List[Di
     else:
         confidence['source_reliability'] = 0
         confidence['data_completeness'] = 0
-    
     metric_bonus = 0
     date_bonus = 0
     for item in all_items:
@@ -1027,7 +1002,6 @@ def calculate_confidence(pages: List[Dict], items_count: int, all_items: List[Di
     metric_bonus = min(30, metric_bonus * 3)
     date_bonus = min(20, date_bonus * 5)
     data_richness_bonus = min(50, metric_bonus + date_bonus)
-    
     confidence['recency'] = 50
     confidence['consensus'] = 50
     base_overall = int(
@@ -1056,7 +1030,7 @@ def format_confidence(confidence: Dict) -> str:
 """
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ ОСНОВНАЯ ЛОГИКА (СБОР ВСЕХ ДАННЫХ + СТРИМИНГ-ОТВЕТ)
+#  ОСНОВНАЯ ЛОГИКА (УНИВЕРСАЛЬНЫЙ ПРОМПТ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer_stream(
@@ -1163,7 +1137,7 @@ async def search_and_answer_stream(
         full_answer = await send_streaming_response(update, generator, reply_markup=ACTION_BUTTONS)
         return full_answer, [], 0.0
     
-    # Формируем дамп
+    # Формируем универсальный промпт
     text_parts = []
     full_texts = [item for item in all_items if item.get('source') == 'page_full_text']
     other_items = [item for item in all_items if item.get('source') != 'page_full_text']
@@ -1184,32 +1158,38 @@ async def search_and_answer_stream(
     
     items_text = "\n".join(text_parts)
     
+    # ⭐ УНИВЕРСАЛЬНЫЙ ПРОМПТ (БЕЗ ХАРДКОДА)
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
-📊 **ВСЕ ДАННЫЕ С ВЕБ-СТРАНИЦ (текст, структурированные данные, таблицы, метрики):**
-
+📊 **ВСЕ ДАННЫЕ С ВЕБ-СТРАНИЦ:**
 {items_text}
 
-🧠 **КОНТЕКСТ ДИАЛОГА (из памяти):**
+🧠 **КОНТЕКСТ ДИАЛОГА:**
 {context_prompt if context_prompt else "Нет контекста"}
 
-⚠️ **ТВОЯ ЗАДАЧА — ПРОАНАЛИЗИРОВАТЬ ЭТИ ДАННЫЕ И ДАТЬ ОТВЕТ НА ВОПРОС.**
+⚠️ **ТВОЯ ЗАДАЧА — ОТВЕТИТЬ НА ВОПРОС, ИСПОЛЬЗУЯ ТОЛЬКО ЭТИ ДАННЫЕ.**
 
-**ЖЁСТКИЕ ПРАВИЛА (НАРУШЕНИЕ = ОБМАН):**
+**ПРАВИЛА:**
 
-1. **НЕ ВЫДУМЫВАЙ!** Используй ТОЛЬКО то, что есть в данных.
-2. **ЕСЛИ ДАННЫХ МАЛО** — честно скажи: "В найденных данных мало информации, но вот что удалось извлечь..."
-3. **ЕСЛИ ДАННЫХ НЕТ** — честно скажи: "По вашему запросу ничего не найдено."
-4. **НЕЛЬЗЯ** говорить "по моему мнению", "я считаю", "я думаю".
-5. **УКАЗЫВАЙ ИСТОЧНИКИ** — откуда взята информация.
-6. **СТРУКТУРИРУЙ ОТВЕТ** — выдели основные факты, детали, цифры.
-7. **ЕСЛИ ЦИФРЫ БЕЗ КОНТЕКСТА** — честно скажи об этом.
-8. **ИСПОЛЬЗУЙ МАРКЕРЫ**: **, 📊, ✅, 🧠, 🌐, 📋 для структуры.
+1. **Проанализируй запрос** — что именно хочет узнать пользователь?
+2. **Извлеки из данных только то, что относится к вопросу.**
+3. **Если данных много — выбери самое важное.** Если мало — скажи честно, что удалось найти.
+4. **Игнорируй шум:** рекламу, навигационные элементы, технические метаданные.
+5. **Структурируй ответ** в зависимости от запроса:
+   - Если просят прогноз → выдели даты, цифры, тенденции.
+   - Если просят сравнение → сделай таблицу или списки.
+   - Если просят инструкцию → опиши шаги.
+   - Если просят факт → дай чёткий ответ.
+6. **Используй маркеры:** **, ✅, 📊, 📋, 🌐 — но только там, где это уместно.
+7. **НЕ ВЫДУМЫВАЙ!** Если данных нет — скажи: "В найденных данных нет информации по вашему запросу."
+8. **НЕЛЬЗЯ** говорить "по моему мнению", "я считаю", "возможно".
+9. **Выделяй важные числа и факты жирным шрифтом.**
+10. **Указывай источник**, если это возможно.
 
-Вопрос: {query}
+**Вопрос:** {query}
 
-ОТВЕТЬ РАЗВЁРНУТО, ИНФОРМАТИВНО, НО БЕЗ ВЫДУМОК!
+**ОТВЕТЬ РАЗВЁРНУТО, НО ТОЛЬКО ПО ДАННЫМ. МИНИМУМ 500 СИМВОЛОВ.**
 """
     
     t_answer_start = time.time()
@@ -1217,7 +1197,7 @@ async def search_and_answer_stream(
         answer_prompt,
         temperature=0.2,
         max_tokens=MAX_TOKENS_OUTPUT,
-        use_pro=False  # Flash
+        use_pro=True
     )
     full_answer = await send_streaming_response(
         update,
@@ -1226,9 +1206,9 @@ async def search_and_answer_stream(
         prefix=""
     )
     time_answer = time.time() - t_answer_start
-    logger.info(f"⏱️ Формирование ответа (стриминг, Flash): {time_answer:.2f} сек")
+    logger.info(f"⏱️ Формирование ответа (стриминг, Pro): {time_answer:.2f} сек")
     
-    is_valid, reason = check_answer_quality(full_answer, min_length=150)
+    is_valid, reason = check_answer_quality(full_answer, min_length=300)
     if not is_valid and len(full_answer) < 300:
         logger.warning(f"⚠️ Ответ отклонён: {reason}")
         retry_prompt = f"""
@@ -1239,9 +1219,9 @@ async def search_and_answer_stream(
 
 Вопрос: {query}
 
-ОТВЕТЬ РАЗВЁРНУТО, НЕ ВРИ, НЕ ВЫДУМЫВАЙ. ИСПОЛЬЗУЙ МАРКЕРЫ. МИНИМУМ 300 СИМВОЛОВ.
+ОТВЕТЬ РАЗВЁРНУТО, НЕ ВРИ, НЕ ВЫДУМЫВАЙ. ИСПОЛЬЗУЙ МАРКЕРЫ. МИНИМУМ 400 СИМВОЛОВ.
 """
-        generator2 = ask_deepseek_stream(retry_prompt, temperature=0.2, max_tokens=MAX_TOKENS_OUTPUT, use_pro=False)
+        generator2 = ask_deepseek_stream(retry_prompt, temperature=0.2, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
         full_answer = await send_streaming_response(
             update,
             generator2,
@@ -1567,22 +1547,22 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v7.0 (FLASH + МАКСИМАЛЬНАЯ ТОЧНОСТЬ)")
+    logger.info("🚀 ЗАПУСК BROWAIX v8.0 (ТОЧНОСТЬ + СКОРОСТЬ + ЧЕСТНОСТЬ)")
     logger.info("=" * 60)
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
-    logger.info(f"   DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'} (ИСПОЛЬЗУЕТСЯ FLASH)")
-    logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'} (ОСНОВНОЙ И ЕДИНСТВЕННЫЙ)")
+    logger.info(f"   DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
+    logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info(f"   Playwright REST: {'✅' if BROWSER_WS_ENDPOINT else '❌'}")
     logger.info("=" * 60)
     logger.info("⚡ ПАРАМЕТРЫ:")
-    logger.info(f"   • Модель: Flash для всего (скорость + качество)")
+    logger.info(f"   • Модели: Flash для вариантов, Pro для ответа")
     logger.info(f"   • Итераций: {MAX_ITERATIONS}")
     logger.info(f"   • Страниц за итерацию: {MAX_PAGES_PER_ITERATION}")
     logger.info(f"   • Макс. токенов ответа: {MAX_TOKENS_OUTPUT}")
     logger.info(f"   • Вариантов запросов: {MAX_VARIANTS}")
-    logger.info(f"   • Стриминг: ВКЛЮЧЁН")
-    logger.info(f"   • Уверенность: улучшена (числа, даты, единицы)")
+    logger.info(f"   • Стриминг: ВКЛЮЧЁН (с защитой от спама)")
+    logger.info(f"   • Промпт: универсальный (без хардкода)")
     logger.info("=" * 60)
     
     if not TELEGRAM_TOKEN:
