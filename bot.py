@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════════
-#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v14.0)
-#  ПОЛНАЯ ВЕРСИЯ: ПЛАНИРОВЩИК + ИСПОЛНИТЕЛЬ + ОЦЕНЩИК + РЕФЛЕКТОР
+#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v15.0)
+#  АДАПТИВНЫЙ ПОИСК + ЖЕСТКАЯ ПРОВЕРКА ДАННЫХ
 #  НИЧЕГО НЕ ВЫРЕЗАНО — ВСЁ ВКЛЮЧЕНО
 # ═══════════════════════════════════════════════════════════════════
 
@@ -87,7 +87,7 @@ PLANNER_PROMPT = """
     {{"id": 1, "action": "search|fetch|analyze|calculate|chat", "params": {{"query": "..."}} }}
   ],
   "success_criteria": "условие, при котором задача считается решённой",
-  "max_iterations": 3
+  "max_iterations": 4
 }}
 
 Правила:
@@ -112,7 +112,7 @@ EVALUATOR_PROMPT = """
   "is_sufficient": true/false,
   "missing_info": ["чего не хватает"],
   "confidence": 0-100,
-  "suggested_search": ["дополнительные запросы"]  // если данных недостаточно
+  "suggested_search": ["дополнительные запросы"]
 }}
 """
 
@@ -132,7 +132,7 @@ REFLECTOR_PROMPT = """
 {{
   "is_good": true/false,
   "feedback": "что нужно исправить, если не good",
-  "improved_answer": "исправленный ответ"  // если is_good=false
+  "improved_answer": "исправленный ответ"
 }}
 """
 
@@ -166,14 +166,14 @@ ALLOW_ALL = not ALLOWED_USERS
 
 PAGE_TIMEOUT = 5
 SEARCH_RESULTS = 12
-DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"
-DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
+DEEPSEEK_MODEL_FLASH = "deepseek-chat"
+DEEPSEEK_MODEL_PRO = "deepseek-chat"
 CACHE_TTL = 600
 ANSWER_CACHE_TTL = 3600
 APISERPENT_TIMEOUT = 30
 MAX_TOKENS_OUTPUT = 8000
 MAX_TOKENS_PLANNER = 600
-MAX_ITERATIONS = 3
+MAX_ITERATIONS = 4
 TARGET_CONFIDENCE = 90
 EARLY_EXIT_CONFIDENCE = 80
 MAX_PAGES_PER_ITERATION = 5
@@ -189,18 +189,15 @@ def now():
 #  КНОПКИ
 # ═══════════════════════════════════════════════════════════════════
 
-ACTION_BUTTONS = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("🔍 Поиск", callback_data="action_search"),
-        InlineKeyboardButton("📝 Уточнить", callback_data="action_clarify"),
-    ],
-    [
-        InlineKeyboardButton("💬 Беседа", callback_data="action_chat"),
-    ]
+MAIN_MENU = InlineKeyboardMarkup([
+    [InlineKeyboardButton("🔍 Режим поиска", callback_data="mode_search")],
+    [InlineKeyboardButton("💬 Режим беседы", callback_data="mode_chat")],
+    [InlineKeyboardButton("🧹 Очистить память", callback_data="mode_clear")],
+    [InlineKeyboardButton("📊 Статистика", callback_data="mode_stats")]
 ])
 
 EXIT_CHAT_BUTTON = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🔙 Выйти из беседы", callback_data="action_exit_chat")]
+    [InlineKeyboardButton("🔙 Выйти в режим поиска", callback_data="action_exit_chat")]
 ])
 
 SHOW_SOURCES_BUTTON = InlineKeyboardMarkup([
@@ -209,17 +206,6 @@ SHOW_SOURCES_BUTTON = InlineKeyboardMarkup([
 
 HIDE_SOURCES_BUTTON = InlineKeyboardMarkup([
     [InlineKeyboardButton("🔒 Скрыть источники", callback_data="hide_sources")]
-])
-
-ACTION_WITH_SOURCES_BUTTONS = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("🔍 Поиск", callback_data="action_search"),
-        InlineKeyboardButton("📝 Уточнить", callback_data="action_clarify"),
-    ],
-    [
-        InlineKeyboardButton("💬 Беседа", callback_data="action_chat"),
-        InlineKeyboardButton("📎 Показать источники", callback_data="show_sources"),
-    ]
 ])
 
 # ═══════════════════════════════════════════════════════════════════
@@ -244,13 +230,11 @@ def cache_key(prompt: str) -> str:
     return hashlib.md5(prompt.encode('utf-8')).hexdigest()
 
 def check_answer_quality(answer: str, min_length: int = 200) -> Tuple[bool, str]:
-    """Проверка качества ответа — теперь не блокирует честные фразы."""
     if not answer:
         return False, "Ответ пустой"
     if len(answer) < min_length:
         return False, f"Ответ слишком короткий ({len(answer)} символов, нужно {min_length})"
     
-    # Запрещены только явные выдумки и субъективные оценки
     forbidden = [
         "по моему мнению", "я считаю", "я думаю", "на мой взгляд",
         "я предполагаю", "мне кажется"
@@ -258,13 +242,6 @@ def check_answer_quality(answer: str, min_length: int = 200) -> Tuple[bool, str]
     for phrase in forbidden:
         if phrase in answer.lower():
             return False, f"Обнаружена запрещённая фраза: '{phrase}'"
-    
-    # Проверка на дату/источник — не блокирует, только логирует
-    date_pattern = r'\b\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\b'
-    has_date = bool(re.search(date_pattern, answer, re.I)) or bool(re.search(r'\d{4}-\d{2}-\d{2}', answer))
-    has_source = "http" in answer or "источник" in answer.lower() or "из знаний" in answer.lower()
-    if not has_date and not has_source:
-        logger.info("ℹ️ Ответ не содержит даты или источника — допустимо")
     
     return True, "OK"
 
@@ -275,7 +252,6 @@ async def ask_deepseek(
     use_pro: bool = True,
     system_override: Optional[str] = None
 ) -> str:
-    """Универсальный вызов DeepSeek с возможностью переопределить системную инструкцию."""
     system = system_override if system_override else SYSTEM_INSTRUCTION
     key = cache_key(prompt + system)
     if key in answer_cache and (time.time() - answer_cache[key]['time']) < ANSWER_CACHE_TTL:
@@ -290,7 +266,7 @@ async def ask_deepseek(
     model = DEEPSEEK_MODEL_PRO if use_pro else DEEPSEEK_MODEL_FLASH
     logger.info(f"🧠 DeepSeek (полный ответ, {model})")
 
-    for attempt in range(2):  # максимум 2 попытки
+    for attempt in range(2):
         try:
             session = await get_session()
             payload = {
@@ -341,7 +317,7 @@ async def ask_deepseek(
     return "⚠️ Не удалось получить ответ от DeepSeek."
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАМЯТЬ (5 УРОВНЕЙ) — ПОЛНОСТЬЮ
+#  ПАМЯТЬ (5 УРОВНЕЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -413,10 +389,10 @@ class SuperMemory:
     def add_message(self, role, content):
         msg = {"role": role, "content": content[:2000], "timestamp": now().isoformat()}
         self.short_term.append(msg)
-        if len(self.short_term) > 200:
-            old = self.short_term[:-200]
+        if len(self.short_term) > 500:
+            old = self.short_term[:-500]
             self._compress(old)
-            self.short_term = self.short_term[-200:]
+            self.short_term = self.short_term[-500:]
         self.counter += 1
         self._extract_personal_info(content)
         self._extract_preferences(content)
@@ -435,8 +411,8 @@ class SuperMemory:
                     'timestamp': now().isoformat(),
                     'priority': 5
                 })
-        if len(self.episodic) > 500:
-            self.episodic = self.episodic[-500:]
+        if len(self.episodic) > 1000:
+            self.episodic = self.episodic[-1000:]
     
     def _extract_personal_info(self, text):
         patterns = {
@@ -470,7 +446,7 @@ class SuperMemory:
             if len(fact) > 15:
                 self.knowledge_graph.add_fact(fact)
     
-    def get_full_context(self, limit=15) -> str:
+    def get_full_context(self, limit=30) -> str:
         context_parts = []
         if self.profile:
             profile_text = f"👤 Пользователь: {', '.join([f'{k}: {v}' for k, v in self.profile.items()])}"
@@ -569,82 +545,8 @@ def mark_reminder_done(reminder_id):
 init_reminders_db()
 
 # ═══════════════════════════════════════════════════════════════════
-#  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ПОИСК, ПАРСИНГ, ВАЛИДАЦИЯ)
+#  АДАПТИВНЫЙ ПОИСК
 # ═══════════════════════════════════════════════════════════════════
-
-def validate_data(data: Dict, query: str, source_type: str = "search") -> Tuple[bool, float, str]:
-    """Универсальная валидация данных (гибкая)."""
-    score = 0
-    reasons = []
-    text = data.get('text', '') or data.get('snippet', '') or data.get('full_text', '')
-    if not text:
-        if source_type == 'api' and isinstance(data, dict):
-            if 'weather' in query.lower() or 'погод' in query.lower():
-                if 'temperature' in data or 'temp' in data:
-                    score += 40
-                else:
-                    reasons.append("Нет температуры")
-            elif 'курс' in query.lower() or 'currency' in query.lower():
-                if 'rate' in data or 'price' in data:
-                    score += 40
-                else:
-                    reasons.append("Нет курса")
-            else:
-                if len(data.keys()) > 1:
-                    score += 30
-                else:
-                    reasons.append("Пустой API-ответ")
-        else:
-            reasons.append("Нет текста")
-    else:
-        if len(text) > 100:
-            score += 25
-        else:
-            reasons.append("Слишком короткий текст")
-            score -= 5
-
-    spam_words = ['реклама', 'спонсор', 'купить', 'заказать', 'скидка', 'promo', 'advertisement']
-    spam_count = sum(1 for w in spam_words if w in text.lower())
-    if spam_count > 2:
-        reasons.append("Обнаружена реклама")
-        score -= spam_count * 3
-    else:
-        score += 10
-
-    # Дата — не штрафуем
-    date_patterns = [
-        r'\b\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\b',
-        r'\d{4}-\d{2}-\d{2}',
-        r'\d{2}\.\d{2}\.\d{4}',
-        r'\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}'
-    ]
-    has_date = any(re.search(p, text) for p in date_patterns)
-    if has_date:
-        score += 15
-    else:
-        reasons.append("Нет даты (не критично)")
-
-    if re.search(r'^#{1,3}\s+\w', text, re.M) or re.search(r'^\s*[-*•]\s+\w', text, re.M):
-        score += 10
-    if re.search(r'\b\d+\b', text):
-        score += 10
-
-    query_words = set(re.findall(r'\w+', query.lower()))
-    text_words = set(re.findall(r'\w+', text.lower()))
-    overlap = len(query_words & text_words)
-    if overlap >= 3:
-        score += 20
-    elif overlap >= 1:
-        score += 10
-    else:
-        reasons.append("Нет пересечения с запросом")
-        score -= 5
-
-    final_score = min(100, max(0, score))
-    is_valid = final_score >= 45
-    reason_str = "; ".join(reasons) if reasons else "OK"
-    logger.info(f"Валидация: оценка {final_score}, валидно: {is_valid}, причины: {reason_str}")
-    return is_valid, final_score, reason_str
 
 def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower()).strip()
@@ -705,76 +607,215 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 logger.error(f"❌ APISerpent HTTP {r.status}")
                 return []
     except asyncio.TimeoutError:
-        logger.error(f"⏰ Таймаут APISerpent. Пробуем Bing...")
-        try:
-            params_fallback = {
-                "q": query,
-                "engine": "bing",
-                "num": SEARCH_RESULTS,
-                "country": "ru",
-                "language": "ru",
-            }
-            async with session.get(
-                "https://apiserpent.com/api/search",
-                params=params_fallback,
-                headers={"X-API-Key": APISERPENT_API_KEY},
-                timeout=15
-            ) as r2:
-                if r2.status == 200:
-                    data = await r2.json()
-                    results = []
-                    if "results" in data and isinstance(data["results"], dict):
-                        organic = data["results"].get("organic", [])
-                        if organic:
-                            for item in organic:
-                                if isinstance(item, dict):
-                                    results.append({
-                                        "title": item.get("title", "") or item.get("name", ""),
-                                        "snippet": item.get("snippet", "") or item.get("description", "") or item.get("text", ""),
-                                        "link": item.get("url", "") or item.get("link", ""),
-                                        "source": "organic"
-                                    })
-                            return results
-                else:
-                    logger.error(f"❌ APISerpent (Bing) HTTP {r2.status}")
-        except Exception as e2:
-            logger.error(f"💥 Ошибка Bing fallback: {e2}")
+        logger.error(f"⏰ Таймаут APISerpent.")
         return []
     except Exception as e:
         logger.error(f"💥 Ошибка APISerpent: {e}")
         return []
 
-async def generate_variants(query: str, count: int = 3) -> List[str]:
-    """Генерирует альтернативные формулировки запроса."""
-    prompt = f"Сгенерируй {count} разных вариантов поискового запроса для:\n{query}\nОтветь списком, каждый с новой строки. Варианты должны быть разнообразными: синонимы, перефразировки, уточнения (например, 'почасовой', 'подробный', 'на завтра')."
-    response = await ask_deepseek(prompt, temperature=0.3, max_tokens=200, use_pro=False)
-    variants = [query]
-    if response:
-        for line in response.strip().split('\n'):
-            line = line.strip()
-            if line and not line.startswith('#'):
-                clean = re.sub(r'^[\d\s.)-]+', '', line).strip()
-                if clean and len(clean) > 3 and clean not in variants:
-                    variants.append(clean)
-    return variants[:count]
+async def search_apiserpent_bing(query: str) -> List[Dict]:
+    if not APISERPENT_API_KEY:
+        return []
+    try:
+        session = await get_session()
+        params = {
+            "q": query,
+            "engine": "bing",
+            "num": SEARCH_RESULTS,
+            "country": "ru",
+            "language": "ru",
+        }
+        async with session.get(
+            "https://apiserpent.com/api/search",
+            params=params,
+            headers={"X-API-Key": APISERPENT_API_KEY},
+            timeout=APISERPENT_TIMEOUT
+        ) as r:
+            if r.status == 200:
+                data = await r.json()
+                results = []
+                if "results" in data and isinstance(data["results"], dict):
+                    organic = data["results"].get("organic", [])
+                    if organic:
+                        for item in organic:
+                            if isinstance(item, dict):
+                                results.append({
+                                    "title": item.get("title", "") or item.get("name", ""),
+                                    "snippet": item.get("snippet", "") or item.get("description", "") or item.get("text", ""),
+                                    "link": item.get("url", "") or item.get("link", ""),
+                                    "source": "organic"
+                                })
+                        return results
+            return []
+    except:
+        return []
 
-async def search_with_retry(query: str, retries=2) -> List[Dict]:
-    norm = normalize_query(query)
-    if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
-        logger.info(f"♻️ Из кэша: {query[:30]}...")
-        return search_cache[norm]['data']
-    for attempt in range(retries):
-        try:
-            results = await search_apiserpent(query)
+async def generate_synonyms(query: str) -> str:
+    prompt = f"""Дан запрос: "{query}"
+Сгенерируй альтернативную формулировку с синонимами.
+Используй другие слова, но сохрани смысл.
+Ответь только одной фразой, без пояснений."""
+    response = await ask_deepseek(prompt, temperature=0.5, max_tokens=100, use_pro=False)
+    return response.strip() if response else query
+
+async def generate_short_query(query: str) -> str:
+    prompt = f"""Дан запрос: "{query}"
+Выдели 3-5 самых важных ключевых слов.
+Ответь только словами через пробел, без пояснений."""
+    response = await ask_deepseek(prompt, temperature=0.3, max_tokens=50, use_pro=False)
+    return response.strip() if response else query
+
+async def generate_detailed_query(query: str) -> str:
+    prompt = f"""Дан запрос: "{query}"
+Расширь запрос, добавив контекст (например, дату, место, уточнение).
+Ответь только одной фразой, без пояснений."""
+    response = await ask_deepseek(prompt, temperature=0.5, max_tokens=150, use_pro=False)
+    return response.strip() if response else query
+
+async def translate_to_english(query: str) -> str:
+    prompt = f"""Переведи на английский язык: "{query}"
+Ответь только переводом, без пояснений."""
+    response = await ask_deepseek(prompt, temperature=0.3, max_tokens=100, use_pro=False)
+    return response.strip() if response else query
+
+async def search_with_adaptation(query: str, max_attempts: int = 4) -> List[Dict]:
+    all_results = []
+    strategies = [
+        {"name": "оригинальный", "query": query},
+    ]
+    
+    # Добавляем дополнительные стратегии
+    synonyms = await generate_synonyms(query)
+    if synonyms and synonyms != query:
+        strategies.append({"name": "синонимы", "query": synonyms})
+    
+    short_q = await generate_short_query(query)
+    if short_q and short_q != query:
+        strategies.append({"name": "краткий", "query": short_q})
+    
+    detailed = await generate_detailed_query(query)
+    if detailed and detailed != query:
+        strategies.append({"name": "расширенный", "query": detailed})
+    
+    eng = await translate_to_english(query)
+    if eng and eng != query:
+        strategies.append({"name": "английский", "query": eng})
+    
+    # Ограничиваем количество попыток
+    strategies = strategies[:max_attempts]
+    
+    for attempt, strategy in enumerate(strategies):
+        logger.info(f"🔍 Попытка {attempt+1}: {strategy['name']} — '{strategy['query']}'")
+        
+        norm = normalize_query(strategy['query'])
+        if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
+            cached = search_cache[norm]['data']
+            if cached:
+                logger.info(f"♻️ Найдено в кэше: {len(cached)} результатов")
+                all_results.extend(cached)
+                continue
+        
+        results = await search_apiserpent(strategy['query'])
+        
+        if results:
+            logger.info(f"✅ Найдено {len(results)} результатов по стратегии '{strategy['name']}'")
+            search_cache[norm] = {'data': results, 'time': time.time()}
+            all_results.extend(results)
+            if len(results) >= 5:
+                break
+        else:
+            logger.warning(f"❌ Ничего не найдено по стратегии '{strategy['name']}'")
+            if attempt == 1:
+                logger.info("🔄 Пробуем Bing...")
+                bing_results = await search_apiserpent_bing(strategy['query'])
+                if bing_results:
+                    all_results.extend(bing_results)
+                    break
+        
+        await asyncio.sleep(0.5)
+    
+    if not all_results:
+        logger.warning("⚠️ Ничего не найдено. Пробуем поискать по частям...")
+        parts = query.split()
+        if len(parts) > 3:
+            partial_query = ' '.join(parts[:3])
+            results = await search_apiserpent(partial_query)
             if results:
-                search_cache[norm] = {'data': results, 'time': time.time()}
-                return results
-        except Exception as e:
-            logger.warning(f"APISerpent попытка {attempt+1} неудачна: {e}")
-            if attempt == retries-1:
-                return []
-            await asyncio.sleep(2 ** attempt)
-    return []
+                all_results.extend(results)
+            else:
+                partial_query = ' '.join(parts[-3:])
+                results = await search_apiserpent(partial_query)
+                if results:
+                    all_results.extend(results)
+    
+    seen_urls = set()
+    unique_results = []
+    for r in all_results:
+        url = r.get('link')
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            unique_results.append(r)
+        elif not url:
+            title = r.get('title')
+            if title and title not in seen_urls:
+                seen_urls.add(title)
+                unique_results.append(r)
+    
+    logger.info(f"📊 Итог: {len(unique_results)} уникальных результатов")
+    return unique_results
+
+# ═══════════════════════════════════════════════════════════════════
+#  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ПАРСИНГ, ВАЛИДАЦИЯ)
+# ═══════════════════════════════════════════════════════════════════
+
+def validate_data(data: Dict, query: str, source_type: str = "search") -> Tuple[bool, float, str]:
+    score = 0
+    reasons = []
+    text = data.get('text', '') or data.get('snippet', '') or data.get('full_text', '')
+    if not text:
+        reasons.append("Нет текста")
+    else:
+        if len(text) > 100:
+            score += 25
+        else:
+            reasons.append("Слишком короткий текст")
+            score -= 5
+
+    spam_words = ['реклама', 'спонсор', 'купить', 'заказать', 'скидка', 'promo', 'advertisement']
+    spam_count = sum(1 for w in spam_words if w in text.lower())
+    if spam_count > 2:
+        reasons.append("Обнаружена реклама")
+        score -= spam_count * 3
+    else:
+        score += 10
+
+    date_patterns = [
+        r'\b\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\b',
+        r'\d{4}-\d{2}-\d{2}',
+        r'\d{2}\.\d{2}\.\d{4}',
+    ]
+    has_date = any(re.search(p, text) for p in date_patterns)
+    if has_date:
+        score += 15
+    else:
+        reasons.append("Нет даты (не критично)")
+
+    query_words = set(re.findall(r'\w+', query.lower()))
+    text_words = set(re.findall(r'\w+', text.lower()))
+    overlap = len(query_words & text_words)
+    if overlap >= 3:
+        score += 20
+    elif overlap >= 1:
+        score += 10
+    else:
+        reasons.append("Нет пересечения с запросом")
+        score -= 5
+
+    final_score = min(100, max(0, score))
+    is_valid = final_score >= 45
+    reason_str = "; ".join(reasons) if reasons else "OK"
+    logger.info(f"Валидация: оценка {final_score}, валидно: {is_valid}, причины: {reason_str}")
+    return is_valid, final_score, reason_str
 
 def is_useful_result(result: Dict, query: str) -> bool:
     title = result.get('title', '').lower()
@@ -939,7 +980,6 @@ async def fetch_pages(links: List[str], query: str) -> List[Dict]:
 # ═══════════════════════════════════════════════════════════════════
 
 async def call_planner(query: str, context: str) -> Dict:
-    """Вызов Планировщика."""
     prompt = PLANNER_PROMPT.format(query=query, context=context[:2000])
     response = await ask_deepseek(prompt, temperature=0.2, max_tokens=MAX_TOKENS_PLANNER, use_pro=False)
     try:
@@ -956,49 +996,32 @@ async def call_planner(query: str, context: str) -> Dict:
         if "subtasks" not in plan:
             plan["subtasks"] = []
         if "max_iterations" not in plan:
-            plan["max_iterations"] = 3
+            plan["max_iterations"] = 4
         return plan
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка парсинга плана: {e}. Ответ: {response[:200]}")
-        return {"action": "chat"}  # fallback
+        logger.warning(f"⚠️ Ошибка парсинга плана: {e}")
+        return {"action": "chat"}
 
 async def execute_subtask(subtask: dict, query: str) -> dict:
-    """Выполняет одну подзадачу."""
     action = subtask.get("action")
     params = subtask.get("params", {})
     
     if action == "search":
         search_query = params.get("query", query)
-        # Генерируем альтернативные запросы
-        variants = await generate_variants(search_query, count=3)
-        logger.info(f"🔍 Варианты запроса: {variants}")
+        results = await search_with_adaptation(search_query, max_attempts=4)
         
-        # Параллельный поиск по всем вариантам
-        all_results = []
-        tasks = [search_with_retry(v) for v in variants]
-        results_list = await asyncio.gather(*tasks)
-        for res_list in results_list:
-            all_results.extend(res_list)
+        if not results:
+            logger.warning("⚠️ Ничего не найдено после всех попыток")
+            return {
+                "type": "search_results",
+                "query": search_query,
+                "results": [],
+                "fetch_subtasks": [],
+                "error": "Ничего не найдено. Попробуйте переформулировать запрос."
+            }
         
-        # Удаляем дубли по URL
-        seen = set()
-        unique_results = []
-        for r in all_results:
-            link = r.get('link')
-            if link and link not in seen:
-                seen.add(link)
-                unique_results.append(r)
-            elif not link:
-                title = r.get('title')
-                if title and title not in seen:
-                    seen.add(title)
-                    unique_results.append(r)
-        
-        logger.info(f"📊 Уникальных результатов: {len(unique_results)}")
-        
-        # Добавляем подзадачи fetch для первых 3 ссылок
         fetch_subtasks = []
-        for idx, res in enumerate(unique_results[:3]):
+        for idx, res in enumerate(results[:3]):
             link = res.get("link")
             if link and link.startswith("http"):
                 fetch_subtasks.append({
@@ -1010,7 +1033,7 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
         return {
             "type": "search_results",
             "query": search_query,
-            "results": unique_results,
+            "results": results,
             "fetch_subtasks": fetch_subtasks
         }
     
@@ -1039,7 +1062,6 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
         return {"type": "unknown_action", "action": action}
 
 async def analyze_data(data: list, query: str) -> str:
-    """Упрощённый анализ данных (может быть использован для извлечения ключевых фактов)."""
     if not data:
         return "Нет данных для анализа."
     text = json.dumps(data, ensure_ascii=False)[:2000]
@@ -1047,7 +1069,6 @@ async def analyze_data(data: list, query: str) -> str:
     return await ask_deepseek(prompt, temperature=0.3, max_tokens=1000, use_pro=False)
 
 async def call_evaluator(query: str, data_summary: str) -> Dict:
-    """Вызов Оценщика."""
     prompt = EVALUATOR_PROMPT.format(query=query, data_summary=data_summary[:3000])
     response = await ask_deepseek(prompt, temperature=0.2, max_tokens=600, use_pro=False)
     try:
@@ -1064,7 +1085,6 @@ async def call_evaluator(query: str, data_summary: str) -> Dict:
         return {"is_sufficient": True, "confidence": 50, "missing_info": [], "suggested_search": []}
 
 async def call_reflector(query: str, answer: str) -> Dict:
-    """Вызов Рефлектора."""
     prompt = REFLECTOR_PROMPT.format(query=query, answer=answer)
     response = await ask_deepseek(prompt, temperature=0.3, max_tokens=1000, use_pro=False)
     try:
@@ -1079,7 +1099,6 @@ async def call_reflector(query: str, answer: str) -> Dict:
         return {"is_good": True, "feedback": "", "improved_answer": ""}
 
 async def update_progress_message(bot, chat_id, message_id, elapsed, stage, progress):
-    """Обновляет сообщение с прогрессом. bot — экземпляр telegram.Bot."""
     colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
     color = colors[elapsed % len(colors)]
     bar_length = 20
@@ -1115,20 +1134,16 @@ async def update_progress_message(bot, chat_id, message_id, elapsed, stage, prog
             parse_mode='Markdown'
         )
         return msg.message_id
+
 # ═══════════════════════════════════════════════════════════════════
 #  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ
 # ═══════════════════════════════════════════════════════════════════
 
 async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, List[Dict], float]:
-    """
-    Главный цикл агента с визуальным прогресс-баром.
-    Возвращает (ответ, источники, уверенность).
-    """
     logger.info(f"🛡️ АГЕНТ: запрос '{query[:50]}...'")
     memory = get_memory(uid)
     context = memory.get_full_context()
     
-    # === ИНИЦИАЛИЗАЦИЯ ПРОГРЕСС-БАРА ===
     progress_msg_id = None
     start_time = time.time()
     if update and update.effective_message:
@@ -1140,13 +1155,10 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             stage="Планирование",
             progress=0
         )
-    # ===================================
     
-    # 1. Планирование
     plan = await call_planner(query, context)
     logger.info(f"📋 План: {json.dumps(plan, ensure_ascii=False)[:300]}")
     
-    # Обновляем прогресс после планирования
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
         progress_msg_id = await update_progress_message(
@@ -1158,7 +1170,6 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             progress=15
         )
     
-    # Если это беседа — сразу генерируем ответ
     if plan.get("action") == "chat":
         chat_prompt = f"Пользователь спрашивает: {query}\nКонтекст: {context}\nОтветь как дружелюбный ассистент."
         answer = await ask_deepseek(chat_prompt, temperature=0.7, use_pro=False)
@@ -1176,10 +1187,9 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             )
         return answer, [], 100.0
     
-    # 2. Цикл выполнения подзадач
     all_data = []
     subtasks = plan.get("subtasks", [])
-    max_iterations = plan.get("max_iterations", 3)
+    max_iterations = plan.get("max_iterations", 4)
     iteration = 0
     
     while iteration < max_iterations:
@@ -1204,31 +1214,89 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             if result.get("fetch_subtasks"):
                 subtasks.extend(result["fetch_subtasks"])
                 logger.info(f"➕ Добавлены подзадачи fetch: {len(result['fetch_subtasks'])} шт.")
-                if progress_msg_id:
-                    elapsed = int(time.time() - start_time)
-                    progress_msg_id = await update_progress_message(
-                        bot=update.get_bot(),
-                        chat_id=update.effective_chat.id,
-                        message_id=progress_msg_id,
-                        elapsed=elapsed,
-                        stage="Загрузка страниц...",
-                        progress=min(progress_msg_id + 10, 70) if isinstance(progress_msg_id, int) else 50
-                    )
         
-        data_summary = ""
+        # Собираем информацию для проверки
+        collected_info = ""
+        sources_count = 0
+        has_fresh_data = False
+        has_specific_data = False
+        errors = []
+        
         for item in all_data:
             if item.get("type") == "search_results":
                 results = item.get("results", [])
-                data_summary += f"Поиск '{item.get('query')}': найдено {len(results)} результатов. "
+                sources_count += len(results)
+                error = item.get("error", "")
+                if error:
+                    errors.append(error)
+                for res in results[:5]:
+                    snippet = res.get("snippet", "")
+                    if snippet:
+                        collected_info += f"• {snippet[:200]}\n"
+                        if len(snippet) > 50:
+                            has_specific_data = True
             elif item.get("type") == "page_data":
                 page = item.get("data", {})
-                full_text = page.get("full_text", "")
-                if full_text:
-                    data_summary += f"Страница {item.get('url')}: {full_text[:3000]}... "
+                text = page.get("full_text", "")
+                if text and len(text) > 200:
+                    collected_info += f"• {text[:300]}\n"
+                    has_fresh_data = True
+                    has_specific_data = True
             elif item.get("type") == "calculation":
-                data_summary += f"Вычисление: {item.get('expression')} = {item.get('result')}. "
+                collected_info += f"• Вычисление: {item.get('expression')} = {item.get('result')}\n"
+                has_specific_data = True
         
-        evaluation = await call_evaluator(query, data_summary[:3000])
+        # Если данных нет — пробуем переформулировать
+        if not collected_info or len(collected_info) < 200:
+            if errors:
+                logger.warning(f"⚠️ Ошибки при поиске: {errors}")
+            
+            if iteration < max_iterations:
+                logger.info("🔄 Переформулируем запрос для повторного поиска...")
+                reformulated = await generate_synonyms(query)
+                if reformulated and reformulated != query:
+                    logger.info(f"🔄 Новый запрос: '{reformulated}'")
+                    subtasks.append({
+                        "id": len(subtasks) + 1,
+                        "action": "search",
+                        "params": {"query": reformulated}
+                    })
+                    continue
+        
+        # Проверяем качество данных
+        data_quality = {
+            "has_info": len(collected_info) > 200,
+            "sources_count": sources_count,
+            "has_fresh": has_fresh_data,
+            "has_specific": has_specific_data,
+            "contains_numbers": bool(re.search(r'\d+', collected_info)),
+            "contains_dates": bool(re.search(r'\d{4}-\d{2}-\d{2}|\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}', collected_info, re.I))
+        }
+        
+        logger.info(f"📊 Качество данных: {json.dumps(data_quality, ensure_ascii=False)}")
+        
+        # Если данных мало — пробуем другой подход
+        if sources_count < 3 and not data_quality["has_specific"] and iteration < max_iterations:
+            logger.warning("⚠️ Данных мало. Пробуем другой подход...")
+            detailed_query = await generate_detailed_query(query)
+            if detailed_query and detailed_query != query:
+                subtasks.append({
+                    "id": len(subtasks) + 1,
+                    "action": "search",
+                    "params": {"query": detailed_query}
+                })
+                continue
+            else:
+                eng_query = await translate_to_english(query)
+                if eng_query != query:
+                    subtasks.append({
+                        "id": len(subtasks) + 1,
+                        "action": "search",
+                        "params": {"query": eng_query}
+                    })
+                    continue
+        
+        evaluation = await call_evaluator(query, collected_info[:3000])
         logger.info(f"📊 Оценка: sufficient={evaluation.get('is_sufficient')}, confidence={evaluation.get('confidence')}")
         
         if evaluation.get("is_sufficient", False) or evaluation.get("confidence", 0) >= TARGET_CONFIDENCE:
@@ -1240,10 +1308,60 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                 for sq in suggested[:2]:
                     subtasks.append({"id": len(subtasks)+1, "action": "search", "params": {"query": sq}})
                 logger.info(f"➕ Добавлены новые поисковые запросы: {suggested[:2]}")
-            else:
-                subtasks.append({"id": len(subtasks)+1, "action": "search", "params": {"query": query + " подробно"}})
     
-    # 3. Генерация финального ответа
+    # Если после всех попыток данных нет — честный ответ
+    collected_info_final = ""
+    sources_count_final = 0
+    for item in all_data:
+        if item.get("type") == "search_results":
+            results = item.get("results", [])
+            sources_count_final += len(results)
+            for res in results[:5]:
+                snippet = res.get("snippet", "")
+                if snippet:
+                    collected_info_final += f"• {snippet[:200]}\n"
+        elif item.get("type") == "page_data":
+            page = item.get("data", {})
+            text = page.get("full_text", "")
+            if text:
+                collected_info_final += f"• {text[:300]}\n"
+    
+    if not collected_info_final or len(collected_info_final) < 100:
+        answer = f"""🔍 **Я перепробовал несколько вариантов поиска**, но не нашел достаточно информации по вашему запросу.
+
+📋 **Что я пробовал:**
+• Оригинальный запрос: {query}
+• Синонимы и перефразировки
+• Расширенные формулировки
+• Поиск на английском языке
+• Разные поисковые движки
+
+💡 **Что можно сделать:**
+• Уточните запрос (добавьте дату, место, конкретные детали)
+• Проверьте правильность написания
+• Спросите более общую тему
+
+🤔 **Возможно, вы имели в виду:**
+• Переформулируйте вопрос более конкретно
+• Укажите временной период
+• Добавьте контекст
+
+Я никогда не выдумываю факты — честность важнее галлюцинаций!"""
+        
+        memory.add_message("user", query)
+        memory.add_message("assistant", answer)
+        if progress_msg_id:
+            elapsed = int(time.time() - start_time)
+            await update_progress_message(
+                bot=update.get_bot(),
+                chat_id=update.effective_chat.id,
+                message_id=progress_msg_id,
+                elapsed=elapsed,
+                stage="Готово ✅",
+                progress=100
+            )
+        return answer, [], 0
+    
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
         progress_msg_id = await update_progress_message(
@@ -1272,7 +1390,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             sources_text += f"🧮 {item.get('expression')} = {item.get('result')}\n"
     
     if not sources_text:
-        sources_text = "Не удалось собрать данные."
+        sources_text = "Данные собраны, но текстовое содержимое отсутствует."
     
     answer_prompt = f"""
 Вот данные, собранные по вашему запросу.
@@ -1293,26 +1411,21 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
 
 Если данных недостаточно — скажи честно.
 Укажи дату ответа (сегодня {now().strftime('%d.%m.%Y')}).
+Ответ должен быть глубоким, с анализом и выводами.
 """
     
     answer = await ask_deepseek(answer_prompt, temperature=0.2, use_pro=True)
     
-    # 4. Рефлексия
     reflect = await call_reflector(query, answer)
     if not reflect.get("is_good", True):
         logger.info(f"🔄 Рефлексия: требуется улучшение. Причина: {reflect.get('feedback')}")
         improved = reflect.get("improved_answer", "")
         if improved:
             answer = improved
-        else:
-            fix_prompt = f"Предыдущий ответ: {answer}\nЗамечания: {reflect.get('feedback')}\nИсправь ответ, устрани замечания."
-            answer = await ask_deepseek(fix_prompt, temperature=0.2, use_pro=True)
     
-    # 5. Сохраняем в память
     memory.add_message("user", query)
     memory.add_message("assistant", answer)
     
-    # 6. Формируем список источников
     sources_for_button = []
     for item in all_data:
         if item.get("type") == "search_results":
@@ -1342,10 +1455,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     if all_data:
         conf = 60 + len(sources_for_button) * 3
         avg_confidence = min(100, conf)
-    else:
-        avg_confidence = 0
     
-    # Финальное обновление прогресса
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
         await update_progress_message(
@@ -1360,7 +1470,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     return answer, sources_for_button, avg_confidence
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОБРАБОТЧИКИ И КОМАНДЫ (без изменений, но с вызовом agent_loop)
+#  ОБРАБОТЧИКИ И КОМАНДЫ
 # ═══════════════════════════════════════════════════════════════════
 
 def format_sources(sources: List[Dict]) -> str:
@@ -1388,48 +1498,74 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ALLOW_ALL and user_id not in ALLOWED_USERS:
         await update.effective_message.reply_text("⛔ Доступ запрещён.")
         return
+    
     user_message = update.effective_message.text
     if not user_message:
         return
+    
     memory = get_memory(user_id)
     
     if context.user_data.get('mode') == 'chat':
-        full_context = memory.get_full_context()
-        chat_prompt = f"Пользователь спрашивает: {user_message}\nКонтекст: {full_context}\nОтветь как дружелюбный ассистент."
+        history = memory.short_term[-6:] if memory.short_term else []
+        context_text = ""
+        for msg in history:
+            role = "Пользователь" if msg.get('role') == 'user' else "Ассистент"
+            context_text += f"{role}: {msg.get('content', '')}\n"
+        
+        needs_search = any(word in user_message.lower() for word in 
+            ["погод", "новост", "курс", "сегодня", "сейчас", "последн", "завтра", "вчера", "данные", "информация"])
+        
+        if needs_search:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌍 Да, искать в интернете", callback_data="mode_search")],
+                [InlineKeyboardButton("💬 Нет, ответь из памяти", callback_data="mode_chat")]
+            ])
+            await update.effective_message.reply_text(
+                "🔍 Для точного ответа нужны свежие данные.\n"
+                "Хочешь, я поищу в интернете?",
+                reply_markup=keyboard
+            )
+        
+        chat_prompt = f"""
+Ты — Джарвис. Вот контекст беседы (последние 6 сообщений):
+{context_text}
+
+Пользователь спрашивает: {user_message}
+
+Ответь как собеседник. Если вопрос требует актуальных данных — скажи честно.
+Будь естественным, но не выдумывай факты.
+"""
         answer = await ask_deepseek(chat_prompt, temperature=0.7, use_pro=False)
+        
         memory.add_message('user', user_message)
         memory.add_message('assistant', answer)
         await update.effective_message.reply_text(f"💬 {answer}", reply_markup=EXIT_CHAT_BUTTON)
         return
     
-    if context.user_data.get('mode') == 'clarify':
-        last_query = context.user_data.get('last_query', '')
-        if not last_query:
-            context.user_data['mode'] = 'search'
-            await update.effective_message.reply_text("⚠️ Нет активного запроса для уточнения.", reply_markup=ACTION_BUTTONS)
-            return
-        context.user_data['mode'] = 'search'
-        clarification = user_message
-        combined_query = f"{last_query} (уточнение: {clarification})"
-        await update.effective_message.reply_text(f"📝 **Уточняю запрос...**\n\nИщу с учётом: *{clarification[:100]}*", parse_mode='Markdown')
-        full_context = memory.get_full_context()
-        answer, sources, confidence = await agent_loop(combined_query, user_id, update)
-        memory.add_message('user', f"Уточнение: {clarification}")
-        memory.add_message('assistant', answer)
-        context.user_data['last_query'] = combined_query
-        context.user_data['last_answer'] = answer
-        context.user_data['last_sources'] = sources
-        context.user_data['last_formatted_answer'] = answer
-        await update.effective_message.reply_text(answer, reply_markup=ACTION_WITH_SOURCES_BUTTONS)
-        return
-    
+    # Режим поиска (по умолчанию)
     context.user_data['pending_text'] = user_message
     context.user_data['awaiting_input'] = True
+    
     await update.effective_message.reply_text(
-        f"📝 **Запрос принят:**\n\n_{user_message[:300]}_\n\nВыберите режим работы:",
-        reply_markup=ACTION_BUTTONS,
+        f"📝 **Запрос принят:**\n\n_{user_message[:300]}_\n\n"
+        "🔄 Начинаю агентный поиск...",
         parse_mode='Markdown'
     )
+    
+    answer, sources, confidence = await agent_loop(user_message, user_id, update)
+    
+    memory.add_message('user', user_message)
+    memory.add_message('assistant', answer)
+    context.user_data['last_query'] = user_message
+    context.user_data['last_answer'] = answer
+    context.user_data['last_sources'] = sources
+    context.user_data['last_formatted_answer'] = answer
+    context.user_data['pending_text'] = ''
+    
+    await update.effective_message.reply_text(answer, reply_markup=SHOW_SOURCES_BUTTON)
+    
+    if confidence > 0:
+        await update.effective_message.reply_text(f"🎯 Уверенность: {int(confidence)}%")
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1438,69 +1574,79 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     memory = get_memory(user_id)
     
-    if action == "action_search":
-        pending_text = context.user_data.get('pending_text', '')
-        if not pending_text:
-            await query.edit_message_text("⚠️ Сначала напишите вопрос в чат.", reply_markup=ACTION_BUTTONS)
-            return
+    if action == "mode_search":
+        context.user_data['mode'] = 'search'
         context.user_data['awaiting_input'] = False
-        full_context = memory.get_full_context()
-        answer, sources, confidence = await agent_loop(pending_text, user_id, update)
-        memory.add_message('user', pending_text)
-        memory.add_message('assistant', answer)
-        context.user_data['last_query'] = pending_text
-        context.user_data['last_answer'] = answer
-        context.user_data['last_sources'] = sources
-        context.user_data['last_formatted_answer'] = answer
-        context.user_data['pending_text'] = ''
-        await update.effective_message.reply_text(answer, reply_markup=ACTION_WITH_SOURCES_BUTTONS)
-        if confidence > 0:
-            await update.effective_message.reply_text(f"🎯 Уверенность: {int(confidence)}%")
-    
-    elif action == "action_clarify":
-        last_query = context.user_data.get('last_query', '')
-        if not last_query:
-            await query.edit_message_text("⚠️ Нет активного запроса для уточнения.", reply_markup=ACTION_BUTTONS)
-            return
-        context.user_data['mode'] = 'clarify'
-        context.user_data['awaiting_input'] = True
-        context.user_data['pending_text'] = ''
         await query.edit_message_text(
-            f"📝 **Уточните запрос**\n\nПредыдущий запрос: *{last_query[:200]}*\n\nНапишите ваше уточнение:",
-            parse_mode='Markdown'
+            "🌍 **Режим поиска активирован**\n\n"
+            "Теперь я буду искать информацию в интернете.",
+            reply_markup=MAIN_MENU
         )
+        return
     
-    elif action == "action_chat":
-        pending_text = context.user_data.get('pending_text', '')
-        if not pending_text:
-            await query.edit_message_text("⚠️ Сначала напишите сообщение в чат.", reply_markup=ACTION_BUTTONS)
-            return
+    elif action == "mode_chat":
         context.user_data['mode'] = 'chat'
         context.user_data['awaiting_input'] = False
-        context.user_data['pending_text'] = ''
-        full_context = memory.get_full_context()
-        chat_prompt = f"Пользователь хочет поговорить: {pending_text}\nКонтекст: {full_context}\nОтветь как дружелюбный собеседник."
-        answer = await ask_deepseek(chat_prompt, temperature=0.7, use_pro=False)
-        memory.add_message('user', pending_text)
-        memory.add_message('assistant', answer)
-        await update.effective_message.reply_text(f"💬 {answer}", reply_markup=EXIT_CHAT_BUTTON)
+        await query.edit_message_text(
+            "💬 **Режим беседы активирован**\n\n"
+            "Я помню последние 6 сообщений.",
+            reply_markup=MAIN_MENU
+        )
+        return
+    
+    elif action == "mode_clear":
+        if user_id in _memory_cache:
+            del _memory_cache[user_id]
+        for path in [memory_path(user_id), profile_path(user_id), episodic_path(user_id),
+                     learning_path(user_id), counter_path(user_id), graph_path(user_id)]:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except:
+                pass
+        context.user_data.clear()
+        await query.edit_message_text(
+            "🧹 **Память очищена!**",
+            reply_markup=MAIN_MENU
+        )
+        return
+    
+    elif action == "mode_stats":
+        health = memory.memory_health_check()
+        await query.edit_message_text(
+            f"📊 **Статистика памяти**\n\n"
+            f"💬 Сообщений в памяти: {health['short_term']}\n"
+            f"👤 Полей в профиле: {health['profile']}\n"
+            f"⭐ Эпизодов: {health['episodic']}\n"
+            f"🧠 Фактов: {health['graph_facts']}\n"
+            f"📝 Всего сообщений: {health['total_messages']}",
+            reply_markup=MAIN_MENU
+        )
+        return
     
     elif action == "action_exit_chat":
         context.user_data['mode'] = 'search'
         context.user_data['awaiting_input'] = False
-        await query.edit_message_text("🔍 **Выход из режима беседы**\n\nТеперь я снова ищу информацию в интернете.", reply_markup=ACTION_BUTTONS)
+        await query.edit_message_text(
+            "🔍 **Выход из режима беседы**\n\n"
+            "Теперь я снова ищу информацию в интернете.",
+            reply_markup=MAIN_MENU
+        )
+        return
     
     elif action == "show_sources":
         sources = context.user_data.get('last_sources', [])
         sources_formatted = format_sources(sources)
         await query.edit_message_text(sources_formatted, reply_markup=HIDE_SOURCES_BUTTON, parse_mode='Markdown')
+        return
     
     elif action == "hide_sources":
         last_answer = context.user_data.get('last_formatted_answer', '')
         if last_answer:
-            await query.edit_message_text(last_answer, reply_markup=ACTION_WITH_SOURCES_BUTTONS)
+            await query.edit_message_text(last_answer, reply_markup=SHOW_SOURCES_BUTTON)
         else:
-            await query.edit_message_text("⚠️ Основной ответ не найден.", reply_markup=ACTION_BUTTONS)
+            await query.edit_message_text("⚠️ Основной ответ не найден.", reply_markup=MAIN_MENU)
+        return
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1510,16 +1656,42 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data['mode'] = 'search'
     await update.effective_message.reply_text(
-        "👋 **Привет! Я Джарвис — агентный ИИ-ассистент.**\n\n"
-        "🔍 **Что я умею:**\n"
-        "• Самостоятельно планировать поиск\n"
-        "• Анализировать данные из нескольких источников\n"
-        "• Проверять полноту информации и при необходимости уточнять\n"
-        "• Чётко разделять 🌐 интернет, 🧠 знания, 📌 память\n"
-        "• Никогда не врать\n\n"
+        "👋 **Привет! Я Джарвис — твой ИИ-ассистент.**\n\n"
+        "🔍 **Режимы работы:**\n"
+        "• `/search` — поиск в интернете с полным анализом\n"
+        "• `/chat` — беседа с памятью на 6 сообщений\n"
+        "• `/menu` — открыть меню\n"
+        "• `/clear` — очистить память\n\n"
         "**Просто напиши вопрос, и я сам решу, что делать.** 🤖",
-        reply_markup=ACTION_BUTTONS,
+        reply_markup=MAIN_MENU,
         parse_mode='Markdown'
+    )
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "📋 **Главное меню Джарвиса**\n\n"
+        "Выберите режим работы:",
+        reply_markup=MAIN_MENU,
+        parse_mode='Markdown'
+    )
+
+async def cmd_set_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['mode'] = 'search'
+    context.user_data['awaiting_input'] = False
+    await update.effective_message.reply_text(
+        "🌍 **Режим поиска активирован**\n\n"
+        "Теперь я буду искать информацию в интернете и давать точные ответы.",
+        reply_markup=MAIN_MENU
+    )
+
+async def cmd_set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['mode'] = 'chat'
+    context.user_data['awaiting_input'] = False
+    await update.effective_message.reply_text(
+        "💬 **Режим беседы активирован**\n\n"
+        "Я помню последние 6 сообщений и отвечаю как собеседник.\n"
+        "Если спросишь про погоду или новости — я предложу переключиться на поиск.",
+        reply_markup=MAIN_MENU
     )
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1528,12 +1700,12 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     health = memory.memory_health_check()
     await update.effective_message.reply_text(
         f"📊 **Статистика памяти**\n\n"
-        f"💬 Сообщений в краткосрочной памяти: {health['short_term']}\n"
+        f"💬 Сообщений в памяти: {health['short_term']}\n"
         f"👤 Полей в профиле: {health['profile']}\n"
-        f"⭐ Фактов в эпизодической памяти: {health['episodic']}\n"
-        f"🧠 Фактов в графе знаний: {health['graph_facts']}\n"
+        f"⭐ Эпизодов: {health['episodic']}\n"
+        f"🧠 Фактов: {health['graph_facts']}\n"
         f"📝 Всего сообщений: {health['total_messages']}",
-        reply_markup=ACTION_BUTTONS
+        reply_markup=MAIN_MENU
     )
 
 async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1548,13 +1720,13 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     context.user_data.clear()
-    await update.effective_message.reply_text("🧹 **Память очищена!** Начинаем с чистого листа.", reply_markup=ACTION_BUTTONS)
+    await update.effective_message.reply_text("🧹 **Память очищена!** Начинаем с чистого листа.", reply_markup=MAIN_MENU)
 
 async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     reminders = get_reminders(user_id)
     if not reminders:
-        await update.effective_message.reply_text("📭 **Нет активных напоминаний**", reply_markup=ACTION_BUTTONS)
+        await update.effective_message.reply_text("📭 **Нет активных напоминаний**", reply_markup=MAIN_MENU)
         return
     text = "📋 **Ваши напоминания:**\n\n"
     for idx, (rid, rtext, rdate) in enumerate(reminders, 1):
@@ -1562,29 +1734,25 @@ async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if rdate:
             text += f"   📅 {rdate}\n"
         text += "\n"
-    await update.effective_message.reply_text(text, reply_markup=ACTION_BUTTONS)
+    await update.effective_message.reply_text(text, reply_markup=MAIN_MENU)
 
 # ═══════════════════════════════════════════════════════════════════
 #  ЗАПУСК
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v14.0 — АГЕНТНАЯ АРХИТЕКТУРА")
+    logger.info("🚀 ЗАПУСК BROWAIX v15.0 — АДАПТИВНЫЙ ПОИСК")
     logger.info("=" * 60)
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
     logger.info(f"   DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
-    logger.info(f"   Weather API: {'✅' if WEATHER_API_KEY else '❌ (опционально)'}")
-    logger.info(f"   Currency API: {'✅' if CURRENCY_API_KEY else '❌ (опционально)'}")
-    logger.info(f"   Playwright REST: {'✅' if BROWSER_WS_ENDPOINT else '❌ (опционально)'}")
     logger.info("=" * 60)
     logger.info("⚡ ФУНКЦИОНАЛ:")
-    logger.info(f"   • Агентский цикл (Планировщик + Исполнитель + Оценщик + Рефлектор): ✅")
-    logger.info(f"   • Память 5 уровней: ✅")
-    logger.info(f"   • Гибкая валидация: ✅")
-    logger.info(f"   • Честные ответы без блокировок: ✅")
-    logger.info(f"   • Без стриминга: ✅")
+    logger.info(f"   • Адаптивный поиск с 5+ стратегиями: ✅")
+    logger.info(f"   • Жесткая проверка данных: ✅")
+    logger.info(f"   • Честные ответы без галлюцинаций: ✅")
+    logger.info(f"   • Память 500 сообщений: ✅")
     logger.info("=" * 60)
     
     if not TELEGRAM_TOKEN:
@@ -1599,8 +1767,11 @@ def main():
     logger.info("✅ Запускаем бота...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("search", cmd_set_search))
+    app.add_handler(CommandHandler("chat", cmd_set_chat))
     app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("forget", cmd_forget))
+    app.add_handler(CommandHandler("clear", cmd_forget))
     app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -1611,5 +1782,5 @@ if __name__ == "__main__":
     main()
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНЕЦ ПОЛНОГО КОДА v14.0
-#  ═══════════════════════════════════════════════════════════════════
+#  КОНЕЦ ПОЛНОГО КОДА v15.0
+# ═══════════════════════════════════════════════════════════════════
