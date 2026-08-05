@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v14.0)
+#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v14.1)
 #  ПОЛНАЯ ВЕРСИЯ: ПЛАНИРОВЩИК + ИСПОЛНИТЕЛЬ + ОЦЕНЩИК + РЕФЛЕКТОР
-#  НИЧЕГО НЕ ВЫРЕЗАНО — ВСЁ ВКЛЮЧЕНО
+#  ФЕТЧ СТРАНИЦ — ВСЕГДА, ПРОГРЕСС-БАР — АКТИВЕН
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -176,7 +176,7 @@ MAX_TOKENS_PLANNER = 600
 MAX_ITERATIONS = 3
 TARGET_CONFIDENCE = 90
 EARLY_EXIT_CONFIDENCE = 80
-MAX_PAGES_PER_ITERATION = 5
+MAX_PAGES_PER_ITERATION = 5   # Увеличено с 3 до 5 для более полного сбора
 MAX_VARIANTS = 3
 BROWSER_WS_ENDPOINT = os.getenv("BROWSER_WS_ENDPOINT", "")
 
@@ -996,9 +996,9 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
         
         logger.info(f"📊 Уникальных результатов: {len(unique_results)}")
         
-        # Добавляем подзадачи fetch для первых 3 ссылок
+        # Добавляем подзадачи fetch для первых MAX_PAGES_PER_ITERATION ссылок
         fetch_subtasks = []
-        for idx, res in enumerate(unique_results[:3]):
+        for idx, res in enumerate(unique_results[:MAX_PAGES_PER_ITERATION]):
             link = res.get("link")
             if link and link.startswith("http"):
                 fetch_subtasks.append({
@@ -1106,19 +1106,18 @@ async def update_progress_message(context, chat_id, message_id, elapsed, stage, 
         return message_id
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ
+#  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ (С ПРИНУДИТЕЛЬНЫМ FETCH И ПРОГРЕССОМ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, List[Dict], float]:
     """
-    Главный цикл агента с визуальным прогресс-баром.
-    Возвращает (ответ, источники, уверенность).
+    Главный цикл агента с визуальным прогресс-баром и принудительной загрузкой страниц.
     """
     logger.info(f"🛡️ АГЕНТ: запрос '{query[:50]}...'")
     memory = get_memory(uid)
     context = memory.get_full_context()
     
-    # === ИНИЦИАЛИЗАЦИЯ ПРОГРЕСС-БАРА ===
+    # --- ИНИЦИАЛИЗАЦИЯ ПРОГРЕСС-БАРА ---
     progress_msg_id = None
     start_time = time.time()
     if update and update.effective_message:
@@ -1130,13 +1129,12 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             stage="Планирование",
             progress=0
         )
-    # ===================================
+    # --- КОНЕЦ ИНИЦИАЛИЗАЦИИ ---
     
     # 1. Планирование
     plan = await call_planner(query, context)
     logger.info(f"📋 План: {json.dumps(plan, ensure_ascii=False)[:300]}")
     
-    # Обновляем прогресс после планирования
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
         progress_msg_id = await update_progress_message(
@@ -1148,7 +1146,6 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             progress=15
         )
     
-    # Если это беседа — сразу генерируем ответ
     if plan.get("action") == "chat":
         chat_prompt = f"Пользователь спрашивает: {query}\nКонтекст: {context}\nОтветь как дружелюбный ассистент."
         answer = await ask_deepseek(chat_prompt, temperature=0.7, use_pro=False)
@@ -1188,23 +1185,30 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                 progress=min(progress, 70)
             )
         
+        # Выполняем подзадачи (здесь добавляются fetch_subtasks)
         for subtask in subtasks:
             result = await execute_subtask(subtask, query)
             all_data.append(result)
             if result.get("fetch_subtasks"):
-                subtasks.extend(result["fetch_subtasks"])
                 logger.info(f"➕ Добавлены подзадачи fetch: {len(result['fetch_subtasks'])} шт.")
-                if progress_msg_id:
-                    elapsed = int(time.time() - start_time)
-                    progress_msg_id = await update_progress_message(
-                        context=update.effective_message.get_bot(),
-                        chat_id=update.effective_chat.id,
-                        message_id=progress_msg_id,
-                        elapsed=elapsed,
-                        stage="Загрузка страниц...",
-                        progress=min(progress_msg_id + 10, 70) if isinstance(progress_msg_id, int) else 50
-                    )
+                # НЕМЕДЛЕННО ВЫПОЛНЯЕМ FETCH (чтобы страницы загрузились до оценки)
+                for fetch_sub in result["fetch_subtasks"]:
+                    fetch_result = await execute_subtask(fetch_sub, query)
+                    all_data.append(fetch_result)
+                    logger.info(f"📄 Загружена страница: {fetch_sub['params']['url'][:60]}...")
+                    if progress_msg_id:
+                        elapsed = int(time.time() - start_time)
+                        # обновляем прогресс после каждой загрузки
+                        progress_msg_id = await update_progress_message(
+                            context=update.effective_message.get_bot(),
+                            chat_id=update.effective_chat.id,
+                            message_id=progress_msg_id,
+                            elapsed=elapsed,
+                            stage="Загрузка страниц...",
+                            progress=min(progress + 5, 70) if progress_msg_id else 50
+                        )
         
+        # Сбор данных для оценщика (теперь с полными текстами)
         data_summary = ""
         for item in all_data:
             if item.get("type") == "search_results":
@@ -1218,6 +1222,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             elif item.get("type") == "calculation":
                 data_summary += f"Вычисление: {item.get('expression')} = {item.get('result')}. "
         
+        # Оценка достаточности данных
         evaluation = await call_evaluator(query, data_summary[:3000])
         logger.info(f"📊 Оценка: sufficient={evaluation.get('is_sufficient')}, confidence={evaluation.get('confidence')}")
         
@@ -1350,7 +1355,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     return answer, sources_for_button, avg_confidence
 
 # ═══════════════════════════════════════════════════════════════════
-#  ОБРАБОТЧИКИ И КОМАНДЫ (без изменений, но с вызовом agent_loop)
+#  ОБРАБОТЧИКИ И КОМАНДЫ
 # ═══════════════════════════════════════════════════════════════════
 
 def format_sources(sources: List[Dict]) -> str:
@@ -1560,7 +1565,7 @@ async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v14.0 — АГЕНТНАЯ АРХИТЕКТУРА")
+    logger.info("🚀 ЗАПУСК BROWAIX v14.1 — АГЕНТНАЯ АРХИТЕКТУРА + FETCH ВСЕГДА")
     logger.info("=" * 60)
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
@@ -1576,6 +1581,8 @@ def main():
     logger.info(f"   • Гибкая валидация: ✅")
     logger.info(f"   • Честные ответы без блокировок: ✅")
     logger.info(f"   • Без стриминга: ✅")
+    logger.info(f"   • Принудительная загрузка страниц (до 5 за итерацию): ✅")
+    logger.info(f"   • Прогресс-бар с этапами и временем: ✅")
     logger.info("=" * 60)
     
     if not TELEGRAM_TOKEN:
@@ -1602,5 +1609,5 @@ if __name__ == "__main__":
     main()
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНЕЦ ПОЛНОГО КОДА v14.0
+#  КОНЕЦ ПОЛНОГО КОДА v14.1
 #  ═══════════════════════════════════════════════════════════════════
