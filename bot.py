@@ -1236,7 +1236,8 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         logger.info(f"📊 Оценка: sufficient={evaluation.get('is_sufficient')}, confidence={evaluation.get('confidence')}")
         
         # Если данных достаточно — выходим
-        if evaluation.get("is_sufficient", False) or evaluation.get("confidence", 0) >= TARGET_CONFIDENCE:
+               # Ранний выход только если уверенность очень высокая И есть загруженные страницы
+        if (evaluation.get("is_sufficient", False) or evaluation.get("confidence", 0) >= 90) and any(item.get("type") == "page_data" for item in all_data):
             break
         
         # === УНИВЕРСАЛЬНОЕ ИЗВЛЕЧЕНИЕ ФАКТОВ ===
@@ -1290,6 +1291,32 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             else:
                 subtasks.append({"id": len(subtasks)+1, "action": "search", "params": {"query": query + " подробно"}})
     
+    # === ПРИНУДИТЕЛЬНОЕ ИЗВЛЕЧЕНИЕ ФАКТОВ ИЗ ЗАГРУЖЕННЫХ СТРАНИЦ ===
+    # Даже если оценщик сказал «недостаточно», но страницы есть — пробуем вытащить факты
+    page_texts = []
+    for item in all_data:
+        if item.get("type") == "page_data":
+            text = item.get("data", {}).get("full_text", "")
+            if text:
+                page_texts.append(text[:8000])  # увеличил до 8000 для полноты
+    if page_texts and not any(item.get("type") == "extracted_facts" for item in all_data):
+        logger.info("🧠 Принудительно извлекаю факты из загруженных страниц...")
+        combined = "\n\n---\n\n".join(page_texts[:3])
+        extract_prompt = f"""
+Извлеки из текста все факты, относящиеся к запросу: {query}.
+Текст: {combined}
+Ответь списком фактов. Если фактов нет, напиши "Фактов не найдено".
+"""
+        extracted = await ask_deepseek(extract_prompt, temperature=0.1, max_tokens=2000, use_pro=False)
+        if extracted and "Фактов не найдено" not in extracted:
+            all_data.append({
+                "type": "extracted_facts",
+                "data": {"facts": extracted},
+                "source": "deepseek_extraction"
+            })
+            logger.info(f"✅ Извлечено фактов: {len(extracted.splitlines())}")
+    # ===============================================================
+
     # 3. Генерация финального ответа
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
