@@ -956,7 +956,22 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
     if action == "search":
         search_query = params.get("query", query)
         results = await search_with_retry(search_query)
-        return {"type": "search_results", "query": search_query, "results": results}
+        # Добавляем подзадачи fetch для первых 3 ссылок
+        fetch_subtasks = []
+        for idx, res in enumerate(results[:3]):
+            link = res.get("link")
+            if link and link.startswith("http"):
+                fetch_subtasks.append({
+                    "id": subtask.get("id", 0) + idx + 100,
+                    "action": "fetch",
+                    "params": {"url": link}
+                })
+        return {
+            "type": "search_results",
+            "query": search_query,
+            "results": results,
+            "fetch_subtasks": fetch_subtasks
+        }
     
     elif action == "fetch":
         url = params.get("url")
@@ -966,7 +981,6 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
         return {"type": "page_data", "url": url, "data": page_data}
     
     elif action == "analyze":
-        # Анализ уже собранных данных (можно пропустить или использовать для извлечения фактов)
         data = params.get("data", [])
         analysis = await analyze_data(data, query)
         return {"type": "analysis", "result": analysis}
@@ -982,7 +996,6 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
     
     else:
         return {"type": "unknown_action", "action": action}
-
 async def analyze_data(data: list, query: str) -> str:
     """Упрощённый анализ данных (может быть использован для извлечения ключевых фактов)."""
     if not data:
@@ -1062,6 +1075,10 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         for subtask in subtasks:
             result = await execute_subtask(subtask, query)
             all_data.append(result)
+            # Если поиск вернул новые подзадачи (fetch) — добавляем их
+            if result.get("fetch_subtasks"):
+                subtasks.extend(result["fetch_subtasks"])
+                logger.info(f"➕ Добавлены подзадачи fetch: {len(result['fetch_subtasks'])} шт.")
         
         # Собираем краткую выжимку для оценщика
         data_summary = ""
@@ -1073,7 +1090,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                 page = item.get("data", {})
                 full_text = page.get("full_text", "")
                 if full_text:
-                    data_summary += f"Страница {item.get('url')}: {full_text[:500]}... "
+                    data_summary += f"Страница {item.get('url')}: {full_text[:3000]}... "
             elif item.get("type") == "calculation":
                 data_summary += f"Вычисление: {item.get('expression')} = {item.get('result')}. "
         
