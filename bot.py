@@ -74,6 +74,7 @@ try:
 except ImportError:
     BEAUTIFULSOUP_AVAILABLE = False
 
+# Playwright больше не нужен для CDP, но оставляем импорт для совместимости
 try:
     from playwright.async_api import async_playwright
     PLAYWRIGHT_AVAILABLE = True
@@ -87,7 +88,7 @@ load_dotenv()
 # ═══════════════════════════════════════════════════════════════════
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
@@ -121,18 +122,15 @@ MAX_TOKENS_VARIANTS = 300
 MAX_ITERATIONS = 3
 TARGET_CONFIDENCE = 95
 EARLY_EXIT_CONFIDENCE = 85
-MAX_PAGES_PER_ITERATION = 2          # ⭐ УМЕНЬШЕНО С 5 ДО 2
+MAX_PAGES_PER_ITERATION = 2
 MAX_VARIANTS = 4
-BROWSER_TIMEOUT = 10                 # ⭐ НОВАЯ КОНСТАНТА ДЛЯ BROWSERLESS
+BROWSER_TIMEOUT = 10
 
-# Browserless настройки
-BROWSER_WS_ENDPOINT = os.getenv("BROWSER_WS_ENDPOINT_PRIVATE", "") or os.getenv("BROWSER_WS_ENDPOINT", "")
-BROWSER_TOKEN = os.getenv("BROWSER_TOKEN", "")
-if not BROWSER_WS_ENDPOINT:
-    BROWSER_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
+# ⭐ УНИВЕРСАЛЬНЫЙ REST-ЭНДПОИНТ (Playwright Node.js сервис)
+BROWSER_WS_ENDPOINT = os.getenv("BROWSER_WS_ENDPOINT", "")
 
-# ⭐ СЕМАФОР ДЛЯ ОГРАНИЧЕНИЯ ПАРАЛЛЕЛЬНЫХ СЕССИЙ BROWSERLESS (НЕ БОЛЕЕ 2)
-_browserless_semaphore = asyncio.Semaphore(2)
+# Семафор для ограничения параллельных запросов к браузеру
+_browser_semaphore = asyncio.Semaphore(2)
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -532,7 +530,7 @@ async def send_progress_updates(chat_id, context, start_time):
         stages = [
             {"emoji": "🧠", "name": "Анализ запроса (DeepSeek Flash)", "duration": 6},
             {"emoji": "🔍", "name": "Поиск в интернете (APISerpent)", "duration": 10},
-            {"emoji": "📄", "name": "Загрузка страниц (Browserless)", "duration": 12},
+            {"emoji": "📄", "name": "Загрузка страниц (Playwright REST)", "duration": 12},
             {"emoji": "🤔", "name": "Формирование ответа (DeepSeek Pro)", "duration": 8},
         ]
         
@@ -872,59 +870,70 @@ async def search_parallel(variants: List[str], query: str) -> List[Dict]:
     return all_results
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ BROWSERLESS С ОЖИДАНИЕМ domcontentloaded И ТАЙМАУТОМ 10 СЕК
+#  ⭐ ЗАГРУЗКА ЧЕРЕЗ REST API (Playwright Node.js)
 # ═══════════════════════════════════════════════════════════════════
 
-async def fetch_with_browserless(url: str) -> Optional[str]:
+async def fetch_page_cdp(url: str) -> Optional[str]:
     """
-    Загрузка страницы через Browserless с быстрым ожиданием domcontentloaded
-    и жёстким таймаутом 10 секунд.
+    Загрузка страницы через REST API Playwright Node.js сервиса.
+    Использует BROWSER_WS_ENDPOINT (https://...).
     """
-    if not PLAYWRIGHT_AVAILABLE:
-        logger.debug("ℹ️ Playwright не установлен – пропускаем Browserless")
-        return None
     if not BROWSER_WS_ENDPOINT:
-        logger.debug("ℹ️ BROWSER_WS_ENDPOINT не задан – пропускаем Browserless")
+        logger.debug("ℹ️ BROWSER_WS_ENDPOINT не задан")
         return None
     
     try:
-        endpoint = BROWSER_WS_ENDPOINT
-        if BROWSER_TOKEN:
-            if '?' in endpoint:
-                endpoint += f"&token={BROWSER_TOKEN}"
-            else:
-                endpoint += f"?token={BROWSER_TOKEN}"
+        base_url = BROWSER_WS_ENDPOINT.rstrip('/')
         
-        logger.debug(f"🌐 Попытка Browserless: {url[:100]}...")
+        # Возможные эндпоинты в зависимости от версии шаблона
+        endpoints = [
+            f"{base_url}/api/scrape",
+            f"{base_url}/scrape",
+            f"{base_url}/v1/scrape",
+            f"{base_url}/api/content",
+            f"{base_url}/content",
+        ]
         
-        # ⭐ ИСПОЛЬЗУЕМ СЕМАФОР ДЛЯ ОГРАНИЧЕНИЯ ПАРАЛЛЕЛЬНЫХ СЕССИЙ
-        async with _browserless_semaphore:
-            async with async_playwright() as p:
-                browser = await p.chromium.connect_over_cdp(endpoint, timeout=10000)
-                logger.debug("✅ Подключились к Browserless")
-                context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                page = await context.new_page()
-                try:
-                    # ⭐ ГЛАВНОЕ ИЗМЕНЕНИЕ: domcontentloaded вместо networkidle
-                    # Устанавливаем жёсткий таймаут 10 секунд на всю операцию
-                    await asyncio.wait_for(
-                        page.goto(url, wait_until="domcontentloaded", timeout=10000),
-                        timeout=BROWSER_TIMEOUT
-                    )
-                    # Не делаем дополнительных пауз – они только замедляют
-                    html = await page.content()
-                    logger.debug(f"✅ Browserless загрузил страницу (длина {len(html)})")
-                    return html
-                except asyncio.TimeoutError:
-                    logger.warning(f"⏰ Browserless таймаут {BROWSER_TIMEOUT}с: {url}")
-                    return None
-                except Exception as e:
-                    logger.warning(f"⚠️ Browserless ошибка при загрузке {url}: {e}")
-                    return None
-                finally:
-                    await page.close()
+        session = await get_session()
+        headers = {'Content-Type': 'application/json'}
+        
+        for endpoint in endpoints:
+            try:
+                logger.debug(f"🌐 Попытка REST: {endpoint}")
+                async with session.post(
+                    endpoint,
+                    json={"url": url},
+                    headers=headers,
+                    timeout=30
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        # Проверяем разные возможные ключи
+                        html = data.get("html") or data.get("content") or data.get("data")
+                        if html:
+                            logger.debug(f"✅ Playwright REST загрузил страницу (длина {len(html)})")
+                            return html
+                        else:
+                            logger.debug(f"⚠️ Ответ не содержит HTML: {list(data.keys())}")
+                            # Попробуем следующий эндпоинт, если ответ пустой
+                            continue
+                    elif r.status == 404:
+                        continue  # эндпоинт не найден
+                    else:
+                        logger.debug(f"⚠️ Playwright REST ошибка {r.status}: {await r.text()}")
+                        break  # если статус не 404 и не 200, выходим из цикла
+            except asyncio.TimeoutError:
+                logger.debug(f"⏰ Таймаут REST {endpoint}")
+                continue
+            except Exception as e:
+                logger.debug(f"⚠️ Ошибка эндпоинта {endpoint}: {e}")
+                continue
+        
+        logger.warning("⚠️ Playwright REST не вернул HTML ни по одному эндпоинту")
+        return None
+        
     except Exception as e:
-        logger.warning(f"⚠️ Browserless общая ошибка (подключение): {e}")
+        logger.warning(f"⚠️ Playwright REST ошибка: {e}")
         return None
 
 async def fetch_http(url: str) -> Optional[str]:
@@ -939,20 +948,19 @@ async def fetch_http(url: str) -> Optional[str]:
     return None
 
 def empty_page_result():
-    """Возвращает пустой результат парсинга"""
     return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': [], 'metrics': [], 'tables': [], 'full_text': ''}
 
 async def fetch_page(url: str, query: str) -> Dict:
-    """Загрузка страницы с приоритетом Browserless, затем HTTP"""
+    """Загрузка страницы: сначала REST (Playwright), если не получится – HTTP"""
     if not url:
         return empty_page_result()
     
     html = None
-    # Сначала пытаемся через Browserless
-    if PLAYWRIGHT_AVAILABLE and BROWSER_WS_ENDPOINT:
-        html = await fetch_with_browserless(url)
+    # Сначала пробуем через REST API Playwright
+    if BROWSER_WS_ENDPOINT:
+        html = await fetch_page_cdp(url)
     else:
-        logger.debug("ℹ️ Browserless не используется (недоступен)")
+        logger.debug("ℹ️ PLAYWRIGHT_REST не задан, пропускаем")
     
     # Если не удалось, пробуем HTTP
     if not html:
@@ -1083,7 +1091,7 @@ def parse_page(html: str, query: str) -> Dict:
     return result
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ ЗАГРУЗКА СТРАНИЦ (увеличено до 5)
+#  ⭐ ЗАГРУЗКА СТРАНИЦ
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_pages(links: List[str], query: str) -> List[Dict]:
@@ -1783,7 +1791,7 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v3.3 (BROWSERLESS ОПТИМИЗИРОВАН)")
+    logger.info("🚀 ЗАПУСК BROWAIX v3.5 (PLAYWRIGHT REST)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1791,22 +1799,19 @@ def main():
     logger.info(f"   DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'} (ОСНОВНОЙ)")
     logger.info(f"   Serper: {'✅' if SERPER_API_KEY else '❌'} (РЕЗЕРВ)")
-    logger.info(f"   Browserless endpoint: {'✅' if BROWSER_WS_ENDPOINT else '❌'}")
-    logger.info(f"   Browserless token: {'✅' if BROWSER_TOKEN else '❌'}")
-    logger.info(f"   Playwright установлен: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}")
+    logger.info(f"   Playwright REST (BROWSER_WS_ENDPOINT): {'✅' if BROWSER_WS_ENDPOINT else '❌'}")
     
-    if BROWSER_WS_ENDPOINT and PLAYWRIGHT_AVAILABLE:
-        logger.info("   Browserless готов к использованию (таймаут 10 сек, domcontentloaded)")
+    if BROWSER_WS_ENDPOINT:
+        logger.info(f"   REST-эндпоинт: {BROWSER_WS_ENDPOINT}")
     else:
-        logger.warning("   ⚠️ Browserless НЕДОСТУПЕН! Будут использоваться только HTTP-запросы (без JS)")
+        logger.warning("   ⚠️ Playwright REST не задан! Будут использоваться только HTTP-запросы (без JS)")
     
     logger.info("=" * 60)
-    logger.info("✅ ИЗМЕНЕНИЯ v3.3:")
-    logger.info("   • Browserless: wait_until='domcontentloaded' (вместо networkidle)")
-    logger.info("   • Таймаут Browserless: 10 сек (вместо 30)")
-    logger.info("   • Семафор на 2 параллельные сессии")
-    logger.info("   • Убраны искусственные паузы (wait_for_timeout)")
-    logger.info("   • MAX_PAGES_PER_ITERATION = 2")
+    logger.info("✅ ИЗМЕНЕНИЯ v3.5:")
+    logger.info("   • Полный переход на REST API Playwright Node.js")
+    logger.info("   • Удалена зависимость от CDP/WebSocket")
+    logger.info("   • Автоматический перебор возможных эндпоинтов (/api/scrape, /scrape, и т.д.)")
+    logger.info("   • Fallback на HTTP при недоступности Playwright")
     
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN не задан!")
