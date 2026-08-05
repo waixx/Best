@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════════
-#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v15.0)
-#  АДАПТИВНЫЙ ПОИСК + ЖЕСТКАЯ ПРОВЕРКА ДАННЫХ
+#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v16.0)
+#  ПОЛНАЯ ВЕРСИЯ: ВСЁ ИЗ v15.0 + АВТО-ДАТЫ + РАДУЖНЫЙ ПРОГРЕСС-БАР
 #  НИЧЕГО НЕ ВЫРЕЗАНО — ВСЁ ВКЛЮЧЕНО
 # ═══════════════════════════════════════════════════════════════════
 
@@ -317,7 +317,7 @@ async def ask_deepseek(
     return "⚠️ Не удалось получить ответ от DeepSeek."
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАМЯТЬ (5 УРОВНЕЙ)
+#  ПАМЯТЬ (5 УРОВНЕЙ) — ПОЛНОСТЬЮ
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -545,6 +545,85 @@ def mark_reminder_done(reminder_id):
 init_reminders_db()
 
 # ═══════════════════════════════════════════════════════════════════
+#  УМНАЯ РАБОТА С ДАТАМИ
+# ═══════════════════════════════════════════════════════════════════
+
+def extract_dates_from_query(query: str) -> Dict[str, str]:
+    """Извлекает даты из запроса."""
+    today = now()
+    dates = {}
+    query_lower = query.lower()
+    
+    if "сегодня" in query_lower:
+        dates["today_search"] = today.strftime("%d.%m.%Y")
+    
+    if "завтра" in query_lower:
+        tomorrow = today + timedelta(days=1)
+        dates["tomorrow_search"] = tomorrow.strftime("%d.%m.%Y")
+    
+    if "выходные" in query_lower or "суббота" in query_lower or "воскресенье" in query_lower:
+        days_until_saturday = (5 - today.weekday()) % 7
+        if days_until_saturday == 0:
+            days_until_saturday = 7
+        saturday = today + timedelta(days=days_until_saturday)
+        sunday = saturday + timedelta(days=1)
+        dates["weekend_search"] = f"{saturday.strftime('%d.%m')}-{sunday.strftime('%d.%m')}.{sunday.year}"
+    
+    date_pattern = r'(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)'
+    matches = re.findall(date_pattern, query_lower, re.I)
+    if matches:
+        for day, month in matches:
+            month_num = {
+                "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+                "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+                "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12
+            }.get(month.lower(), 0)
+            if month_num:
+                try:
+                    date_obj = datetime(today.year, month_num, int(day))
+                    if date_obj < today:
+                        date_obj = datetime(today.year + 1, month_num, int(day))
+                    dates["specific_search"] = date_obj.strftime("%d.%m.%Y")
+                except:
+                    pass
+    
+    return dates
+
+def add_date_to_query(query: str) -> str:
+    """Добавляет дату в поисковый запрос."""
+    dates = extract_dates_from_query(query)
+    if not dates:
+        return query
+    
+    if "tomorrow_search" in dates:
+        return f"{query} {dates['tomorrow_search']}"
+    if "today_search" in dates:
+        return f"{query} {dates['today_search']}"
+    if "weekend_search" in dates:
+        return f"{query} {dates['weekend_search']}"
+    if "specific_search" in dates:
+        return f"{query} {dates['specific_search']}"
+    
+    return query
+
+def check_data_freshness(data_text: str) -> Tuple[bool, str]:
+    """Проверяет, есть ли в данных текущий год."""
+    current_year = now().year
+    years = re.findall(r'\b(20\d{2})\b', data_text)
+    
+    if not years:
+        return True, ""
+    
+    if str(current_year) in years:
+        return True, ""
+    
+    old_years = [y for y in years if y != str(current_year)]
+    if old_years:
+        return False, f"⚠️ **Внимание!** Данные найдены за {old_years[0]} год. Текущий год — {current_year}. Информация может быть устаревшей."
+    
+    return True, ""
+
+# ═══════════════════════════════════════════════════════════════════
 #  АДАПТИВНЫЙ ПОИСК
 # ═══════════════════════════════════════════════════════════════════
 
@@ -678,76 +757,96 @@ async def translate_to_english(query: str) -> str:
     response = await ask_deepseek(prompt, temperature=0.3, max_tokens=100, use_pro=False)
     return response.strip() if response else query
 
-async def search_with_adaptation(query: str, max_attempts: int = 4) -> List[Dict]:
+async def search_with_adaptation(query: str, max_attempts: int = 5) -> Tuple[List[Dict], str, List[str]]:
+    """Адаптивный поиск с самокоррекцией."""
     all_results = []
+    used_query = query
+    attempt_history = []
+    
+    # Добавляем дату в запрос
+    query_with_date = add_date_to_query(query)
+    if query_with_date != query:
+        logger.info(f"📅 Добавлена дата: '{query}' → '{query_with_date}'")
+        attempt_history.append(f"Добавлена дата: {query_with_date}")
+    
     strategies = [
+        {"name": "с датой", "query": query_with_date},
         {"name": "оригинальный", "query": query},
     ]
     
-    # Добавляем дополнительные стратегии
-    synonyms = await generate_synonyms(query)
-    if synonyms and synonyms != query:
-        strategies.append({"name": "синонимы", "query": synonyms})
+    # Дополнительные стратегии
+    synonyms = await generate_synonyms(query_with_date)
+    if synonyms and synonyms != query_with_date:
+        strategies.append({"name": "синонимы с датой", "query": synonyms})
     
-    short_q = await generate_short_query(query)
-    if short_q and short_q != query:
+    synonyms_no_date = await generate_synonyms(query)
+    if synonyms_no_date and synonyms_no_date != query and synonyms_no_date != synonyms:
+        strategies.append({"name": "синонимы без даты", "query": synonyms_no_date})
+    
+    short_q = await generate_short_query(query_with_date)
+    if short_q and short_q != query_with_date:
         strategies.append({"name": "краткий", "query": short_q})
     
-    detailed = await generate_detailed_query(query)
-    if detailed and detailed != query:
+    detailed = await generate_detailed_query(query_with_date)
+    if detailed and detailed != query_with_date:
         strategies.append({"name": "расширенный", "query": detailed})
     
-    eng = await translate_to_english(query)
-    if eng and eng != query:
+    eng = await translate_to_english(query_with_date)
+    if eng and eng != query_with_date:
         strategies.append({"name": "английский", "query": eng})
     
-    # Ограничиваем количество попыток
     strategies = strategies[:max_attempts]
     
     for attempt, strategy in enumerate(strategies):
-        logger.info(f"🔍 Попытка {attempt+1}: {strategy['name']} — '{strategy['query']}'")
+        logger.info(f"🔍 Попытка {attempt+1}/{len(strategies)}: {strategy['name']}")
+        attempt_history.append(f"Попытка {attempt+1}: {strategy['name']} — '{strategy['query'][:40]}...'")
         
         norm = normalize_query(strategy['query'])
         if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
             cached = search_cache[norm]['data']
             if cached:
-                logger.info(f"♻️ Найдено в кэше: {len(cached)} результатов")
+                logger.info(f"♻️ Кэш: {len(cached)} результатов")
                 all_results.extend(cached)
-                continue
+                used_query = strategy['query']
+                break
         
         results = await search_apiserpent(strategy['query'])
         
         if results:
-            logger.info(f"✅ Найдено {len(results)} результатов по стратегии '{strategy['name']}'")
+            logger.info(f"✅ Найдено {len(results)} результатов ({strategy['name']})")
             search_cache[norm] = {'data': results, 'time': time.time()}
             all_results.extend(results)
+            used_query = strategy['query']
             if len(results) >= 5:
                 break
         else:
-            logger.warning(f"❌ Ничего не найдено по стратегии '{strategy['name']}'")
+            logger.warning(f"❌ Ничего не найдено ({strategy['name']})")
             if attempt == 1:
                 logger.info("🔄 Пробуем Bing...")
                 bing_results = await search_apiserpent_bing(strategy['query'])
                 if bing_results:
                     all_results.extend(bing_results)
+                    used_query = strategy['query']
+                    attempt_history.append(f"Bing: найдено {len(bing_results)} результатов")
                     break
         
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
     
+    # Если ничего не найдено — пробуем по частям
     if not all_results:
-        logger.warning("⚠️ Ничего не найдено. Пробуем поискать по частям...")
+        logger.warning("⚠️ Все стратегии не дали результатов. Пробуем по частям...")
         parts = query.split()
         if len(parts) > 3:
-            partial_query = ' '.join(parts[:3])
-            results = await search_apiserpent(partial_query)
-            if results:
-                all_results.extend(results)
-            else:
-                partial_query = ' '.join(parts[-3:])
-                results = await search_apiserpent(partial_query)
+            for i in range(len(parts) - 2):
+                partial = ' '.join(parts[i:i+3])
+                results = await search_apiserpent(partial)
                 if results:
                     all_results.extend(results)
+                    used_query = partial
+                    attempt_history.append(f"По частям: '{partial}' → {len(results)} результатов")
+                    break
     
+    # Удаляем дубли
     seen_urls = set()
     unique_results = []
     for r in all_results:
@@ -762,7 +861,7 @@ async def search_with_adaptation(query: str, max_attempts: int = 4) -> List[Dict
                 unique_results.append(r)
     
     logger.info(f"📊 Итог: {len(unique_results)} уникальных результатов")
-    return unique_results
+    return unique_results, used_query, attempt_history
 
 # ═══════════════════════════════════════════════════════════════════
 #  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ПАРСИНГ, ВАЛИДАЦИЯ)
@@ -1008,7 +1107,7 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
     
     if action == "search":
         search_query = params.get("query", query)
-        results = await search_with_adaptation(search_query, max_attempts=4)
+        results, used_query, history = await search_with_adaptation(search_query, max_attempts=5)
         
         if not results:
             logger.warning("⚠️ Ничего не найдено после всех попыток")
@@ -1017,7 +1116,8 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
                 "query": search_query,
                 "results": [],
                 "fetch_subtasks": [],
-                "error": "Ничего не найдено. Попробуйте переформулировать запрос."
+                "error": "Ничего не найдено",
+                "history": history
             }
         
         fetch_subtasks = []
@@ -1032,9 +1132,10 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
         
         return {
             "type": "search_results",
-            "query": search_query,
+            "query": used_query,
             "results": results,
-            "fetch_subtasks": fetch_subtasks
+            "fetch_subtasks": fetch_subtasks,
+            "history": history
         }
     
     elif action == "fetch":
@@ -1098,13 +1199,19 @@ async def call_reflector(query: str, answer: str) -> Dict:
     except:
         return {"is_good": True, "feedback": "", "improved_answer": ""}
 
-async def update_progress_message(bot, chat_id, message_id, elapsed, stage, progress):
+# ═══════════════════════════════════════════════════════════════════
+#  РАДУЖНЫЙ ПРОГРЕСС-БАР
+# ═══════════════════════════════════════════════════════════════════
+
+async def update_progress(bot, chat_id, message_id, elapsed, stage, progress):
     colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
     color = colors[elapsed % len(colors)]
     bar_length = 20
     filled = int(progress / 100 * bar_length)
     bar = "█" * filled + "░" * (bar_length - filled)
+    
     text = f"🧠 **{stage}**\n`{bar} {progress}%` {color}\n⏱️ {elapsed} сек"
+    
     try:
         if message_id:
             await bot.edit_message_text(
@@ -1122,32 +1229,25 @@ async def update_progress_message(bot, chat_id, message_id, elapsed, stage, prog
             )
             return msg.message_id
     except Exception as e:
-        logger.warning(f"Ошибка обновления прогресса: {e}")
-        if message_id:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except:
-                pass
-        msg = await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode='Markdown'
-        )
-        return msg.message_id
+        logger.warning(f"⚠️ Ошибка прогресса: {e}")
+        return None
 
 # ═══════════════════════════════════════════════════════════════════
 #  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ
 # ═══════════════════════════════════════════════════════════════════
 
-async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, List[Dict], float]:
+async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, List[Dict], float, List[str]]:
     logger.info(f"🛡️ АГЕНТ: запрос '{query[:50]}...'")
     memory = get_memory(uid)
     context = memory.get_full_context()
     
     progress_msg_id = None
     start_time = time.time()
+    attempt_history = []
+    all_data = []
+    
     if update and update.effective_message:
-        progress_msg_id = await update_progress_message(
+        progress_msg_id = await update_progress(
             bot=update.get_bot(),
             chat_id=update.effective_chat.id,
             message_id=None,
@@ -1156,12 +1256,13 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             progress=0
         )
     
+    # 1. Планирование
     plan = await call_planner(query, context)
     logger.info(f"📋 План: {json.dumps(plan, ensure_ascii=False)[:300]}")
     
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
-        progress_msg_id = await update_progress_message(
+        progress_msg_id = await update_progress(
             bot=update.get_bot(),
             chat_id=update.effective_chat.id,
             message_id=progress_msg_id,
@@ -1177,7 +1278,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         memory.add_message("assistant", answer)
         if progress_msg_id:
             elapsed = int(time.time() - start_time)
-            await update_progress_message(
+            await update_progress(
                 bot=update.get_bot(),
                 chat_id=update.effective_chat.id,
                 message_id=progress_msg_id,
@@ -1185,9 +1286,9 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                 stage="Готово ✅",
                 progress=100
             )
-        return answer, [], 100.0
+        return answer, [], 100.0, []
     
-    all_data = []
+    # 2. Цикл выполнения
     subtasks = plan.get("subtasks", [])
     max_iterations = plan.get("max_iterations", 4)
     iteration = 0
@@ -1199,7 +1300,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         if progress_msg_id:
             elapsed = int(time.time() - start_time)
             progress = 15 + (iteration * 10)
-            progress_msg_id = await update_progress_message(
+            progress_msg_id = await update_progress(
                 bot=update.get_bot(),
                 chat_id=update.effective_chat.id,
                 message_id=progress_msg_id,
@@ -1214,6 +1315,9 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             if result.get("fetch_subtasks"):
                 subtasks.extend(result["fetch_subtasks"])
                 logger.info(f"➕ Добавлены подзадачи fetch: {len(result['fetch_subtasks'])} шт.")
+            
+            if result.get("history"):
+                attempt_history.extend(result["history"])
         
         # Собираем информацию для проверки
         collected_info = ""
@@ -1309,62 +1413,10 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                     subtasks.append({"id": len(subtasks)+1, "action": "search", "params": {"query": sq}})
                 logger.info(f"➕ Добавлены новые поисковые запросы: {suggested[:2]}")
     
-    # Если после всех попыток данных нет — честный ответ
-    collected_info_final = ""
-    sources_count_final = 0
-    for item in all_data:
-        if item.get("type") == "search_results":
-            results = item.get("results", [])
-            sources_count_final += len(results)
-            for res in results[:5]:
-                snippet = res.get("snippet", "")
-                if snippet:
-                    collected_info_final += f"• {snippet[:200]}\n"
-        elif item.get("type") == "page_data":
-            page = item.get("data", {})
-            text = page.get("full_text", "")
-            if text:
-                collected_info_final += f"• {text[:300]}\n"
-    
-    if not collected_info_final or len(collected_info_final) < 100:
-        answer = f"""🔍 **Я перепробовал несколько вариантов поиска**, но не нашел достаточно информации по вашему запросу.
-
-📋 **Что я пробовал:**
-• Оригинальный запрос: {query}
-• Синонимы и перефразировки
-• Расширенные формулировки
-• Поиск на английском языке
-• Разные поисковые движки
-
-💡 **Что можно сделать:**
-• Уточните запрос (добавьте дату, место, конкретные детали)
-• Проверьте правильность написания
-• Спросите более общую тему
-
-🤔 **Возможно, вы имели в виду:**
-• Переформулируйте вопрос более конкретно
-• Укажите временной период
-• Добавьте контекст
-
-Я никогда не выдумываю факты — честность важнее галлюцинаций!"""
-        
-        memory.add_message("user", query)
-        memory.add_message("assistant", answer)
-        if progress_msg_id:
-            elapsed = int(time.time() - start_time)
-            await update_progress_message(
-                bot=update.get_bot(),
-                chat_id=update.effective_chat.id,
-                message_id=progress_msg_id,
-                elapsed=elapsed,
-                stage="Готово ✅",
-                progress=100
-            )
-        return answer, [], 0
-    
+    # 3. Генерация финального ответа
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
-        progress_msg_id = await update_progress_message(
+        progress_msg_id = await update_progress(
             bot=update.get_bot(),
             chat_id=update.effective_chat.id,
             message_id=progress_msg_id,
@@ -1373,6 +1425,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             progress=80
         )
     
+    # Собираем данные для ответа
     sources_text = ""
     for item in all_data:
         if item.get("type") == "search_results":
@@ -1389,9 +1442,37 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         elif item.get("type") == "calculation":
             sources_text += f"🧮 {item.get('expression')} = {item.get('result')}\n"
     
-    if not sources_text:
-        sources_text = "Данные собраны, но текстовое содержимое отсутствует."
+    # Если данных нет — честный ответ
+    if not sources_text or len(sources_text) < 100:
+        answer = f"""🔍 **Я перепробовал несколько стратегий поиска**, но не нашел информацию.
+
+📋 **Что я пробовал:**
+• {chr(10).join([f"• {h}" for h in attempt_history]) if attempt_history else "• Все доступные стратегии"}
+
+💡 **Вероятно, я неправильно понял запрос. Попробуйте:**
+• Уточнить дату (например, "6 августа 2026")
+• Добавить город или место
+• Спросить более простыми словами
+
+Я не говорю "данных нет" — я говорю "я не нашел". В интернете есть всё, нужно просто правильно спросить!"""
+        
+        memory.add_message("user", query)
+        memory.add_message("assistant", answer)
+        
+        if progress_msg_id:
+            elapsed = int(time.time() - start_time)
+            await update_progress(
+                bot=update.get_bot(),
+                chat_id=update.effective_chat.id,
+                message_id=progress_msg_id,
+                elapsed=elapsed,
+                stage="Готово ✅",
+                progress=100
+            )
+        
+        return answer, [], 0, attempt_history
     
+    # Формируем ответ
     answer_prompt = f"""
 Вот данные, собранные по вашему запросу.
 
@@ -1416,6 +1497,13 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     
     answer = await ask_deepseek(answer_prompt, temperature=0.2, use_pro=True)
     
+    # Проверка свежести данных
+    is_fresh, freshness_warning = check_data_freshness(answer)
+    if not is_fresh and freshness_warning:
+        answer = f"{freshness_warning}\n\n{answer}"
+        logger.info("📅 Добавлено предупреждение об устаревших данных")
+    
+    # 4. Рефлексия
     reflect = await call_reflector(query, answer)
     if not reflect.get("is_good", True):
         logger.info(f"🔄 Рефлексия: требуется улучшение. Причина: {reflect.get('feedback')}")
@@ -1426,6 +1514,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     memory.add_message("user", query)
     memory.add_message("assistant", answer)
     
+    # Формируем источники
     sources_for_button = []
     for item in all_data:
         if item.get("type") == "search_results":
@@ -1458,7 +1547,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
-        await update_progress_message(
+        await update_progress(
             bot=update.get_bot(),
             chat_id=update.effective_chat.id,
             message_id=progress_msg_id,
@@ -1467,7 +1556,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             progress=100
         )
     
-    return answer, sources_for_button, avg_confidence
+    return answer, sources_for_button, avg_confidence, attempt_history
 
 # ═══════════════════════════════════════════════════════════════════
 #  ОБРАБОТЧИКИ И КОМАНДЫ
@@ -1543,16 +1632,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Режим поиска (по умолчанию)
-    context.user_data['pending_text'] = user_message
-    context.user_data['awaiting_input'] = True
-    
     await update.effective_message.reply_text(
         f"📝 **Запрос принят:**\n\n_{user_message[:300]}_\n\n"
         "🔄 Начинаю агентный поиск...",
         parse_mode='Markdown'
     )
     
-    answer, sources, confidence = await agent_loop(user_message, user_id, update)
+    answer, sources, confidence, history = await agent_loop(user_message, user_id, update)
     
     memory.add_message('user', user_message)
     memory.add_message('assistant', answer)
@@ -1561,6 +1647,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['last_sources'] = sources
     context.user_data['last_formatted_answer'] = answer
     context.user_data['pending_text'] = ''
+    context.user_data['last_history'] = history
     
     await update.effective_message.reply_text(answer, reply_markup=SHOW_SOURCES_BUTTON)
     
@@ -1636,7 +1723,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     
     elif action == "show_sources":
         sources = context.user_data.get('last_sources', [])
+        history = context.user_data.get('last_history', [])
         sources_formatted = format_sources(sources)
+        if history:
+            sources_formatted += "\n\n📋 **История поиска:**\n" + "\n".join([f"• {h}" for h in history[-5:]])
         await query.edit_message_text(sources_formatted, reply_markup=HIDE_SOURCES_BUTTON, parse_mode='Markdown')
         return
     
@@ -1661,7 +1751,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/search` — поиск в интернете с полным анализом\n"
         "• `/chat` — беседа с памятью на 6 сообщений\n"
         "• `/menu` — открыть меню\n"
-        "• `/clear` — очистить память\n\n"
+        "• `/clear` — очистить память\n"
+        "• `/reminders` — напоминания\n\n"
         "**Просто напиши вопрос, и я сам решу, что делать.** 🤖",
         reply_markup=MAIN_MENU,
         parse_mode='Markdown'
@@ -1741,18 +1832,23 @@ async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v15.0 — АДАПТИВНЫЙ ПОИСК")
+    logger.info("🚀 ЗАПУСК BROWAIX v16.0 — АГЕНТНАЯ АРХИТЕКТУРА")
     logger.info("=" * 60)
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
     logger.info(f"   DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
+    logger.info(f"   Weather API: {'✅' if WEATHER_API_KEY else '❌ (опционально)'}")
+    logger.info(f"   Browserless: {'✅' if BROWSER_WS_ENDPOINT else '❌ (опционально)'}")
     logger.info("=" * 60)
     logger.info("⚡ ФУНКЦИОНАЛ:")
-    logger.info(f"   • Адаптивный поиск с 5+ стратегиями: ✅")
-    logger.info(f"   • Жесткая проверка данных: ✅")
+    logger.info(f"   • Планировщик + Исполнитель + Оценщик + Рефлектор: ✅")
+    logger.info(f"   • Память 5 уровней + Knowledge Graph: ✅")
+    logger.info(f"   • Авто-определение дат: ✅")
+    logger.info(f"   • Самокоррекция запросов: ✅")
+    logger.info(f"   • Радужный прогресс-бар: ✅")
     logger.info(f"   • Честные ответы без галлюцинаций: ✅")
-    logger.info(f"   • Память 500 сообщений: ✅")
+    logger.info(f"   • Напоминания (SQLite): ✅")
     logger.info("=" * 60)
     
     if not TELEGRAM_TOKEN:
@@ -1782,5 +1878,5 @@ if __name__ == "__main__":
     main()
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНЕЦ ПОЛНОГО КОДА v15.0
+#  КОНЕЦ ПОЛНОГО КОДА v16.0
 # ═══════════════════════════════════════════════════════════════════
