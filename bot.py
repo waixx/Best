@@ -1078,8 +1078,8 @@ async def call_reflector(query: str, answer: str) -> Dict:
     except:
         return {"is_good": True, "feedback": "", "improved_answer": ""}
 
-async def update_progress_message(context, chat_id, message_id, elapsed, stage, progress):
-    """Обновляет сообщение с прогрессом. Если редактирование не удаётся — отправляет новое и возвращает его ID."""
+async def update_progress_message(bot, chat_id, message_id, elapsed, stage, progress):
+    """Обновляет сообщение с прогрессом. bot — экземпляр telegram.Bot."""
     colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
     color = colors[elapsed % len(colors)]
     bar_length = 20
@@ -1088,7 +1088,7 @@ async def update_progress_message(context, chat_id, message_id, elapsed, stage, 
     text = f"🧠 **{stage}**\n`{bar} {progress}%` {color}\n⏱️ {elapsed} сек"
     try:
         if message_id:
-            await context.bot.edit_message_text(
+            await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
@@ -1096,21 +1096,21 @@ async def update_progress_message(context, chat_id, message_id, elapsed, stage, 
             )
             return message_id
         else:
-            msg = await context.bot.send_message(
+            msg = await bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 parse_mode='Markdown'
             )
             return msg.message_id
     except Exception as e:
-        # Если редактирование не удалось, логируем и отправляем новое
         logger.warning(f"Ошибка обновления прогресса: {e}")
         if message_id:
             try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
             except:
                 pass
-        msg = await context.bot.send_message(
+        # Пытаемся отправить новое
+        msg = await bot.send_message(
             chat_id=chat_id,
             text=text,
             parse_mode='Markdown'
