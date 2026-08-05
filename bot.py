@@ -1109,14 +1109,12 @@ async def update_progress_message(bot, chat_id, message_id, elapsed, stage, prog
                 await bot.delete_message(chat_id=chat_id, message_id=message_id)
             except:
                 pass
-        # Пытаемся отправить новое
         msg = await bot.send_message(
             chat_id=chat_id,
             text=text,
             parse_mode='Markdown'
         )
         return msg.message_id
-
 # ═══════════════════════════════════════════════════════════════════
 #  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ
 # ═══════════════════════════════════════════════════════════════════
@@ -1135,7 +1133,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     start_time = time.time()
     if update and update.effective_message:
         progress_msg_id = await update_progress_message(
-            context=update.effective_message.get_bot(),
+            bot=update.get_bot(),
             chat_id=update.effective_chat.id,
             message_id=None,
             elapsed=0,
@@ -1152,7 +1150,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
         progress_msg_id = await update_progress_message(
-            context=update.effective_message.get_bot(),
+            bot=update.get_bot(),
             chat_id=update.effective_chat.id,
             message_id=progress_msg_id,
             elapsed=elapsed,
@@ -1169,7 +1167,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         if progress_msg_id:
             elapsed = int(time.time() - start_time)
             await update_progress_message(
-                context=update.effective_message.get_bot(),
+                bot=update.get_bot(),
                 chat_id=update.effective_chat.id,
                 message_id=progress_msg_id,
                 elapsed=elapsed,
@@ -1192,7 +1190,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             elapsed = int(time.time() - start_time)
             progress = 15 + (iteration * 10)
             progress_msg_id = await update_progress_message(
-                context=update.effective_message.get_bot(),
+                bot=update.get_bot(),
                 chat_id=update.effective_chat.id,
                 message_id=progress_msg_id,
                 elapsed=elapsed,
@@ -1209,7 +1207,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                 if progress_msg_id:
                     elapsed = int(time.time() - start_time)
                     progress_msg_id = await update_progress_message(
-                        context=update.effective_message.get_bot(),
+                        bot=update.get_bot(),
                         chat_id=update.effective_chat.id,
                         message_id=progress_msg_id,
                         elapsed=elapsed,
@@ -1249,7 +1247,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
         progress_msg_id = await update_progress_message(
-            context=update.effective_message.get_bot(),
+            bot=update.get_bot(),
             chat_id=update.effective_chat.id,
             message_id=progress_msg_id,
             elapsed=elapsed,
@@ -1351,7 +1349,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     if progress_msg_id:
         elapsed = int(time.time() - start_time)
         await update_progress_message(
-            context=update.effective_message.get_bot(),
+            bot=update.get_bot(),
             chat_id=update.effective_chat.id,
             message_id=progress_msg_id,
             elapsed=elapsed,
