@@ -46,7 +46,7 @@
 6. 📦 ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ
    - Модель: deepseek-v4-pro и deepseek-v4-flash
    - Макс. токенов: 4000 для ответа, 300 для вспомогательных
-   - Страниц за итерацию: 5 (оптимизировано для полноты)
+   - Страниц за итерацию: 2 (оптимизировано)
    - Макс. итераций: 3
    - Кэширование: 15 мин (поиск), 1 час (ответы)
 """
@@ -121,17 +121,18 @@ MAX_TOKENS_VARIANTS = 300
 MAX_ITERATIONS = 3
 TARGET_CONFIDENCE = 95
 EARLY_EXIT_CONFIDENCE = 85
-MAX_PAGES_PER_ITERATION = 5
+MAX_PAGES_PER_ITERATION = 2          # ⭐ УМЕНЬШЕНО С 5 ДО 2
 MAX_VARIANTS = 4
+BROWSER_TIMEOUT = 10                 # ⭐ НОВАЯ КОНСТАНТА ДЛЯ BROWSERLESS
 
-# ⭐ ИЗМЕНЕНО ДЛЯ BROWSERLESS: читаем правильные переменные и токен
+# Browserless настройки
 BROWSER_WS_ENDPOINT = os.getenv("BROWSER_WS_ENDPOINT_PRIVATE", "") or os.getenv("BROWSER_WS_ENDPOINT", "")
 BROWSER_TOKEN = os.getenv("BROWSER_TOKEN", "")
-
-# Для обратной совместимости (если используется старое имя) – но теперь мы используем BROWSER_WS_ENDPOINT
-# Если оно пустое, пробуем BROWSERLESS_WS_ENDPOINT (на случай, если кто-то задал вручную)
 if not BROWSER_WS_ENDPOINT:
     BROWSER_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
+
+# ⭐ СЕМАФОР ДЛЯ ОГРАНИЧЕНИЯ ПАРАЛЛЕЛЬНЫХ СЕССИЙ BROWSERLESS (НЕ БОЛЕЕ 2)
+_browserless_semaphore = asyncio.Semaphore(2)
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -871,11 +872,14 @@ async def search_parallel(variants: List[str], query: str) -> List[Dict]:
     return all_results
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ BROWSERLESS С ОЖИДАНИЕМ networkidle И ТОКЕНОМ (ИСПРАВЛЕНО)
+#  ⭐ BROWSERLESS С ОЖИДАНИЕМ domcontentloaded И ТАЙМАУТОМ 10 СЕК
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_with_browserless(url: str) -> Optional[str]:
-    """Загрузка страницы через Browserless с токеном и ожиданием загрузки JS"""
+    """
+    Загрузка страницы через Browserless с быстрым ожиданием domcontentloaded
+    и жёстким таймаутом 10 секунд.
+    """
     if not PLAYWRIGHT_AVAILABLE:
         logger.debug("ℹ️ Playwright не установлен – пропускаем Browserless")
         return None
@@ -885,7 +889,6 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
     
     try:
         endpoint = BROWSER_WS_ENDPOINT
-        # Добавляем токен, если он есть
         if BROWSER_TOKEN:
             if '?' in endpoint:
                 endpoint += f"&token={BROWSER_TOKEN}"
@@ -893,24 +896,33 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
                 endpoint += f"?token={BROWSER_TOKEN}"
         
         logger.debug(f"🌐 Попытка Browserless: {url[:100]}...")
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(endpoint, timeout=15000)
-            logger.debug("✅ Подключились к Browserless")
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = await context.new_page()
-            try:
-                # Ждём полной загрузки (все запросы завершены)
-                await page.goto(url, wait_until="networkidle", timeout=30000)
-                # Дополнительная пауза для рендеринга
-                await page.wait_for_timeout(2000)
-                html = await page.content()
-                logger.debug(f"✅ Browserless загрузил страницу (длина {len(html)})")
-                return html
-            except Exception as e:
-                logger.warning(f"⚠️ Browserless ошибка при загрузке {url}: {e}")
-                return None
-            finally:
-                await page.close()
+        
+        # ⭐ ИСПОЛЬЗУЕМ СЕМАФОР ДЛЯ ОГРАНИЧЕНИЯ ПАРАЛЛЕЛЬНЫХ СЕССИЙ
+        async with _browserless_semaphore:
+            async with async_playwright() as p:
+                browser = await p.chromium.connect_over_cdp(endpoint, timeout=10000)
+                logger.debug("✅ Подключились к Browserless")
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = await context.new_page()
+                try:
+                    # ⭐ ГЛАВНОЕ ИЗМЕНЕНИЕ: domcontentloaded вместо networkidle
+                    # Устанавливаем жёсткий таймаут 10 секунд на всю операцию
+                    await asyncio.wait_for(
+                        page.goto(url, wait_until="domcontentloaded", timeout=10000),
+                        timeout=BROWSER_TIMEOUT
+                    )
+                    # Не делаем дополнительных пауз – они только замедляют
+                    html = await page.content()
+                    logger.debug(f"✅ Browserless загрузил страницу (длина {len(html)})")
+                    return html
+                except asyncio.TimeoutError:
+                    logger.warning(f"⏰ Browserless таймаут {BROWSER_TIMEOUT}с: {url}")
+                    return None
+                except Exception as e:
+                    logger.warning(f"⚠️ Browserless ошибка при загрузке {url}: {e}")
+                    return None
+                finally:
+                    await page.close()
     except Exception as e:
         logger.warning(f"⚠️ Browserless общая ошибка (подключение): {e}")
         return None
@@ -1771,7 +1783,7 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v3.2 (ИСПРАВЛЕН BROWSERLESS)")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v3.3 (BROWSERLESS ОПТИМИЗИРОВАН)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1784,17 +1796,17 @@ def main():
     logger.info(f"   Playwright установлен: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}")
     
     if BROWSER_WS_ENDPOINT and PLAYWRIGHT_AVAILABLE:
-        logger.info("   Browserless готов к использованию")
+        logger.info("   Browserless готов к использованию (таймаут 10 сек, domcontentloaded)")
     else:
         logger.warning("   ⚠️ Browserless НЕДОСТУПЕН! Будут использоваться только HTTP-запросы (без JS)")
     
     logger.info("=" * 60)
-    logger.info("✅ ИЗМЕНЕНИЯ v3.2:")
-    logger.info("   • Исправлена переменная BROWSER_WS_ENDPOINT (было BROWSERLESS_WS_ENDPOINT)")
-    logger.info("   • Добавлена поддержка BROWSER_TOKEN")
-    logger.info("   • Приоритет приватного эндпоинта (BROWSER_WS_ENDPOINT_PRIVATE)")
-    logger.info("   • Увеличены таймауты Browserless до 30 сек")
-    logger.info("   • Добавлено логирование подключения к Browserless")
+    logger.info("✅ ИЗМЕНЕНИЯ v3.3:")
+    logger.info("   • Browserless: wait_until='domcontentloaded' (вместо networkidle)")
+    logger.info("   • Таймаут Browserless: 10 сек (вместо 30)")
+    logger.info("   • Семафор на 2 параллельные сессии")
+    logger.info("   • Убраны искусственные паузы (wait_for_timeout)")
+    logger.info("   • MAX_PAGES_PER_ITERATION = 2")
     
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN не задан!")
