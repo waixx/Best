@@ -744,6 +744,20 @@ async def search_apiserpent(query: str) -> List[Dict]:
         logger.error(f"💥 Ошибка APISerpent: {e}")
         return []
 
+async def generate_variants(query: str, count: int = 3) -> List[str]:
+    """Генерирует альтернативные формулировки запроса."""
+    prompt = f"Сгенерируй {count} разных вариантов поискового запроса для:\n{query}\nОтветь списком, каждый с новой строки. Варианты должны быть разнообразными: синонимы, перефразировки, уточнения (например, 'почасовой', 'подробный', 'на завтра')."
+    response = await ask_deepseek(prompt, temperature=0.3, max_tokens=200, use_pro=False)
+    variants = [query]
+    if response:
+        for line in response.strip().split('\n'):
+            line = line.strip()
+            if line and not line.startswith('#'):
+                clean = re.sub(r'^[\d\s.)-]+', '', line).strip()
+                if clean and len(clean) > 3 and clean not in variants:
+                    variants.append(clean)
+    return variants[:count]
+
 async def search_with_retry(query: str, retries=2) -> List[Dict]:
     norm = normalize_query(query)
     if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
@@ -955,10 +969,36 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
     
     if action == "search":
         search_query = params.get("query", query)
-        results = await search_with_retry(search_query)
+        # Генерируем альтернативные запросы
+        variants = await generate_variants(search_query, count=3)
+        logger.info(f"🔍 Варианты запроса: {variants}")
+        
+        # Параллельный поиск по всем вариантам
+        all_results = []
+        tasks = [search_with_retry(v) for v in variants]
+        results_list = await asyncio.gather(*tasks)
+        for res_list in results_list:
+            all_results.extend(res_list)
+        
+        # Удаляем дубли по URL
+        seen = set()
+        unique_results = []
+        for r in all_results:
+            link = r.get('link')
+            if link and link not in seen:
+                seen.add(link)
+                unique_results.append(r)
+            elif not link:
+                title = r.get('title')
+                if title and title not in seen:
+                    seen.add(title)
+                    unique_results.append(r)
+        
+        logger.info(f"📊 Уникальных результатов: {len(unique_results)}")
+        
         # Добавляем подзадачи fetch для первых 3 ссылок
         fetch_subtasks = []
-        for idx, res in enumerate(results[:3]):
+        for idx, res in enumerate(unique_results[:3]):
             link = res.get("link")
             if link and link.startswith("http"):
                 fetch_subtasks.append({
@@ -966,10 +1006,11 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
                     "action": "fetch",
                     "params": {"url": link}
                 })
+        
         return {
             "type": "search_results",
             "query": search_query,
-            "results": results,
+            "results": unique_results,
             "fetch_subtasks": fetch_subtasks
         }
     
@@ -996,6 +1037,7 @@ async def execute_subtask(subtask: dict, query: str) -> dict:
     
     else:
         return {"type": "unknown_action", "action": action}
+
 async def analyze_data(data: list, query: str) -> str:
     """Упрощённый анализ данных (может быть использован для извлечения ключевых фактов)."""
     if not data:
@@ -1036,22 +1078,75 @@ async def call_reflector(query: str, answer: str) -> Dict:
     except:
         return {"is_good": True, "feedback": "", "improved_answer": ""}
 
+async def update_progress_message(context, chat_id, message_id, elapsed, stage, progress):
+    """Обновляет сообщение с прогрессом: этап, время, радужная полоска."""
+    colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
+    color = colors[elapsed % len(colors)]
+    bar_length = 20
+    filled = int(progress / 100 * bar_length)
+    bar = "█" * filled + "░" * (bar_length - filled)
+    text = f"🧠 **{stage}**\n`{bar} {progress}%` {color}\n⏱️ {elapsed} сек"
+    try:
+        if message_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode='Markdown'
+            )
+        else:
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown'
+            )
+            return msg.message_id
+    except Exception as e:
+        logger.debug(f"Ошибка обновления прогресса: {e}")
+        return message_id
+
 # ═══════════════════════════════════════════════════════════════════
 #  ОСНОВНОЙ АГЕНТСКИЙ ЦИКЛ
 # ═══════════════════════════════════════════════════════════════════
 
 async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, List[Dict], float]:
     """
-    Главный цикл агента.
+    Главный цикл агента с визуальным прогресс-баром.
     Возвращает (ответ, источники, уверенность).
     """
     logger.info(f"🛡️ АГЕНТ: запрос '{query[:50]}...'")
     memory = get_memory(uid)
     context = memory.get_full_context()
     
+    # === ИНИЦИАЛИЗАЦИЯ ПРОГРЕСС-БАРА ===
+    progress_msg_id = None
+    start_time = time.time()
+    if update and update.effective_message:
+        progress_msg_id = await update_progress_message(
+            context=update.effective_message.get_bot(),
+            chat_id=update.effective_chat.id,
+            message_id=None,
+            elapsed=0,
+            stage="Планирование",
+            progress=0
+        )
+    # ===================================
+    
     # 1. Планирование
     plan = await call_planner(query, context)
     logger.info(f"📋 План: {json.dumps(plan, ensure_ascii=False)[:300]}")
+    
+    # Обновляем прогресс после планирования
+    if progress_msg_id:
+        elapsed = int(time.time() - start_time)
+        progress_msg_id = await update_progress_message(
+            context=update.effective_message.get_bot(),
+            chat_id=update.effective_chat.id,
+            message_id=progress_msg_id,
+            elapsed=elapsed,
+            stage="Поиск данных",
+            progress=15
+        )
     
     # Если это беседа — сразу генерируем ответ
     if plan.get("action") == "chat":
@@ -1059,10 +1154,20 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         answer = await ask_deepseek(chat_prompt, temperature=0.7, use_pro=False)
         memory.add_message("user", query)
         memory.add_message("assistant", answer)
+        if progress_msg_id:
+            elapsed = int(time.time() - start_time)
+            await update_progress_message(
+                context=update.effective_message.get_bot(),
+                chat_id=update.effective_chat.id,
+                message_id=progress_msg_id,
+                elapsed=elapsed,
+                stage="Готово ✅",
+                progress=100
+            )
         return answer, [], 100.0
     
     # 2. Цикл выполнения подзадач
-    all_data = []          # список собранных результатов
+    all_data = []
     subtasks = plan.get("subtasks", [])
     max_iterations = plan.get("max_iterations", 3)
     iteration = 0
@@ -1071,16 +1176,35 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         iteration += 1
         logger.info(f"🔄 Итерация {iteration}/{max_iterations}")
         
-        # Выполняем все подзадачи
+        if progress_msg_id:
+            elapsed = int(time.time() - start_time)
+            progress = 15 + (iteration * 10)
+            progress_msg_id = await update_progress_message(
+                context=update.effective_message.get_bot(),
+                chat_id=update.effective_chat.id,
+                message_id=progress_msg_id,
+                elapsed=elapsed,
+                stage=f"Итерация {iteration}/{max_iterations}",
+                progress=min(progress, 70)
+            )
+        
         for subtask in subtasks:
             result = await execute_subtask(subtask, query)
             all_data.append(result)
-            # Если поиск вернул новые подзадачи (fetch) — добавляем их
             if result.get("fetch_subtasks"):
                 subtasks.extend(result["fetch_subtasks"])
                 logger.info(f"➕ Добавлены подзадачи fetch: {len(result['fetch_subtasks'])} шт.")
+                if progress_msg_id:
+                    elapsed = int(time.time() - start_time)
+                    progress_msg_id = await update_progress_message(
+                        context=update.effective_message.get_bot(),
+                        chat_id=update.effective_chat.id,
+                        message_id=progress_msg_id,
+                        elapsed=elapsed,
+                        stage="Загрузка страниц...",
+                        progress=min(progress_msg_id + 10, 70) if isinstance(progress_msg_id, int) else 50
+                    )
         
-        # Собираем краткую выжимку для оценщика
         data_summary = ""
         for item in all_data:
             if item.get("type") == "search_results":
@@ -1094,14 +1218,12 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             elif item.get("type") == "calculation":
                 data_summary += f"Вычисление: {item.get('expression')} = {item.get('result')}. "
         
-        # Оценка достаточности данных
         evaluation = await call_evaluator(query, data_summary[:3000])
         logger.info(f"📊 Оценка: sufficient={evaluation.get('is_sufficient')}, confidence={evaluation.get('confidence')}")
         
         if evaluation.get("is_sufficient", False) or evaluation.get("confidence", 0) >= TARGET_CONFIDENCE:
             break
         
-        # Если недостаточно — генерируем новые подзадачи
         if iteration < max_iterations:
             suggested = evaluation.get("suggested_search", [])
             if suggested:
@@ -1109,11 +1231,20 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                     subtasks.append({"id": len(subtasks)+1, "action": "search", "params": {"query": sq}})
                 logger.info(f"➕ Добавлены новые поисковые запросы: {suggested[:2]}")
             else:
-                # Если нет предложений, просто добавляем общий поиск с переформулировкой
                 subtasks.append({"id": len(subtasks)+1, "action": "search", "params": {"query": query + " подробно"}})
     
     # 3. Генерация финального ответа
-    # Собираем все данные в читаемый вид
+    if progress_msg_id:
+        elapsed = int(time.time() - start_time)
+        progress_msg_id = await update_progress_message(
+            context=update.effective_message.get_bot(),
+            chat_id=update.effective_chat.id,
+            message_id=progress_msg_id,
+            elapsed=elapsed,
+            stage="Формирование ответа",
+            progress=80
+        )
+    
     sources_text = ""
     for item in all_data:
         if item.get("type") == "search_results":
@@ -1164,7 +1295,6 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
         if improved:
             answer = improved
         else:
-            # перегенерируем с учётом замечаний
             fix_prompt = f"Предыдущий ответ: {answer}\nЗамечания: {reflect.get('feedback')}\nИсправь ответ, устрани замечания."
             answer = await ask_deepseek(fix_prompt, temperature=0.2, use_pro=True)
     
@@ -1172,7 +1302,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
     memory.add_message("user", query)
     memory.add_message("assistant", answer)
     
-    # 6. Формируем список источников для кнопки
+    # 6. Формируем список источников
     sources_for_button = []
     for item in all_data:
         if item.get("type") == "search_results":
@@ -1192,21 +1322,30 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
                     "type": "page"
                 })
     
-    # Уникальные источники по ссылке
     unique = {}
     for src in sources_for_button:
         if src["link"] and src["link"] not in unique:
             unique[src["link"]] = src
     sources_for_button = list(unique.values())[:10]
     
-    # Уверенность
     avg_confidence = 0
     if all_data:
-        # приблизительно
         conf = 60 + len(sources_for_button) * 3
         avg_confidence = min(100, conf)
     else:
         avg_confidence = 0
+    
+    # Финальное обновление прогресса
+    if progress_msg_id:
+        elapsed = int(time.time() - start_time)
+        await update_progress_message(
+            context=update.effective_message.get_bot(),
+            chat_id=update.effective_chat.id,
+            message_id=progress_msg_id,
+            elapsed=elapsed,
+            stage="Готово ✅",
+            progress=100
+        )
     
     return answer, sources_for_button, avg_confidence
 
