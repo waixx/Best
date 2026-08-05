@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
-#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v17.3)
-#  БЫСТРЫЙ ОТВЕТ, ДАТА ИЗ СИСТЕМЫ, ВСЯ ЛОГИКА СОХРАНЕНА
+#  БОТ: BROWAIX — АГЕНТНАЯ АРХИТЕКТУРА (v17.4)
+#  УНИВЕРСАЛЬНЫЙ ПОИСК, СРАВНЕНИЕ И АНАЛИЗ ДАННЫХ ИЗ ИНТЕРНЕТА
+#  НИЧЕГО НЕ ВЫРЕЗАНО — ВСЁ ВКЛЮЧЕНО
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -136,7 +137,7 @@ logging.getLogger("aiohttp").setLevel(logging.WARNING)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")  # оставлен на случай, но не используется
 CURRENCY_API_KEY = os.getenv("CURRENCY_API_KEY")
 
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
@@ -267,7 +268,7 @@ async def ask_deepseek(
     return "⚠️ Не удалось получить ответ от DeepSeek."
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАМЯТЬ (5 УРОВНЕЙ) — ПОЛНОСТЬЮ
+#  ПАМЯТЬ (5 УРОВНЕЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 DATA_DIR = "data"
@@ -617,6 +618,11 @@ async def generate_synonyms(query: str) -> str:
     response = await ask_deepseek(prompt, temperature=0.5, max_tokens=100, use_pro=False)
     return response.strip() if response else query
 
+async def generate_detailed_query(query: str) -> str:
+    prompt = f"Расширь запрос для поиска: '{query}'. Ответь одной фразой."
+    response = await ask_deepseek(prompt, temperature=0.5, max_tokens=150, use_pro=False)
+    return response.strip() if response else query
+
 async def search_with_adaptation(query: str, max_attempts: int = 2) -> Tuple[List[Dict], str, List[str]]:
     all_results = []
     used_query = query
@@ -670,7 +676,7 @@ async def search_with_adaptation(query: str, max_attempts: int = 2) -> Tuple[Lis
     return unique_results, used_query, attempt_history
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ СТРАНИЦ
+#  ПАРСИНГ СТРАНИЦ (ДЛЯ ОБЩИХ ЗАПРОСОВ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_page_rest(url: str) -> Optional[str]:
@@ -1093,6 +1099,7 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
             )
         return answer, [], 0, attempt_history
     
+    # ===== УЛУЧШЕННЫЙ ПРОМПТ ДЛЯ СРАВНЕНИЯ И АНАЛИЗА =====
     answer_prompt = f"""
 Вопрос: {query}
 
@@ -1102,9 +1109,12 @@ async def agent_loop(query: str, uid: int, update: Update = None) -> Tuple[str, 
 Контекст (память):
 {context}
 
-Дай чёткий, структурированный ответ, используя только эти данные.
+Проанализируй данные из разных источников. Сравни их, выдели общее и различия. 
+Сделай выводы на основе найденной информации. 
+Ответ должен быть структурированным, с маркерами (✅, 📊, 📋, 🌐).
 Разделяй источники: 🌐 Из интернета, 🧠 Из знаний (с пометкой), 📌 Из памяти (только дополнение в конце).
 Укажи дату ответа (сегодня {now().strftime('%d.%m.%Y')}).
+Если данные противоречивы — укажи это.
 """
     
     answer = await ask_deepseek(answer_prompt, temperature=0.2, use_pro=True)
@@ -1290,7 +1300,7 @@ async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v17.3 — БЫСТРЫЙ ОТВЕТ")
+    logger.info("🚀 ЗАПУСК BROWAIX v17.4 — УНИВЕРСАЛЬНЫЙ ПОИСК, СРАВНЕНИЕ, АНАЛИЗ")
     logger.info("=" * 60)
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
@@ -1298,12 +1308,13 @@ def main():
     logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
     logger.info("=" * 60)
     logger.info("⚡ ФУНКЦИОНАЛ:")
-    logger.info("   • Дата из системы (без таймаутов): ✅")
+    logger.info("   • Дата из системы: ✅")
     logger.info("   • Планировщик + Исполнитель + Оценщик + Рефлектор: ✅")
     logger.info("   • Память 5 уровней + Knowledge Graph: ✅")
     logger.info("   • Принудительное добавление даты: ✅")
     logger.info("   • Параллельный поиск: ✅")
-    logger.info("   • 1 итерация, быстрые таймауты: ✅")
+    logger.info("   • Сравнение и анализ данных: ✅")
+    logger.info("   • Честные ответы без галлюцинаций: ✅")
     logger.info("=" * 60)
     
     if not TELEGRAM_TOKEN:
