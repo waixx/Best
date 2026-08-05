@@ -9,8 +9,8 @@
 📌 ОСНОВНЫЕ ВОЗМОЖНОСТИ:
 ────────────────────────────────────────────────────────────────────
 1. 🔍 ПОИСК В ИНТЕРНЕТЕ
-   - APISerpent (ОСНОВНОЙ) с универсальным парсингом
-   - Serper (РЕЗЕРВНЫЙ)
+   - APISerpent (ОСНОВНОЙ И ЕДИНСТВЕННЫЙ) с правильным парсингом
+   - Глубокий поиск (deep=true) с локализацией (ru)
    - Параллельный поиск по вариантам запросов
    - Итеративный поиск (до 2 итераций)
    - Ранний выход при уверенности ≥ 85%
@@ -29,11 +29,12 @@
    - Счётчик времени
    - Кнопка "Показать источники"
 
-5. 🛡️ ЗАЩИТА ОТ ОБМАНА
-   - Запрет фраз "нет доступа", "не могу найти"
+5. 🛡️ ЗАЩИТА ОТ ОБМАНА (УСИЛЕННАЯ)
+   - Запрет фраз: "нет доступа", "не могу найти", "нет интернета", "я не могу", "нет информации", "не знаю", "не удалось", "по моему мнению", "я считаю", "я думаю", "возможно", "вероятно", "скорее всего", "примерно", "около", "приблизительно", "как мне кажется", "наверное"
+   - Запрет смешивать знания с интернетом
    - Запрет выдумывать (усиленный)
-   - Запрет "по моему мнению", "я считаю"
-   - Проверка качества ответа
+   - Проверка структуры ответа (наличие маркеров)
+   - Проверка уникальности слов
 """
 
 import logging
@@ -77,31 +78,30 @@ logger = logging.getLogger(__name__)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 # ═══════════════════════════════════════════════════════════════════
-#  КОНФИГ (БАЛАНС КАЧЕСТВА И БЮДЖЕТА) ⚡
+#  КОНФИГ (ОПТИМИЗИРОВАННЫЙ ПОД КАЧЕСТВО И БЮДЖЕТ НА 4 МЕСЯЦА)
 # ═══════════════════════════════════════════════════════════════════
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+# ⚡ SERPER_API_KEY удалён — больше не используется
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-# ⚡ БАЛАНС: качество + скорость + бюджет
 PAGE_TIMEOUT = 3
-SEARCH_RESULTS = 10
-DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"   # Для вариантов и вспомогательных задач
-DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"       # Только для финального ответа
+SEARCH_RESULTS = 15                      # ⚡ Увеличено до 15 для полноты
+DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"
+DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
 CACHE_TTL = 900
 ANSWER_CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 12                      # ⚡ Увеличен до 12
-MAX_TOKENS_OUTPUT = 4000                     # ⚡ Увеличен до 4000 (качество)
-MAX_TOKENS_VARIANTS = 300                    # ⚡ Увеличен до 300
+APISERPENT_TIMEOUT = 20                  # ⚡ Увеличен до 20 сек (глубокий поиск требует времени)
+MAX_TOKENS_OUTPUT = 4000                 # ⚡ Качество
+MAX_TOKENS_VARIANTS = 300                # ⚡ Качество
 MAX_ITERATIONS = 2
 TARGET_CONFIDENCE = 95
 EARLY_EXIT_CONFIDENCE = 85
-MAX_PAGES_PER_ITERATION = 3                  # ⚡ 3 страницы для полноты
-MAX_VARIANTS = 3                             # ⚡ 3 варианта
+MAX_PAGES_PER_ITERATION = 3              # ⚡ Полнота
+MAX_VARIANTS = 3                         # ⚡ Качество
 BROWSER_TIMEOUT = 5
 
 # REST-эндпоинт Playwright (если есть)
@@ -168,28 +168,36 @@ async def get_session():
     return _http_session
 
 # ═══════════════════════════════════════════════════════════════════
-#  DEEPSEEK (С КЭШИРОВАНИЕМ)
+#  DEEPSEEK (С КЭШИРОВАНИЕМ И УСИЛЕННОЙ ПРОВЕРКОЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 def cache_key(prompt: str) -> str:
     return hashlib.md5(prompt.encode('utf-8')).hexdigest()
 
 def check_answer_quality(answer: str, min_length: int = 200) -> Tuple[bool, str]:
-    """Смягчённая проверка качества"""
     if not answer:
         return False, "Ответ пустой"
     if len(answer) < min_length:
-        return False, f"Ответ слишком короткий ({len(answer)} символов)"
+        return False, f"Ответ слишком короткий ({len(answer)} символов, нужно {min_length})"
     forbidden = [
         "нет доступа", "не могу найти", "нет интернета",
-        "по моему мнению", "я считаю", "я думаю"
+        "я не могу", "нет информации", "не знаю", "не удалось",
+        "по моему мнению", "я считаю", "я думаю", "на мой взгляд",
+        "возможно", "вероятно", "скорее всего",
+        "примерно", "около", "приблизительно",
+        "как мне кажется", "наверное"
     ]
     for phrase in forbidden:
         if phrase in answer.lower():
             return False, f"Обнаружена запрещённая фраза: '{phrase}'"
+    markers = ["**", "📊", "✅", "🧠", "🌐", "📋"]
+    if not any(marker in answer for marker in markers):
+        return False, "Ответ не структурирован (нет маркеров)"
     words = answer.split()
-    if len(words) < 15:
-        return False, "Ответ слишком короткий"
+    if len(words) > 30:
+        unique_ratio = len(set(words)) / len(words)
+        if unique_ratio < 0.35:
+            return False, "Ответ содержит слишком много повторов"
     return True, "OK"
 
 async def ask_deepseek(
@@ -198,11 +206,6 @@ async def ask_deepseek(
     max_tokens: int = MAX_TOKENS_OUTPUT,
     use_pro: bool = True
 ) -> str:
-    """
-    Универсальный вызов DeepSeek.
-    use_pro=True → V4-Pro (финальный ответ)
-    use_pro=False → V4-Flash (варианты, вспомогательные задачи)
-    """
     key = cache_key(prompt)
     if key in answer_cache and (time.time() - answer_cache[key]['time']) < ANSWER_CACHE_TTL:
         cached = answer_cache[key]['data']
@@ -217,7 +220,7 @@ async def ask_deepseek(
     logger.info(f"🧠 DeepSeek: {model} {'(Pro)' if use_pro else '(Flash)'}")
     logger.debug(f"📝 Промпт (первые 300): {prompt[:300]}...")
 
-    for attempt in range(3):  # ⚡ 3 попытки для надёжности
+    for attempt in range(3):
         try:
             session = await get_session()
             payload = {
@@ -543,20 +546,37 @@ async def send_progress_updates(chat_id, context, start_time):
         logger.error(f"❌ Ошибка прогресса: {e}")
 
 # ═══════════════════════════════════════════════════════════════════
-#  ПОИСК (APISerpent + Serper)
+#  ⭐ ПОИСК — ТОЛЬКО APISERPENT (SERPER УДАЛЁН)
 # ═══════════════════════════════════════════════════════════════════
 
 def normalize_query(query):
     return re.sub(r'[^\w\s]', '', query.lower()).strip()
 
 async def search_apiserpent(query: str) -> List[Dict]:
+    """
+    Поиск через APISerpent (ОСНОВНОЙ И ЕДИНСТВЕННЫЙ).
+    Использует глубокий поиск с локализацией.
+    """
     if not APISERPENT_API_KEY:
         logger.error("❌ APISERPENT_API_KEY не задан!")
         return []
+    
     try:
         session = await get_session()
         logger.info(f"🔍 APISerpent: {query[:50]}...")
-        params = {"q": query, "engine": "google", "num": SEARCH_RESULTS}
+        
+        # ⚡ Параметры для глубокого поиска с локализацией
+        params = {
+            "q": query,
+            "engine": "google",              # можно заменить на "bing" или "ddg" для скорости
+            "num": SEARCH_RESULTS,           # 15 результатов
+            "deep": "true",                  # глубокий поиск (обход защиты)
+            "country": "ru",                 # локализация для России
+            "language": "ru",                # язык результатов
+        }
+        
+        logger.debug(f"📤 Параметры APISerpent: {params}")
+        
         async with session.get(
             "https://apiserpent.com/api/search",
             params=params,
@@ -564,83 +584,108 @@ async def search_apiserpent(query: str) -> List[Dict]:
             timeout=APISERPENT_TIMEOUT
         ) as r:
             logger.info(f"📡 APISerpent статус: {r.status}")
+            response_text = await r.text()
+            logger.debug(f"📄 APISerpent RAW JSON: {response_text[:2000]}...")
+            
             if r.status == 200:
-                data = await r.json()
+                try:
+                    data = json.loads(response_text)
+                except json.JSONDecodeError:
+                    logger.error("❌ Ошибка парсинга JSON")
+                    return []
+                
                 results = []
-                organic = data.get("organic_results") or data.get("organic") or data.get("results", {}).get("organic") or []
-                if organic:
-                    for item in organic:
-                        if isinstance(item, dict):
-                            results.append({
-                                "title": item.get("title", "") or item.get("name", ""),
-                                "snippet": item.get("snippet", "") or item.get("description", "") or item.get("text", ""),
-                                "link": item.get("link", "") or item.get("url", ""),
-                                "source": "organic"
-                            })
-                    logger.info(f"✅ APISerpent нашёл {len(results)} результатов")
-                    return results
-                for block in ["answer_box", "featured_snippet", "people_also_ask"]:
-                    if block in data and isinstance(data[block], dict):
-                        snippet = data[block].get("snippet") or data[block].get("answer") or ""
-                        if snippet:
-                            results.append({
-                                "title": data[block].get("title", block),
-                                "snippet": snippet,
-                                "link": data[block].get("link", ""),
-                                "source": block
-                            })
-                            logger.info(f"✅ Найден блок '{block}'")
-                            return results
+                
+                # ⭐ ПРАВИЛЬНЫЙ ПУТЬ: data → results → organic
+                if "results" in data and isinstance(data["results"], dict):
+                    organic = data["results"].get("organic", [])
+                    if organic:
+                        logger.info(f"✅ Найдено {len(organic)} результатов в results.organic")
+                        for item in organic:
+                            if isinstance(item, dict):
+                                results.append({
+                                    "title": item.get("title", "") or item.get("name", ""),
+                                    "snippet": item.get("snippet", "") or item.get("description", "") or item.get("text", ""),
+                                    "link": item.get("url", "") or item.get("link", ""),
+                                    "source": "organic"
+                                })
+                        return results
+                
+                # Если organic не найден, пробуем другие блоки
+                for block in ["ai_overview", "featured_snippet", "people_also_ask", "knowledge_graph"]:
+                    if block in data.get("results", {}):
+                        block_data = data["results"][block]
+                        if isinstance(block_data, dict):
+                            snippet = block_data.get("snippet") or block_data.get("answer") or block_data.get("description") or ""
+                            if snippet:
+                                results.append({
+                                    "title": block_data.get("title", block),
+                                    "snippet": snippet,
+                                    "link": block_data.get("url", ""),
+                                    "source": block
+                                })
+                                logger.info(f"✅ Найден блок '{block}'")
+                                return results
+                
                 logger.warning("⚠️ Результатов не найдено")
                 return []
             else:
-                logger.error(f"❌ APISerpent HTTP {r.status}")
+                logger.error(f"❌ APISerpent HTTP {r.status}: {response_text[:200]}")
                 return []
+                
     except asyncio.TimeoutError:
-        logger.error(f"⏰ Таймаут APISerpent")
+        logger.error(f"⏰ Таймаут APISerpent ({APISERPENT_TIMEOUT} сек)")
+        # При таймауте пробуем ещё раз с упрощёнными параметрами
+        try:
+            logger.info("🔄 Повторная попытка с engine='bing' и без deep...")
+            params = {"q": query, "engine": "bing", "num": 10}
+            async with session.get(
+                "https://apiserpent.com/api/search",
+                params=params,
+                headers={"X-API-Key": APISERPENT_API_KEY},
+                timeout=15
+            ) as r2:
+                if r2.status == 200:
+                    data = await r2.json()
+                    if "results" in data and isinstance(data["results"], dict):
+                        organic = data["results"].get("organic", [])
+                        if organic:
+                            results = []
+                            for item in organic:
+                                if isinstance(item, dict):
+                                    results.append({
+                                        "title": item.get("title", "") or item.get("name", ""),
+                                        "snippet": item.get("snippet", "") or item.get("description", "") or item.get("text", ""),
+                                        "link": item.get("url", "") or item.get("link", ""),
+                                        "source": "organic"
+                                    })
+                            logger.info(f"✅ APISerpent (Bing) нашёл {len(results)} результатов")
+                            return results
+        except Exception as e2:
+            logger.warning(f"⚠️ Повторная попытка не удалась: {e2}")
     except Exception as e:
         logger.error(f"💥 Ошибка APISerpent: {e}")
+        logger.error(traceback.format_exc())
+    
     return []
 
-async def search_serper(query: str) -> List[Dict]:
-    if not SERPER_API_KEY:
-        return []
-    try:
-        session = await get_session()
-        logger.info(f"🔄 Serper (резерв): {query[:50]}...")
-        async with session.post(
-            "https://google.serper.dev/search",
-            json={"q": query, "num": SEARCH_RESULTS},
-            headers={"X-API-KEY": SERPER_API_KEY},
-            timeout=10
-        ) as r:
-            if r.status == 200:
-                data = await r.json()
-                results = []
-                for x in data.get("organic", []):
-                    if isinstance(x, dict):
-                        results.append({
-                            "title": x.get("title", ""),
-                            "snippet": x.get("snippet", ""),
-                            "link": x.get("link", ""),
-                            "source": "organic"
-                        })
-                logger.info(f"✅ Serper нашёл {len(results)} результатов")
-                return results
-    except Exception as e:
-        logger.warning(f"⚠️ Serper ошибка: {e}")
-    return []
+# ═══════════════════════════════════════════════════════════════════
+#  ⭐ SEARCH_WITH_CACHE — ТОЛЬКО APISERPENT
+# ═══════════════════════════════════════════════════════════════════
 
 async def search_with_cache(query: str) -> List[Dict]:
+    """Поиск с кэшем - ТОЛЬКО APISerpent (Serper удалён)"""
     norm = normalize_query(query)
+    
     if norm in search_cache and (time.time() - search_cache[norm]['time']) < CACHE_TTL:
         logger.info(f"♻️ Из кэша: {query[:30]}...")
         return search_cache[norm]['data']
+    
     logger.info(f"🔍 Поиск через APISerpent: {query[:50]}...")
     results = await search_apiserpent(query)
-    if not results:
-        logger.info("🔄 Пробуем Serper (резерв)...")
-        results = await search_serper(query)
+    
+    # ⭐ Serper НЕ ИСПОЛЬЗУЕТСЯ — полностью удалён
+    
     search_cache[norm] = {'data': results, 'time': time.time()}
     logger.info(f"📊 ИТОГО результатов: {len(results)}")
     return results
@@ -812,7 +857,7 @@ def parse_page(html: str, query: str) -> Dict:
             if table_text:
                 result['tables'].append('\n'.join(table_text))
         result['tables'] = result['tables'][:5]
-        # ⭐ Извлечение JSON-LD
+        # Извлечение JSON-LD
         for script in soup.find_all('script', type=['application/ld+json', 'application/json']):
             try:
                 if script.string:
@@ -904,13 +949,15 @@ async def generate_refined_variants(query: str, items: List[Dict]) -> List[str]:
     return list(dict.fromkeys(variants))[:MAX_VARIANTS]
 
 # ═══════════════════════════════════════════════════════════════════
-#  РАСЧЁТ УВЕРЕННОСТИ
+#  РАСЧЁТ УВЕРЕННОСТИ (УЛУЧШЕННЫЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 def calculate_confidence(pages: List[Dict]) -> Dict:
     confidence = {'overall': 0, 'source_reliability': 0, 'data_completeness': 0, 'recency': 0, 'consensus': 0}
     if not pages:
         return confidence
+    
+    # Надёжность источников
     reliable_sources = 0
     for p in pages[:3]:
         url = p.get('url', '')
@@ -919,13 +966,21 @@ def calculate_confidence(pages: List[Dict]) -> Dict:
         elif any(d in url for d in ['.com', '.org', '.net', '.ru']):
             reliable_sources += 0.5
     confidence['source_reliability'] = min(100, (reliable_sources / max(len(pages[:3]), 1)) * 100)
+    
+    # Полнота данных (учитываем количество элементов)
     structure_count = 0
+    text_length = 0
     for p in pages:
-        parsed = p.get('parsed', {})
-        structure_count += len(parsed.get('lists', [])) + len(parsed.get('headings', []))
-    confidence['data_completeness'] = min(100, structure_count * 10)
+        structure_count += len(p.get('lists', [])) + len(p.get('headings', [])) + len(p.get('tables', []))
+        text_length += len(p.get('full_text', ''))
+    confidence['data_completeness'] = min(100, structure_count * 10 + min(20, text_length // 1000))
+    
+    # Свежесть
     confidence['recency'] = 50
+    
+    # Согласованность
     confidence['consensus'] = 50
+    
     confidence['overall'] = int(
         confidence['source_reliability'] * 0.30 +
         confidence['data_completeness'] * 0.25 +
@@ -990,9 +1045,8 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         time_fetch += t_fetch
         logger.info(f"⏱️ Загрузка страниц итерации {iteration}: {t_fetch:.2f} сек")
         
-        # ⭐ СБОР ВСЕХ ДАННЫХ (текст, JSON-LD, заголовки, списки, таблицы, метрики)
+        # Сбор всех данных
         for page in pages:
-            # Полный текст страницы (до 4000 символов)
             full_text = page.get('full_text', '')
             if full_text:
                 all_items.append({
@@ -1000,7 +1054,6 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
                     'snippet': full_text[:4000],
                     'source': 'page_full_text'
                 })
-            # Структурированные данные JSON-LD
             for jdata in page.get('json_data', []):
                 if jdata:
                     all_items.append({
@@ -1008,24 +1061,19 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
                         'snippet': jdata[:1000],
                         'source': 'json_ld'
                     })
-            # Заголовки
             for h in page.get('headings', []):
                 if h:
                     all_items.append({'title': '📌 Заголовок', 'snippet': h, 'source': 'heading'})
-            # Списки
             for lst in page.get('lists', []):
                 for item in lst:
                     if item and len(item) > 10:
                         all_items.append({'title': '📋 Список', 'snippet': item[:300], 'source': 'list'})
-            # Таблицы
             for table in page.get('tables', []):
                 if table:
                     all_items.append({'title': '📊 Таблица', 'snippet': table[:500], 'source': 'table'})
-            # Метрики
             for metric in page.get('metrics', []):
                 if metric:
                     all_items.append({'title': '🔢 Метрика', 'snippet': metric, 'source': 'metric'})
-            # Ключевые факты
             for fact in page.get('key_facts', []):
                 if fact:
                     all_items.append({'title': '📅 Факт', 'snippet': fact, 'source': 'fact'})
@@ -1059,7 +1107,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         answer = await ask_deepseek(fallback_prompt, temperature=0.3, use_pro=False)
         return answer, [], 0.0
     
-    # ⭐ ФОРМИРУЕМ ДЕТАЛЬНЫЙ ДАМП
+    # Формируем дамп
     text_parts = []
     full_texts = [item for item in all_items if item.get('source') == 'page_full_text']
     other_items = [item for item in all_items if item.get('source') != 'page_full_text']
@@ -1080,7 +1128,6 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
     
     items_text = "\n".join(text_parts)
     
-    # ⭐ ПРОМПТ С ЧЁТКОЙ ИНСТРУКЦИЕЙ
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
@@ -1101,6 +1148,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
 4. **УКАЗЫВАЙ ИСТОЧНИКИ** — откуда взята информация.
 5. **СТРУКТУРИРУЙ ОТВЕТ** — выдели основные факты, детали, цифры.
 6. **ЕСЛИ ЦИФРЫ БЕЗ КОНТЕКСТА** — честно скажи об этом.
+7. **ИСПОЛЬЗУЙ МАРКЕРЫ**: **, 📊, ✅, 🧠, 🌐, 📋 для структуры.
 
 Вопрос: {query}
 
@@ -1123,7 +1171,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
 
 Вопрос: {query}
 
-ОТВЕТЬ РАЗВЁРНУТО, НЕ ВРИ, НЕ ВЫДУМЫВАЙ.
+ОТВЕТЬ РАЗВЁРНУТО, НЕ ВРИ, НЕ ВЫДУМЫВАЙ. ИСПОЛЬЗУЙ МАРКЕРЫ.
 """
         answer = await ask_deepseek(retry_prompt, temperature=0.2, max_tokens=MAX_TOKENS_OUTPUT, use_pro=True)
     
@@ -1429,23 +1477,24 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX v4.1 (БАЛАНС КАЧЕСТВА И БЮДЖЕТА)")
+    logger.info("🚀 ЗАПУСК BROWAIX v5.0 (APISERPENT ТОЛЬКО, БЕЗ SERPER)")
     logger.info("=" * 60)
     logger.info("🔑 Проверка API ключей:")
     logger.info(f"   Telegram: {'✅' if TELEGRAM_TOKEN else '❌'}")
     logger.info(f"   DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
-    logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'}")
-    logger.info(f"   Serper: {'✅' if SERPER_API_KEY else '❌'}")
+    logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'} (ОСНОВНОЙ И ЕДИНСТВЕННЫЙ)")
+    logger.info(f"   Serper: ❌ (ОТКЛЮЧЁН — больше не используется)")
     logger.info(f"   Playwright REST: {'✅' if BROWSER_WS_ENDPOINT else '❌'}")
     logger.info("=" * 60)
     logger.info("⚡ ПАРАМЕТРЫ:")
-    logger.info(f"   • Модели: Flash для вариантов, Pro для финального ответа")
+    logger.info(f"   • Модели: Flash для вариантов, Pro для ответа")
     logger.info(f"   • Итераций: {MAX_ITERATIONS}")
     logger.info(f"   • Страниц за итерацию: {MAX_PAGES_PER_ITERATION}")
     logger.info(f"   • Макс. токенов ответа: {MAX_TOKENS_OUTPUT}")
     logger.info(f"   • Вариантов запросов: {MAX_VARIANTS}")
     logger.info(f"   • Парсинг JSON-LD: включён")
     logger.info(f"   • Кэширование промптов: включено")
+    logger.info(f"   • APISerpent таймаут: {APISERPENT_TIMEOUT} сек (глубокий поиск)")
     logger.info("=" * 60)
     
     if not TELEGRAM_TOKEN:
@@ -1455,7 +1504,8 @@ def main():
         logger.error("❌ DEEPSEEK_API_KEY не задан!")
         return
     if not APISERPENT_API_KEY:
-        logger.warning("⚠️ APISERPENT_API_KEY не задан! Поиск не будет работать!")
+        logger.error("❌ APISERPENT_API_KEY не задан! Поиск не будет работать!")
+        return
     
     logger.info("✅ Запускаем бота...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
