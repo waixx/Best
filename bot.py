@@ -106,7 +106,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 APISERPENT_API_KEY = os.getenv("APISERPENT_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
@@ -122,8 +121,17 @@ MAX_TOKENS_VARIANTS = 300
 MAX_ITERATIONS = 3
 TARGET_CONFIDENCE = 95
 EARLY_EXIT_CONFIDENCE = 85
-MAX_PAGES_PER_ITERATION = 5          # ⭐ УВЕЛИЧЕНО до 5
+MAX_PAGES_PER_ITERATION = 5
 MAX_VARIANTS = 4
+
+# ⭐ ИЗМЕНЕНО ДЛЯ BROWSERLESS: читаем правильные переменные и токен
+BROWSER_WS_ENDPOINT = os.getenv("BROWSER_WS_ENDPOINT_PRIVATE", "") or os.getenv("BROWSER_WS_ENDPOINT", "")
+BROWSER_TOKEN = os.getenv("BROWSER_TOKEN", "")
+
+# Для обратной совместимости (если используется старое имя) – но теперь мы используем BROWSER_WS_ENDPOINT
+# Если оно пустое, пробуем BROWSERLESS_WS_ENDPOINT (на случай, если кто-то задал вручную)
+if not BROWSER_WS_ENDPOINT:
+    BROWSER_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
 
@@ -863,32 +871,48 @@ async def search_parallel(variants: List[str], query: str) -> List[Dict]:
     return all_results
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ BROWSERLESS С ОЖИДАНИЕМ networkidle
+#  ⭐ BROWSERLESS С ОЖИДАНИЕМ networkidle И ТОКЕНОМ (ИСПРАВЛЕНО)
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_with_browserless(url: str) -> Optional[str]:
-    """Загрузка страницы через Browserless с ожиданием загрузки JS (networkidle)"""
-    if not PLAYWRIGHT_AVAILABLE or not BROWSERLESS_WS_ENDPOINT:
+    """Загрузка страницы через Browserless с токеном и ожиданием загрузки JS"""
+    if not PLAYWRIGHT_AVAILABLE:
+        logger.debug("ℹ️ Playwright не установлен – пропускаем Browserless")
         return None
+    if not BROWSER_WS_ENDPOINT:
+        logger.debug("ℹ️ BROWSER_WS_ENDPOINT не задан – пропускаем Browserless")
+        return None
+    
     try:
+        endpoint = BROWSER_WS_ENDPOINT
+        # Добавляем токен, если он есть
+        if BROWSER_TOKEN:
+            if '?' in endpoint:
+                endpoint += f"&token={BROWSER_TOKEN}"
+            else:
+                endpoint += f"?token={BROWSER_TOKEN}"
+        
+        logger.debug(f"🌐 Попытка Browserless: {url[:100]}...")
         async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(BROWSERLESS_WS_ENDPOINT)
+            browser = await p.chromium.connect_over_cdp(endpoint, timeout=15000)
+            logger.debug("✅ Подключились к Browserless")
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
             page = await context.new_page()
             try:
                 # Ждём полной загрузки (все запросы завершены)
-                await page.goto(url, wait_until="networkidle", timeout=15000)
+                await page.goto(url, wait_until="networkidle", timeout=30000)
                 # Дополнительная пауза для рендеринга
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(2000)
                 html = await page.content()
+                logger.debug(f"✅ Browserless загрузил страницу (длина {len(html)})")
                 return html
             except Exception as e:
-                logger.debug(f"⚠️ Browserless ошибка: {e}")
+                logger.warning(f"⚠️ Browserless ошибка при загрузке {url}: {e}")
                 return None
             finally:
                 await page.close()
     except Exception as e:
-        logger.debug(f"⚠️ Browserless общая ошибка: {e}")
+        logger.warning(f"⚠️ Browserless общая ошибка (подключение): {e}")
         return None
 
 async def fetch_http(url: str) -> Optional[str]:
@@ -901,6 +925,35 @@ async def fetch_http(url: str) -> Optional[str]:
     except Exception:
         pass
     return None
+
+def empty_page_result():
+    """Возвращает пустой результат парсинга"""
+    return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': [], 'metrics': [], 'tables': [], 'full_text': ''}
+
+async def fetch_page(url: str, query: str) -> Dict:
+    """Загрузка страницы с приоритетом Browserless, затем HTTP"""
+    if not url:
+        return empty_page_result()
+    
+    html = None
+    # Сначала пытаемся через Browserless
+    if PLAYWRIGHT_AVAILABLE and BROWSER_WS_ENDPOINT:
+        html = await fetch_with_browserless(url)
+    else:
+        logger.debug("ℹ️ Browserless не используется (недоступен)")
+    
+    # Если не удалось, пробуем HTTP
+    if not html:
+        logger.debug(f"🌐 Загрузка через HTTP: {url[:100]}...")
+        html = await fetch_http(url)
+        if html:
+            logger.debug(f"✅ HTTP загрузил страницу (длина {len(html)})")
+    
+    if html:
+        return parse_page(html, query)
+    
+    logger.debug(f"❌ Не удалось загрузить страницу: {url[:100]}...")
+    return empty_page_result()
 
 # ═══════════════════════════════════════════════════════════════════
 #  ⭐ АГРЕССИВНЫЙ ПАРСИНГ (ВСЁ ПОДРЯД)
@@ -1016,32 +1069,6 @@ def parse_page(html: str, query: str) -> Dict:
         logger.debug(f"⚠️ Ошибка парсинга: {e}")
     
     return result
-
-async def fetch_page(url: str, query: str) -> Dict:
-    """Загрузка страницы с приоритетом Browserless, затем HTTP"""
-    if not url:
-        return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': [], 'metrics': [], 'tables': [], 'full_text': ''}
-    
-    html = None
-    # Сначала пытаемся через Browserless
-    if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
-        logger.debug(f"🌐 Загрузка через Browserless: {url[:100]}...")
-        html = await fetch_with_browserless(url)
-        if html:
-            logger.debug(f"✅ Browserless загрузил страницу (длина {len(html)})")
-    
-    # Если не удалось, пробуем HTTP
-    if not html:
-        logger.debug(f"🌐 Загрузка через HTTP: {url[:100]}...")
-        html = await fetch_http(url)
-        if html:
-            logger.debug(f"✅ HTTP загрузил страницу (длина {len(html)})")
-    
-    if html:
-        return parse_page(html, query)
-    
-    logger.debug(f"❌ Не удалось загрузить страницу: {url[:100]}...")
-    return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': [], 'metrics': [], 'tables': [], 'full_text': ''}
 
 # ═══════════════════════════════════════════════════════════════════
 #  ⭐ ЗАГРУЗКА СТРАНИЦ (увеличено до 5)
@@ -1744,7 +1771,7 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v3.1 (АГРЕССИВНЫЙ ПАРСИНГ)")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v3.2 (ИСПРАВЛЕН BROWSERLESS)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1752,14 +1779,22 @@ def main():
     logger.info(f"   DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'}")
     logger.info(f"   APISerpent: {'✅' if APISERPENT_API_KEY else '❌'} (ОСНОВНОЙ)")
     logger.info(f"   Serper: {'✅' if SERPER_API_KEY else '❌'} (РЕЗЕРВ)")
-    logger.info(f"   Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
+    logger.info(f"   Browserless endpoint: {'✅' if BROWSER_WS_ENDPOINT else '❌'}")
+    logger.info(f"   Browserless token: {'✅' if BROWSER_TOKEN else '❌'}")
+    logger.info(f"   Playwright установлен: {'✅' if PLAYWRIGHT_AVAILABLE else '❌'}")
+    
+    if BROWSER_WS_ENDPOINT and PLAYWRIGHT_AVAILABLE:
+        logger.info("   Browserless готов к использованию")
+    else:
+        logger.warning("   ⚠️ Browserless НЕДОСТУПЕН! Будут использоваться только HTTP-запросы (без JS)")
+    
     logger.info("=" * 60)
-    logger.info("✅ ИЗМЕНЕНИЯ v3.1:")
-    logger.info("   • Browserless с ожиданием networkidle")
-    logger.info("   • Парсинг всего: таблицы, метрики, полный текст")
-    logger.info("   • Загрузка до 5 страниц за итерацию")
-    logger.info("   • Мягкая фильтрация (только спам/видео)")
-    logger.info("   • Сбор всех элементов для DeepSeek")
+    logger.info("✅ ИЗМЕНЕНИЯ v3.2:")
+    logger.info("   • Исправлена переменная BROWSER_WS_ENDPOINT (было BROWSERLESS_WS_ENDPOINT)")
+    logger.info("   • Добавлена поддержка BROWSER_TOKEN")
+    logger.info("   • Приоритет приватного эндпоинта (BROWSER_WS_ENDPOINT_PRIVATE)")
+    logger.info("   • Увеличены таймауты Browserless до 30 сек")
+    logger.info("   • Добавлено логирование подключения к Browserless")
     
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN не задан!")
