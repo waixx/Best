@@ -12,8 +12,8 @@
    - APISerpent (ОСНОВНОЙ) с универсальным парсингом organic_results
    - Serper (РЕЗЕРВНЫЙ, при ошибке APISerpent)
    - Параллельный поиск по вариантам запросов
-   - Итеративный поиск (до 5 итераций)
-   - Ранний выход при уверенности ≥ 90%
+   - Итеративный поиск (до 3 итераций)
+   - Ранний выход при уверенности ≥ 85%
    - num=10 для оптимальной скорости
 
 2. 🧠 ПАМЯТЬ (5 УРОВНЕЙ)
@@ -46,8 +46,8 @@
 6. 📦 ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ
    - Модель: deepseek-v4-pro и deepseek-v4-flash
    - Макс. токенов: 4000 для ответа, 300 для вспомогательных
-   - Страниц за итерацию: 2 (оптимизировано)
-   - Макс. итераций: 3 (оптимизировано)
+   - Страниц за итерацию: 5 (оптимизировано для полноты)
+   - Макс. итераций: 3
    - Кэширование: 15 мин (поиск), 1 час (ответы)
 """
 
@@ -87,7 +87,7 @@ load_dotenv()
 # ═══════════════════════════════════════════════════════════════════
 
 logging.basicConfig(
-    level=logging.DEBUG,  # ⭐ ИЗМЕНЕНО на DEBUG для детальных логов
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
@@ -110,19 +110,19 @@ BROWSERLESS_WS_ENDPOINT = os.getenv("BROWSERLESS_WS_ENDPOINT", "")
 ALLOWED_USERS = [int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
 ALLOW_ALL = not ALLOWED_USERS
 
-PAGE_TIMEOUT = 3          # ⭐ ИЗМЕНЕНО: 3 сек (было 4)
-SEARCH_RESULTS = 10       # ⭐ ИЗМЕНЕНО: 10 (было 15)
-DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"      # ⭐ АКТУАЛИЗИРОВАНО
-DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"  # ⭐ АКТУАЛИЗИРОВАНО
+PAGE_TIMEOUT = 3
+SEARCH_RESULTS = 10
+DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
+DEEPSEEK_MODEL_FLASH = "deepseek-v4-flash"
 CACHE_TTL = 900
 ANSWER_CACHE_TTL = 3600
-APISERPENT_TIMEOUT = 15   # ⭐ ИЗМЕНЕНО: 15 сек (было 20)
-MAX_TOKENS_OUTPUT = 4000  # ⭐ ИЗМЕНЕНО: 4000 (было 8000)
-MAX_TOKENS_VARIANTS = 300 # ⭐ ИЗМЕНЕНО: 300 (было 500)
-MAX_ITERATIONS = 3        # ⭐ ИЗМЕНЕНО: 3 (было 5)
+APISERPENT_TIMEOUT = 15
+MAX_TOKENS_OUTPUT = 4000
+MAX_TOKENS_VARIANTS = 300
+MAX_ITERATIONS = 3
 TARGET_CONFIDENCE = 95
-EARLY_EXIT_CONFIDENCE = 85 # ⭐ ИЗМЕНЕНО: 85 (было 90)
-MAX_PAGES_PER_ITERATION = 2 # ⭐ ИЗМЕНЕНО: 2 (было 3)
+EARLY_EXIT_CONFIDENCE = 85
+MAX_PAGES_PER_ITERATION = 5          # ⭐ УВЕЛИЧЕНО до 5
 MAX_VARIANTS = 4
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow") or "UTC")
@@ -639,7 +639,6 @@ async def search_apiserpent(query: str) -> List[Dict]:
             logger.info(f"📡 APISerpent статус: {r.status}")
             
             response_text = await r.text()
-            # ⭐ ЛОГИРУЕМ ПОЛНЫЙ JSON (уровень DEBUG)
             logger.debug(f"📄 APISerpent RAW JSON: {response_text[:2000]}...")
             
             if r.status == 200:
@@ -663,7 +662,6 @@ async def search_apiserpent(query: str) -> List[Dict]:
                 
                 for key1, key2 in possible_keys:
                     if key2 is None:
-                        # Простой ключ
                         if key1 in data:
                             organic = data.get(key1, [])
                             if organic and isinstance(organic, list):
@@ -679,7 +677,6 @@ async def search_apiserpent(query: str) -> List[Dict]:
                                 found = True
                                 break
                     else:
-                        # Вложенный ключ: data[key1][key2]
                         if key1 in data and isinstance(data[key1], dict):
                             organic = data[key1].get(key2, [])
                             if organic and isinstance(organic, list):
@@ -699,7 +696,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
                     logger.info(f"✅ APISerpent нашёл {len(results)} результатов")
                     return results
                 
-                # Если не нашли organic, пробуем другие блоки (answer_box, featured_snippet, people_also_ask)
+                # Если не нашли organic, пробуем другие блоки
                 other_blocks = [
                     ("answer_box", "answer_box"),
                     ("featured_snippet", "featured_snippet"),
@@ -744,7 +741,7 @@ async def search_apiserpent(query: str) -> List[Dict]:
     return []
 
 async def search_serper(query: str) -> List[Dict]:
-    """Резервный поиск через Serper (ЕСЛИ APISerpent НЕ РАБОТАЕТ)"""
+    """Резервный поиск через Serper"""
     if not SERPER_API_KEY:
         logger.debug("ℹ️ SERPER_API_KEY не задан, пропускаем")
         return []
@@ -805,57 +802,37 @@ async def search_with_cache(query: str) -> List[Dict]:
     return results
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ НОВАЯ ФИЛЬТРАЦИЯ (ПО РЕЛЕВАНТНОСТИ)
+#  ⭐ МЯГКАЯ ФИЛЬТРАЦИЯ (только спам и видео)
 # ═══════════════════════════════════════════════════════════════════
 
 def is_useful_result(result: Dict, query: str) -> bool:
-    """
-    Оценка релевантности на основе совпадения слов запроса в заголовке и сниппете.
-    Возвращает True, если результат достаточно релевантен.
-    """
+    """Мягкая фильтрация: только явный спам и видео"""
     title = result.get('title', '').lower()
     snippet = result.get('snippet', '').lower()
     url = result.get('link', '').lower()
     
-    # Явный спам и реклама
+    # Явный спам
     spam_words = ['реклама', 'advertisement', 'sponsored', 'promoted']
     if any(w in title or w in snippet for w in spam_words):
         return False
     
-    # Видео-платформы (обычно не дают текстовой информации)
+    # Видео-платформы (там редко бывает текст)
     video_domains = ['youtube.com', 'youtu.be', 'vimeo.com', 'twitch.tv', 'tiktok.com']
     if any(d in url for d in video_domains):
         return False
     
-    # Извлекаем ключевые слова из запроса (игнорируем стоп-слова)
-    stop_words = {'как', 'что', 'почему', 'где', 'когда', 'кто', 'какой', 'какая', 'какое', 'какие'}
-    query_words = set(word for word in query.lower().split() if word not in stop_words and len(word) > 2)
-    if not query_words:
-        return True  # Если запрос слишком короткий, пропускаем фильтр
+    # Если сниппет очень короткий (< 50 символов) и нет чисел — скорее всего бесполезно
+    if len(snippet) < 50 and not re.search(r'\d', snippet):
+        return False
     
-    # Считаем совпадения в заголовке и сниппете
-    title_words = set(title.split())
-    snippet_words = set(snippet.split())
-    
-    title_match = len(query_words & title_words)
-    snippet_match = len(query_words & snippet_words)
-    
-    # Если хотя бы одно совпадение в заголовке или 2 в сниппете — считаем релевантным
-    if title_match >= 1 or snippet_match >= 2:
-        return True
-    
-    # Длинный сниппет (>200 символов) с высокой вероятностью полезен
-    if len(snippet) > 200:
-        return True
-    
-    return False
+    return True
 
 # ═══════════════════════════════════════════════════════════════════
 #  ПАРАЛЛЕЛЬНЫЙ ПОИСК (ОПТИМИЗИРОВАННЫЙ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_parallel(variants: List[str], query: str) -> List[Dict]:
-    """Параллельный поиск по вариантам с дедупликацией и фильтрацией"""
+    """Параллельный поиск по вариантам с дедупликацией и мягкой фильтрацией"""
     if not variants:
         return []
     
@@ -870,7 +847,6 @@ async def search_parallel(variants: List[str], query: str) -> List[Dict]:
         if results:
             logger.info(f"📊 Вариант {idx+1}: {len(results)} результатов")
             for r in results:
-                # Применяем фильтрацию
                 if not is_useful_result(r, query):
                     continue
                 url = r.get('link', '')
@@ -887,10 +863,11 @@ async def search_parallel(variants: List[str], query: str) -> List[Dict]:
     return all_results
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ BROWSERLESS + HTTP (ПРИОРИТЕТ BROWSERLESS)
+#  ⭐ BROWSERLESS С ОЖИДАНИЕМ networkidle
 # ═══════════════════════════════════════════════════════════════════
 
 async def fetch_with_browserless(url: str) -> Optional[str]:
+    """Загрузка страницы через Browserless с ожиданием загрузки JS (networkidle)"""
     if not PLAYWRIGHT_AVAILABLE or not BROWSERLESS_WS_ENDPOINT:
         return None
     try:
@@ -899,14 +876,19 @@ async def fetch_with_browserless(url: str) -> Optional[str]:
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
             page = await context.new_page()
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                # Ждём полной загрузки (все запросы завершены)
+                await page.goto(url, wait_until="networkidle", timeout=15000)
+                # Дополнительная пауза для рендеринга
+                await page.wait_for_timeout(1000)
                 html = await page.content()
                 return html
-            except Exception:
+            except Exception as e:
+                logger.debug(f"⚠️ Browserless ошибка: {e}")
                 return None
             finally:
                 await page.close()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"⚠️ Browserless общая ошибка: {e}")
         return None
 
 async def fetch_http(url: str) -> Optional[str]:
@@ -920,38 +902,14 @@ async def fetch_http(url: str) -> Optional[str]:
         pass
     return None
 
-async def fetch_page(url: str, query: str) -> Dict:
-    """Загрузка страницы с приоритетом Browserless, затем HTTP"""
-    if not url:
-        return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': []}
-    
-    html = None
-    # Сначала пытаемся через Browserless
-    if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
-        logger.debug(f"🌐 Загрузка через Browserless: {url[:100]}...")
-        html = await fetch_with_browserless(url)
-        if html:
-            logger.debug(f"✅ Browserless загрузил страницу")
-    
-    # Если не удалось, пробуем HTTP
-    if not html:
-        logger.debug(f"🌐 Загрузка через HTTP: {url[:100]}...")
-        html = await fetch_http(url)
-        if html:
-            logger.debug(f"✅ HTTP загрузил страницу")
-    
-    if html:
-        return parse_page(html, query)
-    
-    logger.debug(f"❌ Не удалось загрузить страницу: {url[:100]}...")
-    return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': []}
-
 # ═══════════════════════════════════════════════════════════════════
-#  ПАРСИНГ (УЛУЧШЕННЫЙ)
+#  ⭐ АГРЕССИВНЫЙ ПАРСИНГ (ВСЁ ПОДРЯД)
 # ═══════════════════════════════════════════════════════════════════
 
 def parse_page(html: str, query: str) -> Dict:
-    """Улучшенный парсинг страниц с извлечением структурированных данных"""
+    """
+    Агрессивный парсинг: извлекаем всё, что можно.
+    """
     result = {
         'text': '',
         'lists': [],
@@ -959,7 +917,10 @@ def parse_page(html: str, query: str) -> Dict:
         'items': [],
         'date': None,
         'definitions': [],
-        'key_facts': []
+        'key_facts': [],
+        'metrics': [],      # все числа с единицами
+        'tables': [],       # все таблицы в текстовом виде
+        'full_text': ''     # полный текст без обрезки
     }
     
     if not BEAUTIFULSOUP_AVAILABLE or not html:
@@ -968,43 +929,78 @@ def parse_page(html: str, query: str) -> Dict:
     try:
         soup = BeautifulSoup(html, 'html.parser')
         
-        # Удаляем скрипты и стили
-        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'noscript']):
+        # Удаляем скрипты, стили, навигацию, футеры, шапки, рекламу
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'noscript', 'meta', 'link']):
             tag.decompose()
         
-        # Извлекаем текст
-        text = soup.get_text(separator=' ')
-        text = re.sub(r'\s+', ' ', text).strip()
-        result['text'] = text[:4000]
+        # Извлекаем весь текст
+        full_text = soup.get_text(separator=' ')
+        full_text = re.sub(r'\s+', ' ', full_text).strip()
+        result['full_text'] = full_text
+        result['text'] = full_text[:4000]  # для обратной совместимости
         
-        # Заголовки
-        for tag in soup.find_all(['h1', 'h2', 'h3']):
+        # Заголовки (все уровни)
+        for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
             h = tag.get_text().strip()
             if h and len(h) > 3:
-                result['headings'].append(h[:200])
-        result['headings'] = result['headings'][:5]
+                result['headings'].append(h[:300])
+        result['headings'] = result['headings'][:10]
         
-        # Списки
+        # Списки (ul, ol) — извлекаем все элементы
         for tag in soup.find_all(['ul', 'ol']):
             items = []
             for li in tag.find_all('li'):
                 li_text = li.get_text().strip()
                 if li_text and len(li_text) > 5:
-                    items.append(li_text[:200])
+                    items.append(li_text[:500])
             if items:
                 result['lists'].append(items)
-        result['lists'] = result['lists'][:5]
+        result['lists'] = result['lists'][:10]
         
-        # Извлекаем ключевые факты (даты, числа, имена)
+        # Таблицы — преобразуем каждую в текст (строки и ячейки)
+        for table in soup.find_all('table'):
+            table_text = []
+            for row in table.find_all('tr'):
+                row_text = []
+                for cell in row.find_all(['td', 'th']):
+                    cell_text = cell.get_text().strip()
+                    if cell_text:
+                        row_text.append(cell_text[:200])
+                if row_text:
+                    table_text.append(' | '.join(row_text))
+            if table_text:
+                result['tables'].append('\n'.join(table_text))
+        result['tables'] = result['tables'][:5]
+        
+        # Извлекаем все числа с единицами измерения (универсально)
+        metric_patterns = [
+            r'([-+]?\d{1,4}\s*[°C℃]?)',           # температура
+            r'([-+]?\d{1,4}\s*м/с|км/ч|mph|км/ч)', # скорость ветра
+            r'(\d{3,4}\s*мм рт\. ст\.|гПа|мбар|hPa|inHg)', # давление
+            r'(\d{1,3}\s*мм|дюйм|in|%)',          # осадки, влажность
+            r'(\d{1,3}\s*м|км|миль|ft)',          # расстояние
+            r'(\d{1,4}\s*г|кг|т|lb|oz)',          # вес
+            r'(\d{1,4}\s*руб|\$|€|₽|USD|EUR)',    # деньги
+            r'(\d{1,4}\s*шт|ед|чел|%|млн|млрд)',  # количества
+        ]
+        metrics = set()
+        for pattern in metric_patterns:
+            matches = re.findall(pattern, full_text, re.I)
+            for m in matches:
+                if isinstance(m, tuple):
+                    m = ' '.join(m)
+                if len(m) > 2:
+                    metrics.add(m.strip())
+        result['metrics'] = list(metrics)[:30]
+        
+        # Ключевые факты (даты, числа, имена — оставляем как есть)
         fact_patterns = [
             r'(\d{4})\s*год[ау]?',
             r'(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)',
-            r'(\d+)\s*%',
-            r'(\d+)\s*(тысяч|миллионов|миллиардов)',
         ]
         facts = set()
         for pattern in fact_patterns:
-            matches = re.findall(pattern, text, re.I)
+            matches = re.findall(pattern, full_text, re.I)
             for m in matches:
                 if isinstance(m, tuple):
                     fact = ' '.join(m)
@@ -1012,7 +1008,7 @@ def parse_page(html: str, query: str) -> Dict:
                     fact = m
                 if fact and len(fact) > 3:
                     facts.add(fact)
-        result['key_facts'] = list(facts)[:10]
+        result['key_facts'] = list(facts)[:20]
         
         return result
         
@@ -1021,14 +1017,44 @@ def parse_page(html: str, query: str) -> Dict:
     
     return result
 
+async def fetch_page(url: str, query: str) -> Dict:
+    """Загрузка страницы с приоритетом Browserless, затем HTTP"""
+    if not url:
+        return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': [], 'metrics': [], 'tables': [], 'full_text': ''}
+    
+    html = None
+    # Сначала пытаемся через Browserless
+    if PLAYWRIGHT_AVAILABLE and BROWSERLESS_WS_ENDPOINT:
+        logger.debug(f"🌐 Загрузка через Browserless: {url[:100]}...")
+        html = await fetch_with_browserless(url)
+        if html:
+            logger.debug(f"✅ Browserless загрузил страницу (длина {len(html)})")
+    
+    # Если не удалось, пробуем HTTP
+    if not html:
+        logger.debug(f"🌐 Загрузка через HTTP: {url[:100]}...")
+        html = await fetch_http(url)
+        if html:
+            logger.debug(f"✅ HTTP загрузил страницу (длина {len(html)})")
+    
+    if html:
+        return parse_page(html, query)
+    
+    logger.debug(f"❌ Не удалось загрузить страницу: {url[:100]}...")
+    return {'text': '', 'lists': [], 'headings': [], 'items': [], 'date': None, 'definitions': [], 'key_facts': [], 'metrics': [], 'tables': [], 'full_text': ''}
+
+# ═══════════════════════════════════════════════════════════════════
+#  ⭐ ЗАГРУЗКА СТРАНИЦ (увеличено до 5)
+# ═══════════════════════════════════════════════════════════════════
+
 async def fetch_pages(links: List[str], query: str) -> List[Dict]:
     """Загрузка страниц параллельно с ограничением"""
     if not links:
         return []
     tasks = [fetch_page(link, query) for link in links[:MAX_PAGES_PER_ITERATION]]
     results = await asyncio.gather(*tasks)
-    # Фильтруем страницы с достаточным текстом
-    return [r for r in results if r.get('text') and len(r.get('text')) > 100]
+    # Фильтруем страницы с достаточным текстом (хотя бы 200 символов)
+    return [r for r in results if r.get('full_text') and len(r.get('full_text')) > 200]
 
 # ═══════════════════════════════════════════════════════════════════
 #  ГЕНЕРАЦИЯ ВАРИАНТОВ (БЕЗ ИЗМЕНЕНИЙ)
@@ -1126,7 +1152,7 @@ def format_confidence(confidence: Dict) -> str:
 """
 
 # ═══════════════════════════════════════════════════════════════════
-#  ⭐ ОСНОВНАЯ ЛОГИКА (С ЗАМЕРАМИ ВРЕМЕНИ И БЕЗ ЖЁСТКОГО ПОРОГА)
+#  ⭐ ОСНОВНАЯ ЛОГИКА (С ЗАМЕРАМИ ВРЕМЕНИ И ПОЛНЫМ СБОРОМ ДАННЫХ)
 # ═══════════════════════════════════════════════════════════════════
 
 async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> Tuple[str, List[Dict], float]:
@@ -1172,23 +1198,42 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         time_fetch += t_fetch
         logger.info(f"⏱️ Загрузка страниц итерации {iteration}: {t_fetch:.2f} сек")
         
-        # Парсинг уже внутри fetch_pages, но мы логируем
-        t_parse_start = time.time()
-        # Извлекаем элементы из страниц
+        # ⭐ РАСШИРЕННЫЙ СБОР ЭЛЕМЕНТОВ
         for page in pages:
-            if page.get('items'):
-                all_items.extend(page['items'])
-            if page.get('lists'):
-                for lst in page.get('lists', []):
-                    if isinstance(lst, list):
-                        all_items.extend([{'title': item} for item in lst[:5]])
-            # Добавляем ключевые факты
-            if page.get('key_facts'):
-                for fact in page['key_facts']:
-                    all_items.append({'title': fact, 'snippet': fact})
-        t_parse = time.time() - t_parse_start
-        time_parse += t_parse
-        logger.info(f"⏱️ Парсинг итерации {iteration}: {t_parse:.2f} сек")
+            # Полный текст страницы
+            full_text = page.get('full_text', '')
+            if full_text:
+                all_items.append({
+                    'title': 'Текст страницы',
+                    'snippet': full_text[:2000],
+                    'source': 'page_text'
+                })
+            
+            # Заголовки
+            for h in page.get('headings', []):
+                if h:
+                    all_items.append({'title': h, 'snippet': h, 'source': 'heading'})
+            
+            # Списки
+            for lst in page.get('lists', []):
+                for item in lst:
+                    if item and len(item) > 10:
+                        all_items.append({'title': item[:200], 'snippet': item, 'source': 'list'})
+            
+            # Таблицы
+            for table in page.get('tables', []):
+                if table:
+                    all_items.append({'title': 'Таблица', 'snippet': table[:500], 'source': 'table'})
+            
+            # Метрики (числа с единицами)
+            for metric in page.get('metrics', []):
+                if metric:
+                    all_items.append({'title': metric, 'snippet': metric, 'source': 'metric'})
+            
+            # Ключевые факты
+            for fact in page.get('key_facts', []):
+                if fact:
+                    all_items.append({'title': fact, 'snippet': fact, 'source': 'fact'})
         
         confidence_data = calculate_confidence(pages)
         confidence = confidence_data.get('overall', 0)
@@ -1204,10 +1249,9 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
     
     logger.info(f"📊 ИТОГО собрано элементов: {len(all_items)}")
     
-    # Если элементов нет, всё равно пытаемся сгенерировать ответ (но честно)
+    # Если элементов нет, всё равно пытаемся сгенерировать честный ответ
     if not all_items:
         logger.warning("⚠️ Не найдено ни одного элемента, но мы всё равно попробуем сгенерировать честный ответ")
-        # Используем fallback промпт (без данных)
         fallback_prompt = f"""
 ⚠️ **СИСТЕМА ПОИСКА НЕ ВЕРНУЛА РЕЗУЛЬТАТОВ — ЭТО ФАКТ, ПРОВЕРЕННЫЙ СИСТЕМОЙ**
 
@@ -1223,9 +1267,6 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
 2. Предложить уточнить запрос
 3. Спросить, что именно искал пользователь
 
-⚠️ **ПРИМЕР ЧЕСТНОГО ОТВЕТА:**
-"По вашему запросу '{query}' в интернете ничего не найдено. Попробуйте уточнить запрос или задать другой вопрос."
-
 Вопрос: {query}
 Контекст: {context_prompt}
 
@@ -1238,66 +1279,42 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
         logger.info(f"⏱️ ОБЩЕЕ ВРЕМЯ: {total_time:.2f} сек")
         return answer, [], 0.0
     
-    # Сортируем элементы (по релевантности)
-    sorted_items = sorted(
-        all_items,
-        key=lambda x: (
-            0 if x.get('rating') else 1,
-            0 if x.get('year') else 2,
-            0 if x.get('price') else 1
-        )
-    )[:30]
-    
+    # Формируем детальный дамп для DeepSeek
     items_text = ""
-    for idx, item in enumerate(sorted_items[:30], 1):
-        year = f" ({item.get('year')})" if item.get('year') else ""
-        rating = f" ★ {item.get('rating')}" if item.get('rating') else ""
-        price = f" {item.get('price')}" if item.get('price') else ""
-        desc = f" — {item.get('description')[:100]}" if item.get('description') else ""
-        items_text += f"{idx}. {item.get('title')}{year}{rating}{price}{desc}\n"
+    # Группируем по типу для лучшей структуры
+    text_parts = []
+    for idx, item in enumerate(all_items[:50], 1):
+        title = item.get('title', '')
+        snippet = item.get('snippet', '')
+        source = item.get('source', '')
+        if snippet and snippet != title:
+            text_parts.append(f"{idx}. [{source}] {title}: {snippet[:300]}")
+        elif title:
+            text_parts.append(f"{idx}. [{source}] {title}")
+    items_text = "\n".join(text_parts)
     
     answer_prompt = f"""
 ⚠️ **ТЫ ПОЛУЧИЛ РЕАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА!**
 
-⚠️ **ТЫ НЕ ИМЕЕШЬ ПРАВА ВЫДУМЫВАТЬ!**
-- НЕЛЬЗЯ придумывать факты, цифры, даты.
-- Если не уверен — скажи "Я не уверен".
-- Лучше признаться в незнании, чем выдать ложную информацию.
-- НЕЛЬЗЯ говорить "по моему мнению", "я считаю", "я думаю" — ты не человек.
+📊 **ВСЕ ДАННЫЕ, ИЗВЛЕЧЁННЫЕ ИЗ СТРАНИЦ (текст, таблицы, списки, метрики):**
+{items_text}
+
+🧠 **КОНТЕКСТ ДИАЛОГА (из памяти):**
+{context_prompt if context_prompt else "Нет контекста"}
+
+⚠️ **ТВОЯ ЗАДАЧА — ПРОАНАЛИЗИРОВАТЬ ЭТИ ДАННЫЕ И ДАТЬ ОТВЕТ НА ВОПРОС.**
 
 ⚠️ **ЖЁСТКИЕ ПРАВИЛА (НАРУШЕНИЕ = ОБМАН):**
 
-1. **НЕЛЬЗЯ говорить "нет доступа", "не могу найти", "нет интернета"** — это ложь!
-   Если данных нет — скажи ЧЕСТНО: "В интернете ничего не найдено по вашему запросу."
-
-2. **НЕЛЬЗЯ использовать свои знания вместо данных из интернета** — это подмена!
-   Если данных мало — добавь блок "🧠 Дополнено из знаний" и ЧЕСТНО отметь это.
-
-3. **НЕЛЬЗЯ выдумывать, додумывать или обобщать** — это обман!
-   Используй ТОЛЬКО то, что есть в данных.
-
-4. **НЕЛЬЗЯ давать короткий ответ** — это лень!
-   Дай развёрнутый, структурированный ответ с примерами и пояснениями.
-
-5. **ЕСЛИ данные противоречивы** — укажи это явно.
-
-6. **УКАЗЫВАЙ источник** — откуда взята информация.
-
-Найдено {len(sorted_items)} элементов. Уверенность: {confidence:.1f}%
-
-📊 **ДАННЫЕ ИЗ ИНТЕРНЕТА:**
-{items_text}
-
-{context_prompt}
-
-⚠️ **ФОРМАТ ОТВЕТА (СТРОГО!):**
-📊 **Из интернета:** (перечисли найденное с указанием источников)
-🧠 **Дополнено из знаний:** (только если данных мало, честно отметь)
-✅ **Вывод:** (краткий итог)
+1. **НЕ ВЫДУМЫВАЙ!** Используй ТОЛЬКО то, что есть в данных.
+2. **ЕСЛИ ДАННЫХ МАЛО** — честно скажи: "В найденных данных мало информации по вашему запросу, но вот что удалось извлечь..."
+3. **НЕЛЬЗЯ** говорить "по моему мнению", "я считаю", "я думаю".
+4. **УКАЗЫВАЙ ИСТОЧНИКИ** – откуда взята информация (из какого элемента).
+5. **СТРУКТУРИРУЙ ОТВЕТ** – выдели основные факты, детали, цифры.
 
 Вопрос: {query}
 
-ОТВЕТЬ РАЗВЁРНУТО, НЕ ЛЕНИСЬ, НЕ ВРИ!
+ОТВЕТЬ РАЗВЁРНУТО, ИНФОРМАТИВНО, НО БЕЗ ВЫДУМОК!
 """
     
     t_answer_start = time.time()
@@ -1318,7 +1335,7 @@ async def search_and_answer(query: str, uid: int, context_prompt: str = "") -> T
 ⚠️ **НЕ ГОВОРИ "по моему мнению", "я считаю"!**
 
 📊 **ДАННЫЕ ИЗ ИНТЕРНЕТА:**
-{items_text[:2000]}
+{items_text[:3000]}
 
 Вопрос: {query}
 
@@ -1727,7 +1744,7 @@ def format_sources(sources: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("🚀 ЗАПУСК BROWAIX BOT v3.0 (ОБНОВЛЁННАЯ ВЕРСИЯ)")
+    logger.info("🚀 ЗАПУСК BROWAIX BOT v3.1 (АГРЕССИВНЫЙ ПАРСИНГ)")
     logger.info("=" * 60)
     
     logger.info("🔑 Проверка API ключей:")
@@ -1737,14 +1754,12 @@ def main():
     logger.info(f"   Serper: {'✅' if SERPER_API_KEY else '❌'} (РЕЗЕРВ)")
     logger.info(f"   Browserless: {'✅' if BROWSERLESS_WS_ENDPOINT else '❌'}")
     logger.info("=" * 60)
-    logger.info("✅ ИЗМЕНЕНИЯ:")
-    logger.info("   • Актуализированы модели DeepSeek (deepseek-v4-flash/pro)")
-    logger.info("   • Универсальный парсинг APISerpent (все возможные ключи)")
-    logger.info("   • Приоритет Browserless + HTTP fallback")
-    logger.info("   • Фильтрация по релевантности (совпадение слов)")
-    logger.info("   • Убран жёсткий порог (генерация всегда)")
-    logger.info("   • Подробное логирование (DEBUG)")
-    logger.info("   • Замеры времени всех этапов")
+    logger.info("✅ ИЗМЕНЕНИЯ v3.1:")
+    logger.info("   • Browserless с ожиданием networkidle")
+    logger.info("   • Парсинг всего: таблицы, метрики, полный текст")
+    logger.info("   • Загрузка до 5 страниц за итерацию")
+    logger.info("   • Мягкая фильтрация (только спам/видео)")
+    logger.info("   • Сбор всех элементов для DeepSeek")
     
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN не задан!")
